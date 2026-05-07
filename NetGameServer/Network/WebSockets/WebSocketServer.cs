@@ -9,8 +9,8 @@ namespace Network.WebSockets;
 /// </summary>
 public class WebSocketServer : INetworkServer
 {
-    private HttpListener? _listener;
-    private CancellationTokenSource? _cts;
+    private HttpListener? listener;
+    private CancellationTokenSource? cts;
 
     public event SessionConnectedHandler? OnSessionConnected;
     public event DataReceivedHandler? OnDataReceived;
@@ -18,14 +18,14 @@ public class WebSocketServer : INetworkServer
 
     public Task StartAsync(int port)
     {
-        _listener = new HttpListener();
+        listener = new HttpListener();
         // 注意：在Windows下绑定所有IP（如+或*）可能需要管理员权限或者netsh配置，这里默认使用localhost和127.0.0.1兼容开发
-        _listener.Prefixes.Add($"http://localhost:{port}/");
-        _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
-        _listener.Start();
+        listener.Prefixes.Add($"http://localhost:{port}/");
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
 
-        _cts = new CancellationTokenSource();
-        _ = AcceptLoopAsync(_cts.Token);
+        cts = new CancellationTokenSource();
+        _ = AcceptLoopAsync(cts.Token);
 
         return Task.CompletedTask;
     }
@@ -34,9 +34,9 @@ public class WebSocketServer : INetworkServer
     {
         try
         {
-            while (!cancellationToken.IsCancellationRequested && _listener != null)
+            while (!cancellationToken.IsCancellationRequested && listener != null)
             {
-                var context = await _listener.GetContextAsync();
+                var context = await listener.GetContextAsync();
                 if (context.Request.IsWebSocketRequest)
                 {
                     var wsContext = await context.AcceptWebSocketAsync(null);
@@ -55,7 +55,7 @@ public class WebSocketServer : INetworkServer
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"WebSocket Accept Loop Exception: {ex.Message}");
+            Shared.Log.Error($"WebSocket接受循环异常：{ex.Message}");
         }
     }
 
@@ -91,15 +91,15 @@ public class WebSocketServer : INetworkServer
             return;
         }
 
-        OnSessionDisconnected?.Invoke(session, "Client closed connection.");
+        OnSessionDisconnected?.Invoke(session, "客户端主动关闭了连接。");
     }
 
     public Task StopAsync()
     {
-        _cts?.Cancel();
-        _listener?.Stop();
-        _listener?.Close();
-        _listener = null;
+        cts?.Cancel();
+        listener?.Stop();
+        listener?.Close();
+        listener = null;
         return Task.CompletedTask;
     }
 }

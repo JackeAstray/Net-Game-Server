@@ -71,7 +71,7 @@ public class AspNetServer : INetworkServer
 
                         endpoints.MapGet("/", async context =>
                         {
-                            await context.Response.WriteAsync("Game Server HTTP API is running.");
+                            await context.Response.WriteAsync("游戏服务器 HTTP API 正在运行。");
                         });
                     });
                 });

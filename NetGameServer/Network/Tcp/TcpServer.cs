@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Sockets;
 
+using Microsoft.IO;
+
 namespace Network.Tcp;
 
 /// <summary>
@@ -11,6 +13,7 @@ namespace Network.Tcp;
 public class TcpServer : INetworkServer
 {
     private TcpListener? tcpListener;
+    private static readonly RecyclableMemoryStreamManager memoryStreamManager = new RecyclableMemoryStreamManager();
 
     public event SessionConnectedHandler? OnSessionConnected;
     public event DataReceivedHandler? OnDataReceived;
@@ -59,10 +62,12 @@ public class TcpServer : INetworkServer
                 {
                     int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
                     if (bytesRead == 0) break;
-                    
-                    var data = new byte[bytesRead];
-                    Array.Copy(buffer, data, bytesRead);
-                    
+
+                    // 使用池化的 MemoryStream 来避免频繁的内存分配
+                    using var ms = memoryStreamManager.GetStream();
+                    ms.Write(buffer, 0, bytesRead);
+                    var data = ms.ToArray();
+
                     OnDataReceived?.Invoke(session, data);
                 }
             }
@@ -71,8 +76,8 @@ public class TcpServer : INetworkServer
                 OnSessionDisconnected?.Invoke(session, ex.Message);
                 return;
             }
-            
-            OnSessionDisconnected?.Invoke(session, "Client closed connection gracefully.");
+
+            OnSessionDisconnected?.Invoke(session, "客户端主动关闭了连接。");
         }
     }
 

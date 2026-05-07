@@ -11,9 +11,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="DotNetty.Codecs" Version="0.7.6" />
-    <PackageReference Include="DotNetty.Handlers" Version="0.7.6" />
-    <PackageReference Include="DotNetty.Transport" Version="0.7.6" />
     <PackageReference Include="Grpc.AspNetCore" Version="2.80.0" />
     <PackageReference Include="Grpc.Net.Client" Version="2.80.0" />
     <PackageReference Include="Grpc.Tools" Version="2.80.0">
@@ -24,7 +21,11 @@
     <PackageReference Include="MagicOnion" Version="7.10.0" />
     <PackageReference Include="MagicOnion.Client" Version="7.10.0" />
     <PackageReference Include="MagicOnion.Server" Version="7.10.0" />
+    <PackageReference Include="Microsoft.IO.RecyclableMemoryStream" Version="3.0.1" />
     <PackageReference Include="NetMQ" Version="4.0.4.1" />
+    <PackageReference Include="Polly.Core" Version="8.4.1" />
+    <!-- 引入 YARP 用于支持高性能网关、负载均衡和连接治理 -->
+    <PackageReference Include="Yarp.ReverseProxy" Version="2.2.0" />
   </ItemGroup>
 
   <ItemGroup>
