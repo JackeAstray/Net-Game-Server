@@ -41,7 +41,11 @@ namespace Shared
                 .MinimumLevel.Debug();
 
             // 将文件 sink 包装为异步写入，减少同步 I/O 阻塞的风险
-            configuration.WriteTo.Async(a => a.File(logFilePath, rollingInterval: RollingInterval.Day));
+            configuration.WriteTo.Async(a => a.File(logFilePath,
+                rollingInterval: RollingInterval.Day,
+                retainedFileCountLimit: 10,
+                fileSizeLimitBytes: 10 * 1024 * 1024,
+                rollOnFileSizeLimit: true));
 
             // 控制台 sink 仅输出 Error 及以上级别，并使用异步写入以降低阻塞风险
             if (enableConsoleLog)
@@ -49,6 +53,8 @@ namespace Shared
                 configuration.WriteTo.Async(a => a.Console(restrictedToMinimumLevel: LogEventLevel.Error));
             }
 
+            // 如果已存在活动的Logger，先刷新并关闭释放资源（避免重复配置导致文件被占用或线程泄漏）
+            Serilog.Log.CloseAndFlush();
             Serilog.Log.Logger = configuration.CreateLogger();
         }
 

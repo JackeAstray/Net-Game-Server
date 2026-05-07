@@ -8,7 +8,7 @@ namespace Game
     {
         static async Task Main(string[] args)
         {
-            Log.Configure(true, "Shared.log");
+            Log.Configure(true, "Game.log");
             Log.Info("游戏服务器正在启动...");
 
             int port = ConfigHelper.GetConfig<int>("GamePort");

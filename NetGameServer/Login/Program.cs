@@ -8,7 +8,7 @@ namespace Login
     {
         static async Task Main(string[] args)
         {
-            Log.Configure(true, "Shared.log");
+            Log.Configure(true, "Login.log");
             Log.Info("登录服务器正在启动...");
 
             int port = ConfigHelper.GetConfig<int>("LoginPort");
