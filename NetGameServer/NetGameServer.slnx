@@ -1,0 +1,8 @@
+<Solution>
+  <Project Path="DB/DB.csproj" />
+  <Project Path="Gateway/Gateway.csproj" />
+  <Project Path="Login/Login.csproj" />
+  <Project Path="NetGameServer/Game.csproj" />
+  <Project Path="Network/Network.csproj" />
+  <Project Path="Shared/Shared.csproj" />
+</Solution>
