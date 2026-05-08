@@ -21,15 +21,18 @@ public class WebSocketSession : ISession
 
     public bool IsConnected => webSocket.State == WebSocketState.Open;
 
+    public DateTime LastActivityTime { get; set; } = DateTime.UtcNow;
+
     public object? UserData { get; set; }
 
-    public async void Send(byte[] data)
+    public async void Send(ReadOnlyMemory<byte> data)
     {
         if (IsConnected)
         {
             try
             {
-                await webSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Binary, true, CancellationToken.None);
+                await webSocket.SendAsync(data, WebSocketMessageType.Binary, true, CancellationToken.None);
+                LastActivityTime = DateTime.UtcNow;
             }
             catch
             {

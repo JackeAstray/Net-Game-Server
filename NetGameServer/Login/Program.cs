@@ -29,8 +29,9 @@ namespace Login
             // 连接 DB
             int dbPort = ConfigHelper.GetConfig<int>("DBPort");
             if (dbPort == 0) dbPort = 8083;
-            var dbClient = new TcpClientWrapper("127.0.0.1", dbPort);
-            dbClient.OnConnected += session => Log.Info($"已连接到 DB 服务器 (Port:{dbPort})");
+            var dbHost = ConfigHelper.GetConfig<string>("DBHost") ?? "127.0.0.1";
+            var dbClient = new TcpClientWrapper(dbHost, dbPort);
+            dbClient.OnConnected += session => Log.Info($"已连接到 DB 服务器 (Host:{dbHost} Port:{dbPort})");
             dbClient.OnDisconnected += (session, reason) => Log.Warning($"与 DB 服务器断开连接: {reason}");
             _ = dbClient.ConnectAsync();
 

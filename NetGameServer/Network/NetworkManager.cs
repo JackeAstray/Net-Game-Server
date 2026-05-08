@@ -3,22 +3,40 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Shared;
+using Network.Routing;
 
 namespace Network;
 
 /// <summary>
 /// 管理所有网络服务实例的管理器，提供统一的启动、停止和获取服务接口。
+/// 附带默认的全局消息路由器。
 /// </summary>
 public class NetworkManager
 {
+    private static readonly Lazy<NetworkManager> instance = new Lazy<NetworkManager>(() => new NetworkManager());
+
+    /// <summary>
+    /// 全局单例的便捷访问
+    /// </summary>
+    public static NetworkManager Instance => instance.Value;
+
     private readonly ConcurrentDictionary<string, INetworkServer> servers = new();
 
     /// <summary>
-    /// 注册一个网络服务实例
+    /// 每个网络管理器的默认中央数据路由器
+    /// </summary>
+    public MessageRouter Router { get; } = new MessageRouter();
+
+    /// <summary>
+    /// 注册一个网络服务实例，并自动将其消息流量绑定到全局 Router
     /// </summary>
     public void RegisterServer(string name, INetworkServer server)
     {
-        if (!servers.TryAdd(name, server))
+        if (servers.TryAdd(name, server))
+        {
+            Router.BindServer(server);
+        }
+        else
         {
             Log.Error($"名为“{name}”的服务器已存在。");
         }
@@ -29,7 +47,12 @@ public class NetworkManager
     /// </summary>
     public bool UnregisterServer(string name)
     {
-        return servers.TryRemove(name, out _);
+        if (servers.TryRemove(name, out var server))
+        {
+            Router.UnbindServer(server);
+            return true;
+        }
+        return false;
     }
 
     /// <summary>

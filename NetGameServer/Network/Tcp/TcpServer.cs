@@ -66,7 +66,7 @@ public class TcpServer : INetworkServer
                     // 使用池化的 MemoryStream 来避免频繁的内存分配
                     using var ms = memoryStreamManager.GetStream();
                     ms.Write(buffer, 0, bytesRead);
-                    var data = ms.ToArray();
+                    var data = ms.GetBuffer();
 
                     OnDataReceived?.Invoke(session, data);
                 }

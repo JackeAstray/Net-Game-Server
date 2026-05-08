@@ -10,11 +10,11 @@ namespace Network.Tcp;
 /// </summary>
 public class TcpClientWrapper : INetworkClient
 {
-    private TcpClient? _tcpClient;
-    private TcpSession? _session;
-    private readonly string _host;
-    private readonly int _port;
-    private bool _isRunning;
+    private TcpClient? tcpClient;
+    private TcpSession? session;
+    private readonly string host;
+    private readonly int port;
+    private bool isRunning;
 
     public event SessionConnectedHandler? OnConnected;
     public event DataReceivedHandler? OnDataReceived;
@@ -22,33 +22,33 @@ public class TcpClientWrapper : INetworkClient
 
     public TcpClientWrapper(string host, int port)
     {
-        _host = host;
-        _port = port;
+        this.host = host;
+        this.port = port;
     }
 
     public async Task ConnectAsync()
     {
-        _isRunning = true;
+        isRunning = true;
 
-        while (_isRunning)
+        while (isRunning)
         {
             try
             {
-                Shared.Log.Info($"正在连接到 {_host}:{_port} ...");
-                _tcpClient = new TcpClient();
-                await _tcpClient.ConnectAsync(_host, _port);
+                Shared.Log.Info($"正在连接到 {host}:{port} ...");
+                tcpClient = new TcpClient();
+                await tcpClient.ConnectAsync(host, port);
 
-                _session = new TcpSession(_tcpClient);
-                OnConnected?.Invoke(_session);
+                session = new TcpSession(tcpClient);
+                OnConnected?.Invoke(session);
 
                 await HandleConnectionAsync();
             }
             catch (Exception ex)
             {
-                Shared.Log.Warning($"连接 {_host}:{_port} 失败或断开: {ex.Message}。3秒后准备重连...");
+                Shared.Log.Warning($"连接 {host}:{port} 失败或断开: {ex.Message}。3秒后准备重连...");
             }
 
-            if (_isRunning)
+            if (isRunning)
             {
                 await Task.Delay(3000); // 3秒后重连
             }
@@ -57,46 +57,48 @@ public class TcpClientWrapper : INetworkClient
 
     private async Task HandleConnectionAsync()
     {
-        if (_tcpClient == null || !_tcpClient.Connected || _session == null)
+        if (tcpClient == null || !tcpClient.Connected || session == null)
             return;
 
-        using (_tcpClient)
+        using (tcpClient)
         {
-            var stream = _tcpClient.GetStream();
+            var stream = tcpClient.GetStream();
             var buffer = new byte[4096];
 
             try
             {
-                while (_tcpClient.Connected)
+                while (tcpClient.Connected)
                 {
                     int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
                     if (bytesRead == 0) break;
 
+                    session.LastActivityTime = DateTime.UtcNow;
+
                     var data = new byte[bytesRead];
                     Array.Copy(buffer, data, bytesRead);
 
-                    OnDataReceived?.Invoke(_session, data);
+                    OnDataReceived?.Invoke(session, data);
                 }
             }
             catch (Exception ex)
             {
-                OnDisconnected?.Invoke(_session, ex.Message);
+                OnDisconnected?.Invoke(session, ex.Message);
                 return;
             }
 
-            OnDisconnected?.Invoke(_session, "连接关闭");
+            OnDisconnected?.Invoke(session, "连接关闭");
         }
     }
 
-    public void Send(byte[] data)
+    public void Send(ReadOnlyMemory<byte> data)
     {
-        _session?.Send(data);
+        session?.Send(data);
     }
 
     public void Stop()
     {
-        _isRunning = false;
-        _session?.Close();
-        _tcpClient?.Close();
+        isRunning = false;
+        session?.Close();
+        tcpClient?.Close();
     }
 }

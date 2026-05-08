@@ -44,6 +44,11 @@ public class AspNetServer : INetworkServer
         this.configureApp = configureApp;
     }
 
+    /// <summary>
+    /// 启动 HTTP 服务，监听指定端口。
+    /// </summary>
+    /// <param name="port"></param>
+    /// <returns></returns>
     public async Task StartAsync(int port)
     {
         host = Host.CreateDefaultBuilder()
@@ -81,6 +86,10 @@ public class AspNetServer : INetworkServer
         await host.StartAsync();
     }
 
+    /// <summary>
+    /// 停止 HTTP 服务。
+    /// </summary>
+    /// <returns></returns>
     public async Task StopAsync()
     {
         if (host != null)

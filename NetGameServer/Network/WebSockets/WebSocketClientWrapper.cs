@@ -10,10 +10,10 @@ namespace Network.WebSockets;
 /// </summary>
 public class WebSocketClientWrapper : INetworkClient
 {
-    private ClientWebSocket? _webSocket;
-    private WebSocketSession? _session;
-    private readonly string _url;
-    private bool _isRunning;
+    private ClientWebSocket? webSocket;
+    private WebSocketSession? session;
+    private readonly string url;
+    private bool isRunning;
 
     public event SessionConnectedHandler? OnConnected;
     public event DataReceivedHandler? OnDataReceived;
@@ -21,32 +21,32 @@ public class WebSocketClientWrapper : INetworkClient
 
     public WebSocketClientWrapper(string url)
     {
-        _url = url;
+        this.url = url;
     }
 
     public async Task ConnectAsync()
     {
-        _isRunning = true;
+        isRunning = true;
 
-        while (_isRunning)
+        while (isRunning)
         {
             try
             {
-                Shared.Log.Info($"正在连接到 WebSocket {_url} ...");
-                _webSocket = new ClientWebSocket();
-                await _webSocket.ConnectAsync(new Uri(_url), CancellationToken.None);
+                Shared.Log.Info($"正在连接到 WebSocket {url} ...");
+                webSocket = new ClientWebSocket();
+                await webSocket.ConnectAsync(new Uri(url), CancellationToken.None);
 
-                _session = new WebSocketSession(_webSocket, null);
-                OnConnected?.Invoke(_session);
+                session = new WebSocketSession(webSocket, null);
+                OnConnected?.Invoke(session);
 
                 await HandleConnectionAsync();
             }
             catch (Exception ex)
             {
-                Shared.Log.Warning($"连接 WebSocket {_url} 失败或断开: {ex.Message}。3秒后准备重连...");
+                Shared.Log.Warning($"连接 WebSocket {url} 失败或断开: {ex.Message}。3秒后准备重连...");
             }
 
-            if (_isRunning)
+            if (isRunning)
             {
                 await Task.Delay(3000); // 3秒后重连
             }
@@ -55,62 +55,64 @@ public class WebSocketClientWrapper : INetworkClient
 
     private async Task HandleConnectionAsync()
     {
-        if (_webSocket == null || _session == null)
+        if (webSocket == null || session == null)
             return;
 
         var buffer = new byte[4096];
 
         try
         {
-            while (_webSocket.State == WebSocketState.Open && _isRunning)
+            while (webSocket.State == WebSocketState.Open && isRunning)
             {
-                var result = await _webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                var result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
 
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
-                    await _webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, string.Empty, CancellationToken.None);
+                    await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, string.Empty, CancellationToken.None);
                     break;
                 }
 
                 var data = new byte[result.Count];
                 Array.Copy(buffer, data, result.Count);
 
-                OnDataReceived?.Invoke(_session, data);
+                session.LastActivityTime = DateTime.UtcNow;
+
+                OnDataReceived?.Invoke(session, data);
             }
         }
         catch (Exception ex)
         {
-            if (_isRunning)
+            if (isRunning)
             {
-                OnDisconnected?.Invoke(_session, ex.Message);
+                OnDisconnected?.Invoke(session, ex.Message);
             }
             return;
         }
 
-        if (_isRunning)
+        if (isRunning)
         {
-            OnDisconnected?.Invoke(_session, "WebSocket连接关闭");
+            OnDisconnected?.Invoke(session, "WebSocket连接关闭");
         }
     }
 
-    public void Send(byte[] data)
+    public void Send(ReadOnlyMemory<byte> data)
     {
-        _session?.Send(data);
+        session?.Send(data);
     }
 
     public void Stop()
     {
-        _isRunning = false;
+        isRunning = false;
         try
         {
-            _webSocket?.Abort();
-            _session?.Close();
+            webSocket?.Dispose();
+            session?.Close();
         }
         finally
         {
-            if (_session != null)
+            if (session != null)
             {
-                OnDisconnected?.Invoke(_session, "主动停止");
+                OnDisconnected?.Invoke(session, "主动停止");
             }
         }
     }

@@ -10,11 +10,11 @@ namespace Network.Udp;
 /// </summary>
 public class UdpClientWrapper : INetworkClient
 {
-    private UdpClient? _udpClient;
-    private UdpSession? _session;
-    private readonly string _host;
-    private readonly int _port;
-    private bool _isRunning;
+    private UdpClient? udpClient;
+    private UdpSession? session;
+    private readonly string host;
+    private readonly int port;
+    private bool isRunning;
 
     public event SessionConnectedHandler? OnConnected;
     public event DataReceivedHandler? OnDataReceived;
@@ -22,80 +22,81 @@ public class UdpClientWrapper : INetworkClient
 
     public UdpClientWrapper(string host, int port)
     {
-        _host = host;
-        _port = port;
+        this.host = host;
+        this.port = port;
     }
 
     public async Task ConnectAsync()
     {
-        _isRunning = true;
+        isRunning = true;
 
         try
         {
-            Shared.Log.Info($"正在连接到UDP {_host}:{_port} ...");
-            _udpClient = new UdpClient();
-            _udpClient.Connect(_host, _port);
+            Shared.Log.Info($"正在连接到UDP {host}:{port} ...");
+            udpClient = new UdpClient();
+            udpClient.Connect(host, port);
 
             IPAddress ipAddress;
-            if (!IPAddress.TryParse(_host, out ipAddress!))
+            if (!IPAddress.TryParse(host, out ipAddress!))
             {
-                var hostEntry = await Dns.GetHostEntryAsync(_host);
+                var hostEntry = await Dns.GetHostEntryAsync(host);
                 if (hostEntry.AddressList.Length > 0)
                 {
                     ipAddress = hostEntry.AddressList[0];
                 }
                 else
                 {
-                    throw new Exception($"无法解析主机名: {_host}");
+                    throw new Exception($"无法解析主机名: {host}");
                 }
             }
-            var remoteEndPoint = new IPEndPoint(ipAddress, _port);
-            _session = new UdpSession(_udpClient, remoteEndPoint);
-            OnConnected?.Invoke(_session);
+            var remoteEndPoint = new IPEndPoint(ipAddress, port);
+            session = new UdpSession(udpClient, remoteEndPoint);
+            OnConnected?.Invoke(session);
 
             await HandleConnectionAsync();
         }
         catch (Exception ex)
         {
-            Shared.Log.Warning($"UDP连接 {_host}:{_port} 失败: {ex.Message}");
-            OnDisconnected?.Invoke(_session!, ex.Message);
+            Shared.Log.Warning($"UDP连接 {host}:{port} 失败: {ex.Message}");
+            OnDisconnected?.Invoke(session!, ex.Message);
         }
     }
 
     private async Task HandleConnectionAsync()
     {
-        if (_udpClient == null || _session == null)
+        if (udpClient == null || session == null)
             return;
 
         try
         {
-            while (_isRunning)
+            while (isRunning)
             {
-                var result = await _udpClient.ReceiveAsync();
-                OnDataReceived?.Invoke(_session, result.Buffer);
+                var result = await udpClient.ReceiveAsync();
+                session.LastActivityTime = DateTime.UtcNow;
+                OnDataReceived?.Invoke(session, result.Buffer);
             }
         }
         catch (Exception ex)
         {
-            if (_isRunning)
+            if (isRunning)
             {
-                OnDisconnected?.Invoke(_session, ex.Message);
+                OnDisconnected?.Invoke(session, ex.Message);
             }
         }
     }
 
-    public void Send(byte[] data)
+    public void Send(ReadOnlyMemory<byte> data)
     {
-        _session?.Send(data);
+        session?.Send(data);
     }
 
     public void Stop()
     {
-        _isRunning = false;
-        _udpClient?.Close();
-        if (_session != null)
+        isRunning = false;
+        udpClient?.Close();
+        if (session != null)
         {
-            OnDisconnected?.Invoke(_session, "主动停止");
+            OnDisconnected?.Invoke(session, "主动停止");
         }
     }
 }

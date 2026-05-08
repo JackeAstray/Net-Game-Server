@@ -20,13 +20,16 @@ public class TcpSession : ISession
 
     public bool IsConnected => tcpClient.Connected;
 
+    public DateTime LastActivityTime { get; set; } = DateTime.UtcNow;
+
     public object? UserData { get; set; }
 
-    public void Send(byte[] data)
+    public void Send(ReadOnlyMemory<byte> data)
     {
         if (IsConnected)
         {
-            tcpClient.GetStream().Write(data, 0, data.Length);
+            tcpClient.GetStream().Write(data.Span);
+            LastActivityTime = DateTime.UtcNow;
         }
     }
 

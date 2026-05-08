@@ -24,10 +24,15 @@ public interface ISession
     bool IsConnected { get; }
 
     /// <summary>
+    /// 最后一次网络活动时间（用于心跳超时检测）
+    /// </summary>
+    DateTime LastActivityTime { get; }
+
+    /// <summary>
     /// 发送数据
     /// </summary>
     /// <param name="data">要发送的序列化后的字节数据群</param>
-    void Send(byte[] data);
+    void Send(ReadOnlyMemory<byte> data);
 
     /// <summary>
     /// 断开连接并清理资源

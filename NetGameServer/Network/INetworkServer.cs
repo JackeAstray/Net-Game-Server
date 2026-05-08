@@ -17,6 +17,15 @@ public interface INetworkServer
     /// </summary>
     event SessionDisconnectedHandler? OnSessionDisconnected;
 
+    /// <summary>
+    /// 开始监听指定端口，启动服务器。
+    /// </summary>
+    /// <param name="port"></param>
+    /// <returns></returns>
     Task StartAsync(int port);
+    /// <summary>
+    /// 结束监听，停止服务器。
+    /// </summary>
+    /// <returns></returns>
     Task StopAsync();
 }

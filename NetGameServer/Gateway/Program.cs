@@ -29,16 +29,18 @@ namespace Gateway
             // 连接 Login
             int loginPort = ConfigHelper.GetConfig<int>("LoginPort");
             if (loginPort == 0) loginPort = 8082;
-            var loginClient = new TcpClientWrapper("127.0.0.1", loginPort);
-            loginClient.OnConnected += session => Log.Info($"已连接到 Login 服务器 (Port:{loginPort})");
+            string loginHost = ConfigHelper.GetConfig<string>("LoginHost") ?? "127.0.0.1";
+            var loginClient = new TcpClientWrapper(loginHost, loginPort);
+            loginClient.OnConnected += session => Log.Info($"已连接到 Login 服务器 (Host:{loginHost} Port:{loginPort})");
             loginClient.OnDisconnected += (session, reason) => Log.Warning($"与 Login 服务器断开连接: {reason}");
             _ = loginClient.ConnectAsync();
 
             // 连接 Game
             int gamePort = ConfigHelper.GetConfig<int>("GamePort");
             if (gamePort == 0) gamePort = 8081;
-            var gameClient = new TcpClientWrapper("127.0.0.1", gamePort);
-            gameClient.OnConnected += session => Log.Info($"已连接到 Game 服务器 (Port:{gamePort})");
+            string gameHost = ConfigHelper.GetConfig<string>("GameHost") ?? "127.0.0.1";
+            var gameClient = new TcpClientWrapper(gameHost, gamePort);
+            gameClient.OnConnected += session => Log.Info($"已连接到 Game 服务器 (Host:{gameHost} Port:{gamePort})");
             gameClient.OnDisconnected += (session, reason) => Log.Warning($"与 Game 服务器断开连接: {reason}");
             _ = gameClient.ConnectAsync();
 

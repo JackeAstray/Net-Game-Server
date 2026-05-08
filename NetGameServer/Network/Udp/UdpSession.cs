@@ -22,11 +22,14 @@ public class UdpSession : ISession
 
     public bool IsConnected => true; // UDP 是无连接的，这里只能表示一个有效的逻辑会话
 
+    public DateTime LastActivityTime { get; set; } = DateTime.UtcNow;
+
     public object? UserData { get; set; }
 
-    public void Send(byte[] data)
+    public void Send(ReadOnlyMemory<byte> data)
     {
-        udpClient.Send(data, data.Length, remoteEndPoint);
+        udpClient.Send(data.Span.ToArray(), data.Length, remoteEndPoint);
+        LastActivityTime = DateTime.UtcNow;
     }
 
     public void Close()
