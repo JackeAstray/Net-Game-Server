@@ -28,7 +28,7 @@ namespace Game
 
             // 连接 DB
             int dbPort = ConfigHelper.GetConfig<int>("DBPort");
-            if (dbPort == 0) dbPort = 8083;
+            if (dbPort == 0) dbPort = 8183;
             var dbHost = ConfigHelper.GetConfig<string>("DBHost") ?? "127.0.0.1";
             var dbClient = new TcpClientWrapper(dbHost, dbPort);
             dbClient.OnConnected += session => Log.Info($"已连接到 DB 服务器 (Host:{dbHost} Port:{dbPort})");

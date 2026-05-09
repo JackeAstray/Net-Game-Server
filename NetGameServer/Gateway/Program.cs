@@ -112,6 +112,13 @@ namespace Gateway
                             Match = new Yarp.ReverseProxy.Configuration.RouteMatch
                             {
                                 Path = "/api/{**catch-all}"
+                            },
+                            Transforms = new[]
+                            {
+                                new Dictionary<string, string>
+                                {
+                                    { "PathRemovePrefix", "/api" }
+                                }
                             }
                         }
                     },

@@ -34,7 +34,18 @@ namespace Login.Managers
                 if (existingSession != session)
                 {
                     Shared.Log.Info($"用户{user.Id}从其他位置登录。正在断开旧会话的连接。");
-                    // TODO: 发送被顶号通知
+                    
+                    var kickMessage = new Shared.Messages.Login.KickedOffMessage 
+                    { 
+                        Reason = "您的账号在其他设备登录",
+                        Time = System.DateTime.UtcNow 
+                    };
+                    byte[] data = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(kickMessage);
+                    byte[] packet = new byte[data.Length + 4];
+                    System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1007); // 假设1007为KickedOffMessage的MsgId
+                    data.CopyTo(packet.AsSpan(4));
+                    existingSession.Send(packet);
+
                     existingSession.Close();
 
                     userSessions.TryRemove(user.Id, out _);

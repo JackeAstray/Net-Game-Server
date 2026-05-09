@@ -23,20 +23,9 @@ namespace Login.Controllers
         /// <param name="request"></param>
         /// <returns></returns>
         [HttpPost("login")]
-        public IActionResult Login([FromBody] LoginRequest request)
+        public async Task<IActionResult> Login([FromBody] LoginRequest request)
         {
-            // 注意：在HTTP无状态API中，我们没有持久连接会话。
-            // 我们可以直接返回响应。Session参数被省略或模拟。
-            // 调整LoginHandler以返回逻辑结果。
-
-            //这是一个最小的模拟集成
-            var result = new LoginResponse
-            {
-                Success = true,
-                Message = "登录成功",
-                UserId = 1,
-                Token = System.Guid.NewGuid().ToString()
-            };
+            var result = await loginHandler.HandleLoginRequestAsync(request);
             return Ok(result);
         }
 
@@ -46,13 +35,9 @@ namespace Login.Controllers
         /// <param name="request"></param>
         /// <returns></returns>
         [HttpPost("register")]
-        public IActionResult Register([FromBody] RegisterRequest request)
+        public async Task<IActionResult> Register([FromBody] RegisterRequest request)
         {
-            var result = new RegisterResponse
-            {
-                Success = true,
-                Message = "注册成功"
-            };
+            var result = await loginHandler.HandleRegisterRequestAsync(request);
             return Ok(result);
         }
 

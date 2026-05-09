@@ -43,6 +43,7 @@ namespace Shared.Messages.Login
     {
         public string Account { get; set; }
         public string Password { get; set; }
+        public string Nickname { get; set; }
     }
 
     /// <summary>
@@ -138,5 +139,14 @@ namespace Shared.Messages.Login
     {
         public bool Success { get; set; }
         public string Message { get; set; }
+    }
+
+    /// <summary>
+    /// 表示用户被顶号的通知信息。
+    /// </summary>
+    public class KickedOffMessage
+    {
+        public string Reason { get; set; }
+        public DateTime Time { get; set; }
     }
 }
