@@ -17,13 +17,13 @@ namespace Gateway
             var networkManager = new NetworkManager();
             var tcpServer = new TcpServer();
 
-            tcpServer.OnSessionConnected += session => 
+            tcpServer.OnSessionConnected += session =>
             {
                 Log.Info($"客户端已连接: {session.RemoteEndPoint} ID:{session.SessionId}");
                 Gateway.Managers.GatewaySessionManager.Instance.AddSession(session);
             };
-            
-            // Connect Backend Servers Before Accepting Data from Clients to ensure they exist
+
+            // 在接受来自客户端的数据之前连接后端服务器，以确保它们存在
             // 连接 Login
             int loginPort = ConfigHelper.GetConfig<int>("LoginPort");
             if (loginPort == 0) loginPort = 8182;
@@ -44,28 +44,28 @@ namespace Gateway
 
 
             // Implement Gateway Routing Logic
-            tcpServer.OnDataReceived += (session, data) => 
+            tcpServer.OnDataReceived += (session, data) =>
             {
-                // In a robust implementation, we read the header here and decide who gets the message.
-                // Assuming MsgId is an int (4 bytes)
+                // 在健壮的实现中，我们在这里读取标头并决定谁会收到消息。
+                // 假设MsgId是一个整数（4个字节）
                 if (data.Length >= 4)
                 {
                     int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
                     Log.Info($"Gateway 接收到数据 长度:{data.Length} MsgId:{msgId}");
 
-                    // We wrap the data sending to backend: [SessionId (8 bytes long)] + [Original Packet (MsgId + Payload)]
+                    // 我们包装发送到后端的数据：[SessionId（8字节长）]+[原始数据包（MsgId+Payload）]
                     byte[] wrapperMsg = new byte[8 + data.Length];
                     System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(wrapperMsg.AsSpan(0, 8), session.SessionId);
                     data.Span.CopyTo(wrapperMsg.AsSpan(8));
 
-                    // Simple route definition:
-                    // ID 1000-1999: Login server
-                    // ID 2000-2999: Game server
-                    if (msgId >= 1000 && msgId < 2000)
+                    // 简单路线定义：
+                    // ID 10000-19999：登录服务器（10000个可用ID）
+                    // ID 20000-99999：游戏服务器（可提供80000个ID）
+                    if (msgId >= 10000 && msgId < 20000)
                     {
                         loginClient.Send(wrapperMsg);
                     }
-                    else if (msgId >= 2000 && msgId < 3000)
+                    else if (msgId >= 20000 && msgId < 100000)
                     {
                         gameClient.Send(wrapperMsg);
                     }
@@ -80,7 +80,7 @@ namespace Gateway
                 }
             };
 
-            tcpServer.OnSessionDisconnected += (session, reason) => 
+            tcpServer.OnSessionDisconnected += (session, reason) =>
             {
                 Log.Info($"客户端断开连接，原因: {reason}");
                 Gateway.Managers.GatewaySessionManager.Instance.RemoveSession(session.SessionId);
