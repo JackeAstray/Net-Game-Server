@@ -11,6 +11,9 @@ namespace Shared.Data
         [Display(Name = "编号")]
         public int Id { get; set; }
 
+        [Display(Name = "随机唯一ID")]
+        public string UniqueId { get; set; }
+
         [Required]
         [Display(Name = "账号")]
         public string Account { get; set; }

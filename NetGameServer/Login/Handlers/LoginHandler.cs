@@ -38,12 +38,25 @@ namespace Login.Handlers
         public void HandleRegisterRequest(TcpSession session, RegisterRequest request)
         {
             Log.Info($"收到帐户的RegisterRequest: {request.Account}");
+
+            // Generate a random unique ID
+            string uniqueId = GenerateUniqueId();
+
             var response = new RegisterResponse
             {
                 Success = true,
                 Message = "注册成功"
             };
             // session.SendAsync(...)
+        }
+
+        private string GenerateUniqueId()
+        {
+            // Simple logic for a random unique ID, could be customized
+            long tick = DateTime.Now.Ticks;
+            Random rnd = new Random();
+            int randomNum = rnd.Next(1000, 9999);
+            return $"{tick}{randomNum}";
         }
 
         /// <summary>

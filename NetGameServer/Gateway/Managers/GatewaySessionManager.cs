@@ -8,7 +8,7 @@ namespace Gateway.Managers
         private static readonly GatewaySessionManager instance = new();
         public static GatewaySessionManager Instance => instance;
 
-        // Stores sessionId -> ISession mapping (so backend can tell Gateway which client to reply to)
+        // 存储sessionId->ISession映射（以便后端可以告诉网关要回复哪个客户端）
         private readonly ConcurrentDictionary<long, Network.ISession> clientSessions = new();
 
         private GatewaySessionManager() { }
