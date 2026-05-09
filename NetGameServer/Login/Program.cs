@@ -2,6 +2,11 @@
 using Network.Tcp;
 using Shared;
 
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using System.Threading.Tasks;
+
 namespace Login
 {
     internal class Program
@@ -13,6 +18,9 @@ namespace Login
 
             int port = ConfigHelper.GetConfig<int>("LoginPort");
             if (port == 0) port = 8182;
+
+            int apiPort = ConfigHelper.GetConfig<int>("ApiPort");
+            if (apiPort == 0) apiPort = 5000;
 
             var networkManager = new NetworkManager();
             var tcpServer = new TcpServer();
@@ -34,6 +42,17 @@ namespace Login
             dbClient.OnConnected += session => Log.Info($"已连接到 DB 服务器 (Host:{dbHost} Port:{dbPort})");
             dbClient.OnDisconnected += (session, reason) => Log.Warning($"与 DB 服务器断开连接: {reason}");
             _ = dbClient.ConnectAsync();
+
+            // WebAPI for HTTP requests
+            var builder = WebApplication.CreateBuilder(args);
+            builder.Services.AddControllers();
+            builder.Services.AddSingleton<Login.Handlers.LoginHandler>();
+
+            var app = builder.Build();
+            app.MapControllers();
+
+            Log.Info($"ASP.NET API已启动，正在监听 HTTP 端口 {apiPort}");
+            _ = app.RunAsync($"http://*:{apiPort}");
 
             await Task.Delay(-1);
         }

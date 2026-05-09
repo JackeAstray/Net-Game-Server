@@ -3,6 +3,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Threading.Tasks;
 using Network;
+using Network.Tcp;
 
 namespace Login.Managers
 {
@@ -12,10 +13,10 @@ namespace Login.Managers
         public static SessionManager Instance => instance;
 
         // 保存已登录用户的Session信息: UserId -> ISession
-        private readonly ConcurrentDictionary<int, ISession> userSessions = new ConcurrentDictionary<int, ISession>();
+        private readonly ConcurrentDictionary<int, Network.ISession> userSessions = new ConcurrentDictionary<int, Network.ISession>();
 
         // 保存连接的Session对应的User信息: ISession -> UserId
-        private readonly ConcurrentDictionary<ISession, int> sessionUsers = new ConcurrentDictionary<ISession, int>();
+        private readonly ConcurrentDictionary<Network.ISession, int> sessionUsers = new ConcurrentDictionary<Network.ISession, int>();
 
         private SessionManager() { }
 
@@ -25,7 +26,7 @@ namespace Login.Managers
         /// <param name="user">登录的用户对象</param>
         /// <param name="session">用户的会话对象</param>
         /// <returns>返回一个表示操作是否成功的任务</returns>
-        public async Task<bool> OnUserLoginAsync(User user, ISession session)
+        public async Task<bool> OnUserLoginAsync(User user, Network.ISession session)
         {
             // 顶号处理
             if (userSessions.TryGetValue(user.Id, out var existingSession))
@@ -53,7 +54,7 @@ namespace Login.Managers
         /// 以便在用户短暂断线后重新连接时能够恢复状态。
         /// </summary>
         /// <param name="session">断开连接的会话对象</param>
-        public void OnSessionDisconnected(ISession session)
+        public void OnSessionDisconnected(Network.ISession session)
         {
             if (sessionUsers.TryGetValue(session, out var userId))
             {
@@ -84,7 +85,7 @@ namespace Login.Managers
         /// </summary>
         /// <param name="userId"></param>
         /// <returns></returns>
-        public ISession GetUserSession(int userId)
+        public Network.ISession GetUserSession(int userId)
         {
             userSessions.TryGetValue(userId, out var session);
             return session;

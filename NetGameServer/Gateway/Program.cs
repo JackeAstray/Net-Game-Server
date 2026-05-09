@@ -2,6 +2,10 @@
 using Network.Tcp;
 using Shared;
 
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
 namespace Gateway
 {
     internal class Program
@@ -13,6 +17,9 @@ namespace Gateway
 
             int port = ConfigHelper.GetConfig<int>("GatewayPort");
             if (port == 0) port = 8180;
+
+            int httpPort = ConfigHelper.GetConfig<int>("GatewayHttpPort");
+            if (httpPort == 0) httpPort = 8080;
 
             var networkManager = new NetworkManager();
             var tcpServer = new TcpServer();
@@ -89,7 +96,42 @@ namespace Gateway
             networkManager.RegisterServer("GatewayTcp", tcpServer);
 
             await networkManager.StartServerAsync("GatewayTcp", port);
-            Log.Info($"网关服务器已启动，监听端口: {port}");
+            Log.Info($"网关服务器已启动，监听 TCP 端口: {port}");
+
+            string loginHttpUrl = ConfigHelper.GetConfig<string>("LoginHttpUrl") ?? "http://127.0.0.1:5000";
+
+            var builder = WebApplication.CreateBuilder(args);
+            // Configure YARP mapping incoming /api/account to the Login server endpoints
+            builder.Services.AddReverseProxy()
+                .LoadFromMemory(
+                    new[] {
+                        new Yarp.ReverseProxy.Configuration.RouteConfig()
+                        {
+                            RouteId = "login_api_route",
+                            ClusterId = "login_api_cluster",
+                            Match = new Yarp.ReverseProxy.Configuration.RouteMatch
+                            {
+                                Path = "/api/{**catch-all}"
+                            }
+                        }
+                    },
+                    new[] {
+                        new Yarp.ReverseProxy.Configuration.ClusterConfig()
+                        {
+                            ClusterId = "login_api_cluster",
+                            Destinations = new Dictionary<string, Yarp.ReverseProxy.Configuration.DestinationConfig>(StringComparer.OrdinalIgnoreCase)
+                            {
+                                { "default", new Yarp.ReverseProxy.Configuration.DestinationConfig() { Address = loginHttpUrl } }
+                            }
+                        }
+                    }
+                );
+
+            var app = builder.Build();
+            app.MapReverseProxy();
+
+            Log.Info($"网关 HTTP API 反向代理已启动，监听端口: {httpPort} 并路由 /api 至 {loginHttpUrl}");
+            _ = app.RunAsync($"http://*:{httpPort}");
 
             await Task.Delay(-1);
         }

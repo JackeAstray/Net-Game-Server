@@ -9,11 +9,11 @@ namespace Gateway.Managers
         public static GatewaySessionManager Instance => instance;
 
         // Stores sessionId -> ISession mapping (so backend can tell Gateway which client to reply to)
-        private readonly ConcurrentDictionary<long, ISession> clientSessions = new();
+        private readonly ConcurrentDictionary<long, Network.ISession> clientSessions = new();
 
         private GatewaySessionManager() { }
 
-        public void AddSession(ISession session)
+        public void AddSession(Network.ISession session)
         {
             clientSessions[session.SessionId] = session;
         }
@@ -23,7 +23,7 @@ namespace Gateway.Managers
             clientSessions.TryRemove(sessionId, out _);
         }
 
-        public ISession? GetSession(long sessionId)
+        public Network.ISession? GetSession(long sessionId)
         {
             clientSessions.TryGetValue(sessionId, out var session);
             return session;
