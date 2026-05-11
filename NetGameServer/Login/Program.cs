@@ -1,6 +1,8 @@
 ﻿using Network;
 using Network.Tcp;
 using Shared;
+using Serilog;
+using Log = Shared.Log;
 
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
@@ -74,6 +76,7 @@ namespace Login
 
             // WebAPI for HTTP requests
             var builder = WebApplication.CreateBuilder(args);
+            builder.Host.UseSerilog(); // Default ASP.NET logging will route to Serilog
             builder.Services.AddControllers();
             builder.Services.AddEndpointsApiExplorer();
             builder.Services.AddSwaggerGen();

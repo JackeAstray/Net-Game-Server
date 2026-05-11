@@ -48,7 +48,7 @@ namespace Shared
                 rollOnFileSizeLimit: true));
 
             // 控制台 sink 仅输出 Error 及以上级别，并使用异步写入以降低阻塞风险
-            if (enableConsoleLog)
+            if (Log.enableConsoleLog)
             {
                 configuration.WriteTo.Async(a => a.Console(restrictedToMinimumLevel: LogEventLevel.Error));
             }

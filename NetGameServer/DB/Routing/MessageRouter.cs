@@ -15,11 +15,21 @@ namespace DB.Routing
             server.OnDataReceived += HandleRawData;
         }
 
+        /// <summary>
+        /// 注册消息处理函数：将消息 ID 与对应的处理函数关联起来。
+        /// </summary>
+        /// <param name="msgId">消息 ID。</param>
+        /// <param name="handler">处理函数。</param>
         public void RegisterHandler(int msgId, Func<ISession, ReadOnlyMemory<byte>, Task> handler)
         {
             handlers[msgId] = handler;
         }
 
+        /// <summary>
+        /// 处理原始数据：从数据中解析出消息 ID，并调用对应的处理函数。
+        /// </summary>
+        /// <param name="session">当前的网络会话。</param>
+        /// <param name="data">接收到的原始数据。</param>
         private async void HandleRawData(ISession session, ReadOnlyMemory<byte> data)
         {
             if (data.Length < 4) return;

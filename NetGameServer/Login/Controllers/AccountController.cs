@@ -102,8 +102,8 @@ namespace Login.Controllers
         /// </summary>
         /// <param name="request"></param>
         /// <returns></returns>
-        [HttpPost("online-stats")]
-        public async Task<IActionResult> OnlineStats([FromBody] OnlineStatsRequest request)
+        [HttpGet("online-stats")]
+        public async Task<IActionResult> OnlineStats([FromQuery] OnlineStatsRequest request)
         {
             var result = await loginHandler.HandleOnlineStatsRequestAsync(request);
             return Ok(result);

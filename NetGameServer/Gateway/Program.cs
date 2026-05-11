@@ -1,10 +1,13 @@
 ﻿using Network;
 using Network.Tcp;
 using Shared;
+using Serilog;
 
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+
+using Log = Shared.Log;
 
 namespace Gateway
 {
@@ -101,6 +104,7 @@ namespace Gateway
             string loginHttpUrl = ConfigHelper.GetConfig<string>("LoginHttpUrl") ?? "http://127.0.0.1:30003";
 
             var builder = WebApplication.CreateBuilder(args);
+            builder.Host.UseSerilog(); // Default ASP.NET logging will route to Serilog
             // Configure YARP mapping incoming /api/account to the Login server endpoints
             builder.Services.AddReverseProxy()
                 .LoadFromMemory(
