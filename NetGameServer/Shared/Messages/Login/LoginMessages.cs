@@ -149,4 +149,41 @@ namespace Shared.Messages.Login
         public string Reason { get; set; }
         public DateTime Time { get; set; }
     }
+
+    /// <summary>
+    /// 表示账户查询请求信息。
+    /// </summary>
+    public class AccountQueryRequest
+    {
+        public string Account { get; set; }
+    }
+
+    /// <summary>
+    /// 表示账户查询操作的结果信息。
+    /// </summary>
+    public class AccountQueryResponse
+    {
+        public bool Exists { get; set; }
+        public bool IsOnline { get; set; }
+        public bool IsLocked { get; set; }
+        public bool IsAdmin { get; set; }
+        public string Message { get; set; }
+    }
+
+    /// <summary>
+    /// 表示在线统计请求信息。
+    /// </summary>
+    public class OnlineStatsRequest
+    {
+    }
+
+    /// <summary>
+    /// 表示在线统计操作的结果信息。
+    /// </summary>
+    public class OnlineStatsResponse
+    {
+        public int OnlineCount { get; set; }
+        public int OfflineCount { get; set; }
+        public int TotalCount { get; set; }
+    }
 }

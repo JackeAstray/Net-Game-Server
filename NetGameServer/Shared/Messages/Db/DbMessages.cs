@@ -37,4 +37,29 @@ namespace Shared.Messages.Db
         public bool Success { get; set; }
         public string Message { get; set; }
     }
+
+    public class AccountQueryRequest
+    {
+        public string Account { get; set; }
+    }
+
+    public class AccountQueryResponse
+    {
+        public bool Exists { get; set; }
+        public bool IsOnline { get; set; }
+        public bool IsLocked { get; set; }
+        public bool IsAdmin { get; set; }
+        public string Message { get; set; }
+    }
+
+    public class OnlineStatsRequest
+    {
+    }
+
+    public class OnlineStatsResponse
+    {
+        public int OnlineCount { get; set; }
+        public int OfflineCount { get; set; }
+        public int TotalCount { get; set; }
+    }
 }

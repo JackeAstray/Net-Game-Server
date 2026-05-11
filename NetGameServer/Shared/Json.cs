@@ -18,6 +18,11 @@ namespace Shared
             return JsonConvert.SerializeObject(obj, formatting);
         }
 
+        public static byte[] SerializeToUtf8Bytes(object obj)
+        {
+            return System.Text.Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(obj));
+        }
+
         /// <summary>
         /// 将指定的 JSON 字符串反序列化为类型为 T 的对象。
         /// </summary>
@@ -27,6 +32,11 @@ namespace Shared
         public static T? Deserialize<T>(string value)
         {
             return JsonConvert.DeserializeObject<T>(value);
+        }
+
+        public static T? DeserializeFromUtf8Bytes<T>(System.ReadOnlySpan<byte> utf8Json)
+        {
+            return JsonConvert.DeserializeObject<T>(System.Text.Encoding.UTF8.GetString(utf8Json));
         }
     }
 }

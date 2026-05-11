@@ -81,13 +81,31 @@ namespace Login.Controllers
         [HttpPost("find-password")]
         public async Task<IActionResult> FindPassword([FromBody] FindPasswordRequest request)
         {
-            // 需要从LoginHandler注入或调用FindPassword逻辑
-            // 现在模仿以匹配集成
-            var result = new FindPasswordResponse
-            {
-                Success = true,
-                Message = "找回密码请求已收到"
-            };
+            var result = await loginHandler.HandleFindPasswordRequestAsync(request);
+            return Ok(result);
+        }
+
+        /// <summary>
+        /// 查询账户信息接口
+        /// </summary>
+        /// <param name="request"></param>
+        /// <returns></returns>
+        [HttpPost("query-account")]
+        public async Task<IActionResult> QueryAccount([FromBody] AccountQueryRequest request)
+        {
+            var result = await loginHandler.HandleAccountQueryRequestAsync(request);
+            return Ok(result);
+        }
+
+        /// <summary>
+        /// 查询在线统计接口
+        /// </summary>
+        /// <param name="request"></param>
+        /// <returns></returns>
+        [HttpPost("online-stats")]
+        public async Task<IActionResult> OnlineStats([FromBody] OnlineStatsRequest request)
+        {
+            var result = await loginHandler.HandleOnlineStatsRequestAsync(request);
             return Ok(result);
         }
     }

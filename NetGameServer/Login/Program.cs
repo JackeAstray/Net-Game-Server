@@ -75,6 +75,9 @@ namespace Login
             // WebAPI for HTTP requests
             var builder = WebApplication.CreateBuilder(args);
             builder.Services.AddControllers();
+            builder.Services.AddEndpointsApiExplorer();
+            builder.Services.AddSwaggerGen();
+
             builder.Services.AddSingleton<TcpClientWrapper>(dbClient);
             builder.Services.AddSingleton<Login.Handlers.LoginHandler>();
 
@@ -83,6 +86,21 @@ namespace Login
             Log.Info("Redis 初始化成功。");
 
             var app = builder.Build();
+
+            //// 配置HTTP请求管道
+            //if (app.Environment.IsDevelopment() || true) // Enable swagger in all environments for testing
+            //{
+            app.UseSwagger(options =>
+            {
+                options.RouteTemplate = "api/swagger/{documentName}/swagger.json";
+            });
+            app.UseSwaggerUI(options =>
+            {
+                options.RoutePrefix = "api/swagger";
+                options.SwaggerEndpoint("/api/swagger/v1/swagger.json", "Login API V1");
+            });
+            //}
+
             app.MapControllers();
 
             Log.Info($"ASP.NET API已启动，正在监听 HTTP 端口 {apiPort}");

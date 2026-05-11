@@ -112,13 +112,15 @@ namespace Gateway
                             Match = new Yarp.ReverseProxy.Configuration.RouteMatch
                             {
                                 Path = "/api/{**catch-all}"
-                            },
-                            Transforms = new[]
+                            }
+                        },
+                        new Yarp.ReverseProxy.Configuration.RouteConfig()
+                        {
+                            RouteId = "login_swagger_route",
+                            ClusterId = "login_api_cluster",
+                            Match = new Yarp.ReverseProxy.Configuration.RouteMatch
                             {
-                                new Dictionary<string, string>
-                                {
-                                    { "PathRemovePrefix", "/api" }
-                                }
+                                Path = "/swagger/{**catch-all}"
                             }
                         }
                     },

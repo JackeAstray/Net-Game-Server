@@ -20,14 +20,20 @@ namespace DB.Handlers
         /// </summary>
         /// <param name="session">当前的网络会话。</param>
         /// <param name="request">获取最大UID的请求数据。</param>
-        public static async Task HandleGetMaxUidRequest(ISession session, GetMaxUidRequest request)
+        public static async Task HandleGetMaxUidRequest(ISession session, GetMaxUidRequest? request)
         {
+            if (request == null)
+            {
+                Log.Warning("收到无效的 GetMaxUidRequest，数据无法被反序列化。");
+                return;
+            }
+
             try
             {
                 // 从服务提供程序获取 IServiceScopeFactory，以创建依赖注入作用域
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
                 using var scope = factory.CreateScope();
-                
+
                 // 从当前作用域解析数据库上下文
                 var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
 
@@ -46,13 +52,13 @@ namespace DB.Handlers
 
                 // 将响应模型序列化为JSON UTF-8字节数组
                 byte[] data = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(response);
-                
+
                 // 创建一个足够容纳协议头(4字节)和数据长度的字节数组
                 byte[] packet = new byte[data.Length + 4];
-                
+
                 // 写入消息ID（此处1000为模拟消息ID，使用小端序列化封装在封包前4个字节）
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1000); 
-                
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1000);
+
                 // 将序列化后的数据复制到数据包中（从第4字节后开始）
                 data.CopyTo(packet.AsSpan(4));
 
@@ -65,8 +71,20 @@ namespace DB.Handlers
             }
         }
 
-        public static async Task HandleLoginVerifyRequest(ISession session, LoginVerifyRequest request)
+        /// <summary>
+        /// 处理登录验证请求，验证账户和密码是否匹配，并返回验证结果给请求方。
+        /// </summary>
+        /// <param name="session">当前的网络会话。</param>
+        /// <param name="request">登录验证请求数据。</param>
+        /// <returns></returns>
+        public static async Task HandleLoginVerifyRequest(ISession session, LoginVerifyRequest? request)
         {
+            if (request == null)
+            {
+                Log.Warning("收到无效的 LoginVerifyRequest，数据无法被反序列化。");
+                return;
+            }
+
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -74,6 +92,9 @@ namespace DB.Handlers
                 var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
 
                 var user = await dbContext.Users.FirstOrDefaultAsync(u => u.Account == request.Account && u.Password == request.Password);
+
+                //string hashedPassword = Program.ComputeMd5Hash(request.Password);
+                //var user = await dbContext.Users.FirstOrDefaultAsync(u => u.Account == request.Account && u.Password == hashedPassword);
 
                 var response = new LoginVerifyResponse
                 {
@@ -84,7 +105,7 @@ namespace DB.Handlers
 
                 byte[] data = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(response);
                 byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1001); 
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1001);
                 data.CopyTo(packet.AsSpan(4));
                 session.Send(packet);
             }
@@ -94,8 +115,20 @@ namespace DB.Handlers
             }
         }
 
-        public static async Task HandleRegisterVerifyRequest(ISession session, RegisterVerifyRequest request)
+        /// <summary>
+        /// 处理注册验证请求，检查账户是否已存在，如果不存在则创建新用户记录，并返回注册结果给请求方。
+        /// </summary>
+        /// <param name="session">当前的网络会话。</param>
+        /// <param name="request">注册验证请求数据</param>
+        /// <returns></returns>
+        public static async Task HandleRegisterVerifyRequest(ISession session, RegisterVerifyRequest? request)
         {
+            if (request == null)
+            {
+                Log.Warning("收到无效的 RegisterVerifyRequest，数据无法被反序列化。");
+                return;
+            }
+
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -130,13 +163,105 @@ namespace DB.Handlers
 
                 byte[] data = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(response);
                 byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1002); 
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1002);
                 data.CopyTo(packet.AsSpan(4));
                 session.Send(packet);
             }
             catch (Exception ex)
             {
                 Log.Error($"注册账号异常: {ex}");
+            }
+        }
+
+        /// <summary>
+        /// 处理账户查询请求，查询账户是否存在以及相关状态信息。
+        /// </summary>
+        /// <param name="session">当前的网络会话。</param>
+        /// <param name="request">账户查询请求数据。</param>
+        /// <returns></returns>
+        public static async Task HandleAccountQueryRequest(ISession session, AccountQueryRequest? request)
+        {
+            if (request == null)
+            {
+                Log.Warning("收到无效的 AccountQueryRequest，数据无法被反序列化。");
+                return;
+            }
+
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+
+                var user = await dbContext.Users.FirstOrDefaultAsync(u => u.Account == request.Account);
+
+                var response = new AccountQueryResponse();
+                if (user != null)
+                {
+                    response.Exists = true;
+                    response.IsOnline = user.IsLoggedIn;
+                    response.IsLocked = user.IsLocked;
+                    response.IsAdmin = user.IsAdmin;
+                    response.Message = "查询成功";
+                }
+                else
+                {
+                    response.Exists = false;
+                    response.Message = "账户不存在";
+                }
+
+                byte[] data = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(response);
+                byte[] packet = new byte[data.Length + 4];
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1003);
+                data.CopyTo(packet.AsSpan(4));
+                session.Send(packet);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"查询账户异常: {ex}");
+            }
+        }
+
+        /// <summary>
+        /// 处理在线统计请求，查询当前在线用户数量、离线用户数量以及总用户数量，并返回给请求方。
+        /// </summary>
+        /// <param name="session">当前的网络会话。</param>
+        /// <param name="request">在线统计请求数据。</param>
+        /// <returns></returns>
+        public static async Task HandleOnlineStatsRequest(ISession session, OnlineStatsRequest? request)
+        {
+            if (request == null)
+            {
+                Log.Warning("收到无效的 OnlineStatsRequest，数据无法被反序列化。");
+                return;
+            }
+
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+
+                int totalCount = await dbContext.Users.CountAsync();
+                int onlineCount = await dbContext.Users.CountAsync(u => u.IsLoggedIn);
+                int offlineCount = totalCount - onlineCount;
+
+                var response = new OnlineStatsResponse
+                {
+                    OnlineCount = onlineCount,
+                    OfflineCount = offlineCount,
+                    TotalCount = totalCount
+                };
+
+                byte[] data = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(response);
+                byte[] packet = new byte[data.Length + 4];
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1004);
+                data.CopyTo(packet.AsSpan(4));
+                session.Send(packet);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"查询在线统计异常: {ex}");
             }
         }
     }
