@@ -13,14 +13,14 @@ namespace Login
     {
         static async Task Main(string[] args)
         {
-            Log.Configure(true, "Login.log");
+            Log.Configure(true, "Logs/Login.log");
             Log.Info("登录服务器正在启动...");
 
             int port = ConfigHelper.GetConfig<int>("LoginPort");
-            if (port == 0) port = 8182;
+            if (port == 0) port = 30002;
 
             int apiPort = ConfigHelper.GetConfig<int>("ApiPort");
-            if (apiPort == 0) apiPort = 5000;
+            if (apiPort == 0) apiPort = 30003;
 
             var networkManager = new NetworkManager();
             var tcpServer = new TcpServer();
@@ -36,7 +36,7 @@ namespace Login
 
             // 连接 DB
             int dbPort = ConfigHelper.GetConfig<int>("DBPort");
-            if (dbPort == 0) dbPort = 8183;
+            if (dbPort == 0) dbPort = 30005;
             var dbHost = ConfigHelper.GetConfig<string>("DBHost") ?? "127.0.0.1";
             var dbClient = new TcpClientWrapper(dbHost, dbPort);
             dbClient.OnConnected += session =>
@@ -77,6 +77,10 @@ namespace Login
             builder.Services.AddControllers();
             builder.Services.AddSingleton<TcpClientWrapper>(dbClient);
             builder.Services.AddSingleton<Login.Handlers.LoginHandler>();
+
+            string redisConnStr = ConfigHelper.GetConfig<string>("RedisConnectionString") ?? "127.0.0.1:6379";
+            Shared.RedisHelper.Initialize(redisConnStr);
+            Log.Info("Redis 初始化成功。");
 
             var app = builder.Build();
             app.MapControllers();

@@ -184,8 +184,9 @@ namespace Login.Handlers
             // Generate a 6-digit random code
             string resetCode = new Random().Next(100000, 999999).ToString();
 
-            // TODO: Save the generated reset code to Cache/Redis or Database along with request.Account and expiry time
-            // e.g. CacheManager.Set($"PasswordReset_Code_{request.Account}", resetCode, TimeSpan.FromMinutes(10));
+            // Save the generated reset code to Redis along with request.Account and expiry time
+            string redisKey = $"PasswordReset_Code_{request.Account}";
+            await Shared.RedisHelper.SetAsync(redisKey, resetCode, TimeSpan.FromMinutes(10));
 
             bool isSuccess = await SendEmailAsync(request.Email, "重置密码", $"您好，\n\n您的密码重置验证码为: {resetCode}\n\n该验证码将在 10 分钟后失效，请勿将验证码泄露给他人。");
 

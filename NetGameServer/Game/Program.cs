@@ -8,11 +8,11 @@ namespace Game
     {
         static async Task Main(string[] args)
         {
-            Log.Configure(true, "Game.log");
+            Log.Configure(true, "Logs/Game.log");
             Log.Info("游戏服务器正在启动...");
 
             int port = ConfigHelper.GetConfig<int>("GamePort");
-            if (port == 0) port = 8181;
+            if (port == 0) port = 30004;
 
             var networkManager = new NetworkManager();
             var tcpServer = new TcpServer();
@@ -28,7 +28,7 @@ namespace Game
 
             // 连接 DB
             int dbPort = ConfigHelper.GetConfig<int>("DBPort");
-            if (dbPort == 0) dbPort = 8183;
+            if (dbPort == 0) dbPort = 30005;
             var dbHost = ConfigHelper.GetConfig<string>("DBHost") ?? "127.0.0.1";
             var dbClient = new TcpClientWrapper(dbHost, dbPort);
             dbClient.OnConnected += session => Log.Info($"已连接到 DB 服务器 (Host:{dbHost} Port:{dbPort})");
