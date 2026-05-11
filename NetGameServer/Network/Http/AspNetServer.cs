@@ -51,39 +51,47 @@ public class AspNetServer : INetworkServer
     /// <returns></returns>
     public async Task StartAsync(int port)
     {
-        host = Host.CreateDefaultBuilder()
-            .ConfigureWebHostDefaults(webBuilder =>
-            {
-                webBuilder.UseUrls($"http://*:{port}");
-
-                webBuilder.ConfigureServices(services =>
+        try
+        {
+            host = Host.CreateDefaultBuilder()
+                .ConfigureWebHostDefaults(webBuilder =>
                 {
-                    // 默认开启控制器的拦截
-                    services.AddControllers();
-                    configureServices?.Invoke(services);
-                });
+                    webBuilder.UseUrls($"http://*:{port}");
 
-                webBuilder.Configure(app =>
-                {
-                    app.UseRouting();
-
-                    // 让外部能够自由决定是否加入鉴权、跨域等中间件
-                    configureApp?.Invoke(app);
-
-                    app.UseEndpoints(endpoints =>
+                    webBuilder.ConfigureServices(services =>
                     {
-                        endpoints.MapControllers();
+                        // 默认开启控制器的拦截
+                        services.AddControllers();
+                        configureServices?.Invoke(services);
+                    });
 
-                        endpoints.MapGet("/", async context =>
+                    webBuilder.Configure(app =>
+                    {
+                        app.UseRouting();
+
+                        // 让外部能够自由决定是否加入鉴权、跨域等中间件
+                        configureApp?.Invoke(app);
+
+                        app.UseEndpoints(endpoints =>
                         {
-                            await context.Response.WriteAsync("游戏服务器 HTTP API 正在运行。");
+                            endpoints.MapControllers();
+
+                            endpoints.MapGet("/", async context =>
+                            {
+                                await context.Response.WriteAsync("游戏服务器 HTTP API 正在运行。");
+                            });
                         });
                     });
-                });
-            })
-            .Build();
+                })
+                .Build();
 
-        await host.StartAsync();
+            await host.StartAsync();
+        }
+        catch (Exception ex)
+        {
+            Shared.Log.Error($"[AspNetServer] 启动失败: {ex.Message}");
+            throw;
+        }
     }
 
     /// <summary>

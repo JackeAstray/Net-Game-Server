@@ -28,8 +28,17 @@ public class TcpSession : ISession
     {
         if (IsConnected)
         {
-            tcpClient.GetStream().Write(data.Span);
-            LastActivityTime = DateTime.UtcNow;
+            try
+            {
+                tcpClient.GetStream().Write(data.Span);
+                LastActivityTime = DateTime.UtcNow;
+            }
+            catch (Exception ex)
+            {
+                // 日志记录发送异常
+                Shared.Log.Warning($"TcpSession Send Error: {ex.Message}");
+                Close();
+            }
         }
     }
 

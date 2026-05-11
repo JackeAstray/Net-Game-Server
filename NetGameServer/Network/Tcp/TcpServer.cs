@@ -21,11 +21,19 @@ public class TcpServer : INetworkServer
 
     public Task StartAsync(int port)
     {
-        tcpListener = new TcpListener(IPAddress.Any, port);
-        tcpListener.Start();
+        try
+        {
+            tcpListener = new TcpListener(IPAddress.Any, port);
+            tcpListener.Start();
 
-        // 启动接受客户端连接的后台循环（不等待）
-        _ = AcceptClientsAsync();
+            // 启动接受客户端连接的后台循环（不等待）
+            _ = AcceptClientsAsync();
+        }
+        catch (Exception ex)
+        {
+            Shared.Log.Error($"[TcpServer] 启动失败: {ex.Message}");
+            throw;
+        }
 
         return Task.CompletedTask;
     }

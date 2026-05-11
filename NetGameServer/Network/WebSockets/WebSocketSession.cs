@@ -34,9 +34,11 @@ public class WebSocketSession : ISession
                 await webSocket.SendAsync(data, WebSocketMessageType.Binary, true, CancellationToken.None);
                 LastActivityTime = DateTime.UtcNow;
             }
-            catch
+            catch (Exception ex)
             {
                 // 日志记录发送异常
+                Shared.Log.Warning($"WebSocketSession Send Error: {ex.Message}");
+                Close();
             }
         }
     }

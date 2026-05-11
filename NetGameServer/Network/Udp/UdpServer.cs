@@ -17,9 +17,17 @@ public class UdpServer : INetworkServer
 
     public Task StartAsync(int port)
     {
-        udpClient = new UdpClient(port);
-        // 启动后台接收循环（不等待），用于持续接收传入的数据报
-        _ = ReceiveLoopAsync();
+        try
+        {
+            udpClient = new UdpClient(port);
+            // 启动后台接收循环（不等待），用于持续接收传入的数据报
+            _ = ReceiveLoopAsync();
+        }
+        catch (Exception ex)
+        {
+            Shared.Log.Error($"[UdpServer] 启动失败: {ex.Message}");
+            throw;
+        }
         return Task.CompletedTask;
     }
 

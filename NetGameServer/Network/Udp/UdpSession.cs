@@ -28,8 +28,16 @@ public class UdpSession : ISession
 
     public void Send(ReadOnlyMemory<byte> data)
     {
-        udpClient.Send(data.Span.ToArray(), data.Length, remoteEndPoint);
-        LastActivityTime = DateTime.UtcNow;
+        try
+        {
+            udpClient.Send(data.Span.ToArray(), data.Length, remoteEndPoint);
+            LastActivityTime = DateTime.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            // 对于UDP发送异常只做日志记录，不用断开
+             Shared.Log.Warning($"UdpSession Send Error: {ex.Message}");
+        }
     }
 
     public void Close()

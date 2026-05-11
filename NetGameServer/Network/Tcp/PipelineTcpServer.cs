@@ -24,14 +24,22 @@ public class PipelineTcpServer : INetworkServer
 
     public Task StartAsync(int port)
     {
-        this.port = port;
-        listenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-        listenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-        listenSocket.Bind(new IPEndPoint(IPAddress.Any, port));
-        listenSocket.Listen(100);
+        try
+        {
+            this.port = port;
+            listenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            listenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            listenSocket.Bind(new IPEndPoint(IPAddress.Any, port));
+            listenSocket.Listen(100);
 
-        Shared.Log.Info($"[PipelineTcpServer] Listening on port {port}...");
-        _ = AcceptLoopAsync();
+            Shared.Log.Info($"[PipelineTcpServer] Listening on port {port}...");
+            _ = AcceptLoopAsync();
+        }
+        catch (Exception ex)
+        {
+            Shared.Log.Error($"[PipelineTcpServer] 启动失败: {ex.Message}");
+            throw;
+        }
         return Task.CompletedTask;
     }
 

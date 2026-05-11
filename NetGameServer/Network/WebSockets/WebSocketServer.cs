@@ -18,14 +18,22 @@ public class WebSocketServer : INetworkServer
 
     public Task StartAsync(int port)
     {
-        listener = new HttpListener();
-        // 注意：在Windows下绑定所有IP（如+或*）可能需要管理员权限或者netsh配置，这里默认使用localhost和127.0.0.1兼容开发
-        listener.Prefixes.Add($"http://localhost:{port}/");
-        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
-        listener.Start();
+        try
+        {
+            listener = new HttpListener();
+            // 注意：在Windows下绑定所有IP（如+或*）可能需要管理员权限或者netsh配置，这里默认使用localhost和127.0.0.1兼容开发
+            listener.Prefixes.Add($"http://localhost:{port}/");
+            listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+            listener.Start();
 
-        cts = new CancellationTokenSource();
-        _ = AcceptLoopAsync(cts.Token);
+            cts = new CancellationTokenSource();
+            _ = AcceptLoopAsync(cts.Token);
+        }
+        catch (Exception ex)
+        {
+            Shared.Log.Error($"[WebSocketServer] 启动失败: {ex.Message}");
+            throw;
+        }
 
         return Task.CompletedTask;
     }
