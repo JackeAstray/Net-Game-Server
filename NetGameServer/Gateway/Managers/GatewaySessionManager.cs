@@ -28,5 +28,13 @@ namespace Gateway.Managers
             clientSessions.TryGetValue(sessionId, out var session);
             return session;
         }
+
+        public void Broadcast(byte[] data)
+        {
+            foreach (var session in clientSessions.Values)
+            {
+                session.Send(data);
+            }
+        }
     }
 }

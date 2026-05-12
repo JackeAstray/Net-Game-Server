@@ -60,6 +60,23 @@ namespace Shared.Messages.Login
     }
 
     /// <summary>
+    /// 表示用户注销操作的请求信息。包含用户标识以便服务器识别要注销的用户。
+    /// </summary>
+    public class LogoutRequest
+    {
+        public int UserId { get; set; }
+    }
+
+    /// <summary>
+    /// 表示用户注销操作的结果信息。
+    /// </summary>
+    public class LogoutResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; }
+    }
+
+    /// <summary>
     /// 表示更改密码操作的请求信息。
     /// </summary>
     /// <remarks>

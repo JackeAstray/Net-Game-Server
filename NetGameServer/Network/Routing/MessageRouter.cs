@@ -31,6 +31,28 @@ public class MessageRouter
     }
 
     /// <summary>
+    /// 手动分发消息
+    /// </summary>
+    public void RouteMessage(ISession session, int msgId, ReadOnlyMemory<byte> payload)
+    {
+        if (handlers.TryGetValue(msgId, out var handler))
+        {
+            try
+            {
+                handler.Invoke(session, payload);
+            }
+            catch (Exception ex)
+            {
+                Shared.Log.Error($"[MessageRouter] 处理消息 {msgId} 时抛出异常: {ex}");
+            }
+        }
+        else
+        {
+            Shared.Log.Warning($"[MessageRouter] 未找到消息类型的处理器: {msgId}");
+        }
+    }
+
+    /// <summary>
     /// 注册一个针对特定消息ID的处理逻辑
     /// </summary>
     public void RegisterHandler(int msgId, MessageHandler handler)

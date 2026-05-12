@@ -1,0 +1,49 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Text;
+
+namespace Shared.Messages
+{
+    /// <summary>
+    /// 定义系统中所有消息的唯一标识符。
+    /// 每个消息类型都应该在此类中分配一个唯一的整数 ID，以便在网络通信中正确识别和处理消息。
+    /// 消息 ID 的范围可以根据不同的模块或功能进行划分，例如：
+    /// - 1000-1999: DB 服务器内部服务通信
+    /// - 10000-19999: 登录服务器客户端通信（网关转发过来）
+    /// - 20000-99999: 游戏服务器客户端通信（网关转发过来）
+    /// </summary>
+    public static class MessageIds
+    {
+        // === DB 服务器内部服务通信 (1000-1999) ===
+        public const int DbGetMaxUidReq = 1000;
+        public const int DbLoginVerifyReq = 1001;
+        public const int DbRegisterVerifyReq = 1002;
+        public const int DbAccountQueryReq = 1003;
+        public const int DbOnlineStatsReq = 1004;
+
+        // === 登录服务器客户端通信 (10000-19999 网关转发过来) ===
+        public const int LoginReq = 10001;
+        public const int LoginRes = 10002;
+
+        public const int RegisterReq = 10003;
+        public const int RegisterRes = 10004;
+
+        public const int LogoutReq = 10005;
+        public const int LogoutRes = 10006;
+
+        public const int ResetPasswordReq = 10007;
+        public const int ResetPasswordRes = 10008;
+
+        public const int UpdateNicknameReq = 10009;
+        public const int UpdateNicknameRes = 10010;
+
+        // === 游戏服务器客户端通信 (20000-99999 网关转发过来) ===
+        // public const int PlayerMoveReq = 20001;
+        // ...
+
+        // === 聊天功能通信 ===
+        public const int ChatMessageReq = 30001;
+        public const int ChatMessageRes = 30002;
+        public const int ChatMessageNotif = 30003;
+    }
+}

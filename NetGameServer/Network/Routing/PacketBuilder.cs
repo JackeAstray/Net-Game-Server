@@ -33,4 +33,20 @@ public static class PacketBuilder
 
         return buffer;
     }
+
+    /// <summary>
+    /// 构建包含 SessionId 路由头的数据包： SessionId(8) + MsgId(4) + Payload(N)
+    /// 返回组装好的字节数组
+    /// </summary>
+    public static byte[] BuildSessionWrapperPacket(long sessionId, int msgId, ReadOnlySpan<byte> payload)
+    {
+        int length = 8 + 4 + payload.Length;
+        byte[] buffer = new byte[length];
+
+        BinaryPrimitives.WriteInt64LittleEndian(buffer.AsSpan(0, 8), sessionId);
+        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(8, 4), msgId);
+        payload.CopyTo(buffer.AsSpan(12));
+
+        return buffer;
+    }
 }
