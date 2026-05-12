@@ -7,17 +7,32 @@ using Network.Tcp;
 
 namespace Login.Managers
 {
+    /// <summary>
+    /// 会话管理器（单例）。
+    /// 负责维护在线用户的会话映射关系，处理登录时的顶号逻辑以及会话断开后的延迟离线处理。
+    /// </summary>
     public class SessionManager
     {
+        // 单例实例
         private static readonly SessionManager instance = new SessionManager();
+        /// <summary>
+        /// 获取 SessionManager 单例对象。
+        /// </summary>
         public static SessionManager Instance => instance;
 
-        // 保存已登录用户的Session信息: UserId -> ISession
+        /// <summary>
+        /// 保存已登录用户的会话信息：UserId -> ISession。
+        /// 用于根据用户 Id 查找其当前在线会话并进行消息发送或断开处理。
+        /// </summary>
         private readonly ConcurrentDictionary<int, Network.ISession> userSessions = new ConcurrentDictionary<int, Network.ISession>();
 
-        // 保存连接的Session对应的User信息: ISession -> UserId
+        /// <summary>
+        /// 保存会话对应的用户 Id 映射：ISession -> UserId。
+        /// 用于在会话断开时查找对应的用户并执行离线流程。
+        /// </summary>
         private readonly ConcurrentDictionary<Network.ISession, int> sessionUsers = new ConcurrentDictionary<Network.ISession, int>();
 
+        // 私有构造函数，确保单例
         private SessionManager() { }
 
         /// <summary>
