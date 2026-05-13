@@ -14,8 +14,11 @@ namespace Battle
         {
             int port = ConfigHelper.GetConfig<int>("BattlePort") == 0 ? 30007 : ConfigHelper.GetConfig<int>("BattlePort");
 
-            var roomHandler = new Battle.Handlers.RoomHandler();
-            _handlers = Battle.Handlers.MessageRouter.BuildHandlers(roomHandler);
+            var sceneManager = new Battle.Handlers.SceneManager();
+            var entitySyncHandler = new Battle.Handlers.EntitySyncHandler(sceneManager);
+            var roomHandler = new Battle.Handlers.RoomHandler(sceneManager, entitySyncHandler);
+
+            _handlers = Battle.Handlers.MessageRouter.BuildHandlers(roomHandler, entitySyncHandler);
 
             var networkManager = new NetworkManager();
             var tcpServer = new TcpServer();

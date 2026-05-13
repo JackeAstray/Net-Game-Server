@@ -51,6 +51,12 @@ namespace Shared.Messages
         public const int BattleJoinRes = 40002;
         public const int BattleFrameSync = 40003;
 
+        // 实体相关同步与广播 (40100-40199)
+        public const int EntitySyncReq = 40101;                // 客户端上报自身状态
+        public const int EntityEnterViewNotif = 40102;         // 广播：实体进入视野
+        public const int EntityLeaveViewNotif = 40103;         // 广播：实体离开视野
+        public const int EntityStateUpdateNotif = 40104;       // 广播：实体状态更新
+
         // === 聊天功能通信 ===
         public const int ChatMessageReq = 30001;
         public const int ChatMessageRes = 30002;

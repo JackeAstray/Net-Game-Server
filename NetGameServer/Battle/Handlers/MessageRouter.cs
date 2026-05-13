@@ -8,7 +8,7 @@ namespace Battle.Handlers
 {
     public static class MessageRouter
     {
-        public static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>> BuildHandlers(RoomHandler roomHandler)
+        public static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>> BuildHandlers(RoomHandler roomHandler, EntitySyncHandler entitySyncHandler)
         {
             var handlers = new Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>();
 
@@ -17,8 +17,17 @@ namespace Battle.Handlers
                 var req = Shared.Json.DeserializeFromUtf8Bytes<BattleJoinRequest>(payload.Span);
                 if (req != null)
                 {
-                    var res = await roomHandler.HandleJoinRequestAsync(req);
+                    var res = await roomHandler.HandleJoinRequestAsync(clientSessionId, req, session);
                     SendToGateway(session, clientSessionId, MessageIds.BattleJoinRes, res);
+                }
+            };
+
+            handlers[MessageIds.EntitySyncReq] = async (payload, session, clientSessionId) => 
+            {
+                var req = Shared.Json.DeserializeFromUtf8Bytes<EntitySyncRequest>(payload.Span);
+                if (req != null)
+                {
+                    await entitySyncHandler.HandleEntitySyncRequestAsync(clientSessionId, req, session);
                 }
             };
 
