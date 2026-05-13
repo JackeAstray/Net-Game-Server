@@ -46,6 +46,7 @@ namespace Login
             // 初始化与 DB 的连接（用于 UID 同步或持久化操作）
             var dbClient = ConnectToDatabase();
             var loginHandler = new Login.Handlers.LoginHandler(dbClient);
+            Login.Managers.SessionManager.Instance.OnUserOfflineAction = (userId) => { _ = loginHandler.HandleOfflineAsync(userId); };
             // 构建消息处理器字典，按 MsgId 分发
             var messageHandlers = Login.Handlers.MessageRouter.BuildHandlers(loginHandler);
 

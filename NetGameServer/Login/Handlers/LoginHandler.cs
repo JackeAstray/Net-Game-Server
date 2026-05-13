@@ -210,8 +210,33 @@ namespace Login.Handlers
                 OfflineCount = verifyResp?.OfflineCount ?? 0,
                 TotalCount = verifyResp?.TotalCount ?? 0
             };
-            
+
             return response;
+        }
+
+        /// <summary>
+        /// 异步处理玩家主动登出请求
+        /// </summary>
+        public async Task<LogoutResponse> HandleLogoutRequestAsync(LogoutRequest request)
+        {
+            Log.Info($"收到用户的离开请求 userId: {request.UserId}");
+            Managers.SessionManager.Instance.ForceLogout(request.UserId);
+
+            return new LogoutResponse { Success = true, Message = "登出成功" };
+        }
+
+        /// <summary>
+        /// 异步通知 DB 服玩家已下线
+        /// </summary>
+        public async Task HandleOfflineAsync(int userId)
+        {
+            Log.Info($"通知 DB 服务用户 {userId} 已下线");
+            var req = new Shared.Messages.Db.UpdateOnlineStateRequest
+            {
+                UserId = userId,
+                IsOnline = false
+            };
+            await CallDbAsync<Shared.Messages.Db.UpdateOnlineStateResponse>(1005, req);
         }
 
         /// <summary>
@@ -226,7 +251,7 @@ namespace Login.Handlers
         private async Task<T> CallDbAsync<T>(int msgId, object requestData) where T : class
         {
             var tcs = new TaskCompletionSource<T>();
-            byte[] data = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(requestData);
+            byte[] data = Shared.Json.SerializeToUtf8Bytes(requestData);
             byte[] packet = new byte[data.Length + 4];
             System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), msgId);
             data.CopyTo(packet.AsSpan(4));
@@ -242,7 +267,7 @@ namespace Login.Handlers
                         dbClient.OnDataReceived -= onDataReceived;
                         try
                         {
-                            var result = System.Text.Json.JsonSerializer.Deserialize<T>(responseData.Span.Slice(4));
+                            var result = Shared.Json.DeserializeFromUtf8Bytes<T>(responseData.Span.Slice(4).ToArray());
                             tcs.TrySetResult(result);
                         }
                         catch (Exception ex)

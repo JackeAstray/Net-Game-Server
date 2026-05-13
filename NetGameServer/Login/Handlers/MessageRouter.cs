@@ -46,14 +46,17 @@ namespace Login.Handlers
                 }
             };
 
-            // 处理登出请求（此处为示例直接返回成功）
+            // 处理登出请求
             handlers[MessageIds.LogoutReq] = async (payload, session, clientSessionId) =>
             {
                 var req = Shared.Json.DeserializeFromUtf8Bytes<LogoutRequest>(payload.Span);
                 if (req != null)
                 {
-                    var res = new LogoutResponse { Success = true, Message = "登出成功" };
+                    var res = await loginHandler.HandleLogoutRequestAsync(req);
                     SendToGateway(session, clientSessionId, MessageIds.LogoutRes, res);
+
+                    // 客户端主动登出了，通知 Gateway 断开它的物理连接。可以通过发一个特殊的命令包去 Gateway
+                    // 这里为了简单，LoginServer 只负责业务清理，连接断开在 Gateway 的长连接超时检测。
                 }
             };
 

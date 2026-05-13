@@ -15,24 +15,14 @@ namespace Login.Managers
     {
         // 单例实例
         private static readonly SessionManager instance = new SessionManager();
-        /// <summary>
-        /// 获取 SessionManager 单例对象。
-        /// </summary>
+
         public static SessionManager Instance => instance;
 
-        /// <summary>
-        /// 保存已登录用户的会话信息：UserId -> ISession。
-        /// 用于根据用户 Id 查找其当前在线会话并进行消息发送或断开处理。
-        /// </summary>
-        private readonly ConcurrentDictionary<int, Network.ISession> userSessions = new ConcurrentDictionary<int, Network.ISession>();
+        public Action<int> OnUserOfflineAction { get; set; }
 
-        /// <summary>
-        /// 保存会话对应的用户 Id 映射：ISession -> UserId。
-        /// 用于在会话断开时查找对应的用户并执行离线流程。
-        /// </summary>
+        private readonly ConcurrentDictionary<int, Network.ISession> userSessions = new ConcurrentDictionary<int, Network.ISession>();
         private readonly ConcurrentDictionary<Network.ISession, int> sessionUsers = new ConcurrentDictionary<Network.ISession, int>();
 
-        // 私有构造函数，确保单例
         private SessionManager() { }
 
         /// <summary>
@@ -91,7 +81,6 @@ namespace Login.Managers
                 if (userSessions.TryGetValue(userId, out var currentSession) && currentSession == session)
                 {
                     userSessions.TryRemove(userId, out _);
-                    // TODO: 更新用户状态为离线 (如果需要向DB或者Gateway报告)
 
                     // 如果未重新连接，则启动延迟任务以处理实际的脱机处理
                     Task.Delay(TimeSpan.FromMinutes(5)).ContinueWith(t =>
@@ -99,11 +88,35 @@ namespace Login.Managers
                         if (!userSessions.ContainsKey(userId))
                         {
                             Shared.Log.Info($"用户{userId}已离线5分钟。正在处理最终离线步骤。");
-                            // 离线处理真实数据，保存数据等
+                            // 离线处理真实数据，通知 DB 下线
+                            OnUserOfflineAction?.Invoke(userId);
                         }
                     });
                 }
             }
+        }
+
+        public void ForceLogout(int userId)
+        {
+            userSessions.TryRemove(userId, out var s);
+            if (s != null)
+            {
+                sessionUsers.TryRemove(s, out _);
+                // 主动踢下线通知
+                var kickMessage = new Shared.Messages.Login.KickedOffMessage 
+                { 
+                    Reason = "已主动登出",
+                    Time = System.DateTime.UtcNow 
+                };
+                byte[] data = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(kickMessage);
+                byte[] packet = new byte[data.Length + 4];
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1007);
+                data.CopyTo(packet.AsSpan(4));
+                s.Send(packet);
+            }
+
+            // 通知 DB 从内存/库里抹除
+            OnUserOfflineAction?.Invoke(userId);
         }
 
         /// <summary>

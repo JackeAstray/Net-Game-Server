@@ -264,5 +264,39 @@ namespace DB.Handlers
                 Log.Error($"查询在线统计异常: {ex}");
             }
         }
+
+        public static async Task HandleUpdateOnlineStateRequest(ISession session, UpdateOnlineStateRequest? request)
+        {
+            if (request == null) return;
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+
+                var user = await dbContext.Users.FirstOrDefaultAsync(u => u.Id == request.UserId);
+                if (user != null)
+                {
+                    user.IsLoggedIn = request.IsOnline;
+                    if (!request.IsOnline)
+                    {
+                        // 离线时间更新为现在
+                        user.LastLoginTime = DateTime.UtcNow;
+                    }
+                    await dbContext.SaveChangesAsync();
+                }
+
+                var response = new UpdateOnlineStateResponse { Success = true };
+                byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
+                byte[] packet = new byte[data.Length + 4];
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbUpdateOnlineStateReq);
+                data.CopyTo(packet.AsSpan(4));
+                session.Send(packet);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"更新在线状态异常: {ex}");
+            }
+        }
     }
 }

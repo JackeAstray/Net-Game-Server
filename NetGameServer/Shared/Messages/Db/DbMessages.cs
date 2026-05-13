@@ -62,4 +62,15 @@ namespace Shared.Messages.Db
         public int OfflineCount { get; set; }
         public int TotalCount { get; set; }
     }
+
+    public class UpdateOnlineStateRequest
+    {
+        public int UserId { get; set; }
+        public bool IsOnline { get; set; }
+    }
+
+    public class UpdateOnlineStateResponse
+    {
+        public bool Success { get; set; }
+    }
 }

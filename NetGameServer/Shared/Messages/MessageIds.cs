@@ -20,6 +20,7 @@ namespace Shared.Messages
         public const int DbRegisterVerifyReq = 1002;
         public const int DbAccountQueryReq = 1003;
         public const int DbOnlineStatsReq = 1004;
+        public const int DbUpdateOnlineStateReq = 1005;
 
         // === 登录服务器客户端通信 (10000-19999 网关转发过来) ===
         public const int LoginReq = 10001;
