@@ -29,4 +29,14 @@ timeout /t 1 /nobreak >nul
 echo 正在启动 Game...
 start "Game" /D "Game" Game.exe
 
+timeout /t 1 /nobreak >nul
+
+echo 正在启动 Center...
+start "Center" /D "Center" Center.exe
+
+timeout /t 1 /nobreak >nul
+
+echo 正在启动 Battle...
+start "Battle" /D "Battle" Battle.exe
+
 echo 所有服务启动指令已发送！

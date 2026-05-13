@@ -8,13 +8,13 @@ if not exist "%SRC%" (
   exit /b 1
 )
 
-for %%D in (DB Game Gateway Login) do (
+for %%D in (DB Game Gateway Login Center Battle) do (
   if not exist "%%~D" mkdir "%%~D"
 )
 
 echo 正在将 "%SRC%" 下的所有文件复制到目标文件夹...
 for %%f in ("%SRC%\*.*") do (
-  for %%D in (DB Game Gateway Login) do (
+  for %%D in (DB Game Gateway Login Center Battle) do (
     copy /Y "%%~f" "%%~D\" >nul
   )
 )

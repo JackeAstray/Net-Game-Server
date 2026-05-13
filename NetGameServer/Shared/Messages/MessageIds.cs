@@ -38,9 +38,18 @@ namespace Shared.Messages
         public const int UpdateNicknameReq = 10009;
         public const int UpdateNicknameRes = 10010;
 
-        // === 游戏服务器客户端通信 (20000-99999 网关转发过来) ===
+        // === 游戏服务器客户端通信 (20000-29999 网关转发过来) ===
         // public const int PlayerMoveReq = 20001;
         // ...
+
+        // === 中心/调度服务器客户端通信 (30000-39999 网关转发过来) ===
+        public const int CenterMatchReq = 30001;
+        public const int CenterMatchRes = 30002;
+
+        // === 战斗/房间服务器客户端通信 (40000-49999 网关转发过来) ===
+        public const int BattleJoinReq = 40001;
+        public const int BattleJoinRes = 40002;
+        public const int BattleFrameSync = 40003;
 
         // === 聊天功能通信 ===
         public const int ChatMessageReq = 30001;

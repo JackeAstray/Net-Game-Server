@@ -51,8 +51,8 @@ namespace Gateway
                 Gateway.Managers.GatewaySessionManager.Instance.AddSession(session);
             };
 
-            // 建立到后端 Login 和 Game 服务器的连接（异步连接启动）
-            var (loginClient, gameClient) = ConnectToBackendServers();
+            // 建立到后端 Login, Game, Center, Battle 服务器的连接（异步连接启动）
+            var (loginClient, gameClient, centerClient, battleClient) = ConnectToBackendServers();
 
             // 数据接收处理器：将客户端发送的原始数据打包成网关到后端的格式
             // 格式为: [ClientSessionId(8)][原始数据...]
@@ -69,16 +69,26 @@ namespace Gateway
                     System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(wrapperMsg.AsSpan(0, 8), session.SessionId);
                     data.Span.CopyTo(wrapperMsg.AsSpan(8));
 
-                    // 根据 MsgId 范围选择路由到 Login 或 Game 后端
+                    // 根据 MsgId 范围选择路由到 Login 或 Game 或 Center 或 Battle 后端
                     if (msgId >= 10000 && msgId < 20000)
                     {
                         // 登录相关消息路由到 Login 服务器
                         loginClient.Send(wrapperMsg);
                     }
-                    else if (msgId >= 20000 && msgId < 100000)
+                    else if (msgId >= 20000 && msgId < 30000)
                     {
-                        // 游戏相关消息路由到 Game 服务器
+                        // 游戏大世界相关消息路由到 Game 服务器
                         gameClient.Send(wrapperMsg);
+                    }
+                    else if (msgId >= 30000 && msgId < 40000)
+                    {
+                        // 调度、匹配相关消息路由到 Center 服务器
+                        centerClient.Send(wrapperMsg);
+                    }
+                    else if (msgId >= 40000 && msgId < 50000)
+                    {
+                        // 战斗、房间相关消息路由到 Battle 服务器
+                        battleClient.Send(wrapperMsg);
                     }
                     else
                     {
@@ -120,11 +130,11 @@ namespace Gateway
         }
 
         /// <summary>
-        /// 建立并返回到后端 Login 与 Game 服务器的 TCP 客户端包装器。
+        /// 建立并返回到后端 Login, Game, Center, Battle 服务器的 TCP 客户端包装器。
         /// - 读取配置的 Host/Port（支持默认值）。
         /// - 为每个后端客户端注册连接、断开、接收数据事件，负责将后端返回的数据解析并转发给相应的客户端会话。
         /// </summary>
-        private static (TcpClientWrapper, TcpClientWrapper) ConnectToBackendServers()
+        private static (TcpClientWrapper, TcpClientWrapper, TcpClientWrapper, TcpClientWrapper) ConnectToBackendServers()
         {
             // 读取 Login 后端配置（支持默认端口）
             int loginPort = ConfigHelper.GetConfig<int>("LoginPort") == 0 ? 30002 : ConfigHelper.GetConfig<int>("LoginPort");
@@ -202,7 +212,73 @@ namespace Gateway
             };
             _ = gameClient.ConnectAsync();
 
-            return (loginClient, gameClient);
+            int centerPort = ConfigHelper.GetConfig<int>("CenterPort") == 0 ? 30006 : ConfigHelper.GetConfig<int>("CenterPort");
+            string centerHost = ConfigHelper.GetConfig<string>("CenterHost") ?? "127.0.0.1";
+            var centerClient = new TcpClientWrapper(centerHost, centerPort);
+            centerClient.OnConnected += session => Shared.Log.Info($"已连接到 Center 服务器 (Host:{centerHost} Port:{centerPort})");
+            centerClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"与 Center 服务器断开连接: {reason}");
+            centerClient.OnDataReceived += delegate (Network.ISession session, ReadOnlyMemory<byte> data)
+            {
+                if (data.Length >= 12) 
+                {
+                    long sessionId = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(data.Span.Slice(0, 8));
+                    int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(8, 4));
+                    var payload = data.Span.Slice(12);
+
+                    if (sessionId == 0)
+                    {
+                        var packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
+                        try { Gateway.Managers.GatewaySessionManager.Instance.Broadcast(packet.AsSpan(0, totalLength).ToArray()); }
+                        finally { System.Buffers.ArrayPool<byte>.Shared.Return(packet); }
+                    }
+                    else
+                    {
+                        var clientSession = Gateway.Managers.GatewaySessionManager.Instance.GetSession(sessionId);
+                        if (clientSession != null)
+                        {
+                            var clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
+                            try { clientSession.Send(clientPacket.AsSpan(0, totalLength).ToArray()); } 
+                            finally { System.Buffers.ArrayPool<byte>.Shared.Return(clientPacket); }
+                        }
+                    }
+                }
+            };
+            _ = centerClient.ConnectAsync();
+
+            int battlePort = ConfigHelper.GetConfig<int>("BattlePort") == 0 ? 30007 : ConfigHelper.GetConfig<int>("BattlePort");
+            string battleHost = ConfigHelper.GetConfig<string>("BattleHost") ?? "127.0.0.1";
+            var battleClient = new TcpClientWrapper(battleHost, battlePort);
+            battleClient.OnConnected += session => Shared.Log.Info($"已连接到 Battle 服务器 (Host:{battleHost} Port:{battlePort})");
+            battleClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"与 Battle 服务器断开连接: {reason}");
+            battleClient.OnDataReceived += delegate (Network.ISession session, ReadOnlyMemory<byte> data)
+            {
+                if (data.Length >= 12) 
+                {
+                    long sessionId = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(data.Span.Slice(0, 8));
+                    int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(8, 4));
+                    var payload = data.Span.Slice(12);
+
+                    if (sessionId == 0)
+                    {
+                        var packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
+                        try { Gateway.Managers.GatewaySessionManager.Instance.Broadcast(packet.AsSpan(0, totalLength).ToArray()); }
+                        finally { System.Buffers.ArrayPool<byte>.Shared.Return(packet); }
+                    }
+                    else
+                    {
+                        var clientSession = Gateway.Managers.GatewaySessionManager.Instance.GetSession(sessionId);
+                        if (clientSession != null)
+                        {
+                            var clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
+                            try { clientSession.Send(clientPacket.AsSpan(0, totalLength).ToArray()); } 
+                            finally { System.Buffers.ArrayPool<byte>.Shared.Return(clientPacket); }
+                        }
+                    }
+                }
+            };
+            _ = battleClient.ConnectAsync();
+
+            return (loginClient, gameClient, centerClient, battleClient);
         }
 
         /// <summary>
