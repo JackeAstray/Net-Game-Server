@@ -12,9 +12,9 @@ namespace Battle.Handlers
         // 玩家到场景的映射，用来快速路由玩家消息到所在场景
         private readonly ConcurrentDictionary<long, string> _playerToSceneBinding = new();
 
-        public BattleScene GetOrCreateScene(string sceneId, bool useAoi = true, float gridSize = 50.0f)
+        public BattleScene GetOrCreateScene(SceneConfig config)
         {
-            return _scenes.GetOrAdd(sceneId, id => new BattleScene(id, useAoi, gridSize));
+            return _scenes.GetOrAdd(config.SceneId, _ => new BattleScene(config));
         }
 
         public BattleScene? GetScene(string sceneId)

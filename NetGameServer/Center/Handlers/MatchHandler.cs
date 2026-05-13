@@ -22,14 +22,17 @@ namespace Center.Handlers
             string newRoomId = isWorldMap ? "World_" + Guid.NewGuid().ToString("N") : "Room_" + Guid.NewGuid().ToString("N");
             string assignedBattleNode = "Battle_01"; // 假设已经调度获取到了合适的 Battle 节点
 
-            await Task.Delay(100); 
+            await Task.Delay(100);
+
+            // TODO: 在这里未来可以根据 CategoryId 去查数据库或配置文件，返回给客户端这个房间叫什么名，有些什么规则
+            string sceneName = isWorldMap ? "艾泽拉斯大版图" : "高级匹配对战房间";
 
             return new CenterMatchResponse
             {
                 Success = true,
                 RoomId = newRoomId,
                 BattleNodeId = assignedBattleNode,
-                Message = "Match successful"
+                Message = $"Match successful. Welcome to {sceneName}"
             };
         }
     }

@@ -8,6 +8,18 @@ namespace Shared.Messages.Battle
     {
         [JsonPropertyName("roomId")]
         public string RoomId { get; set; } = string.Empty;
+
+        [JsonPropertyName("sceneName")]
+        public string SceneName { get; set; } = string.Empty;
+
+        [JsonPropertyName("sceneType")]
+        public string SceneType { get; set; } = string.Empty;
+
+        [JsonPropertyName("maxPlayers")]
+        public int MaxPlayers { get; set; } = 100;
+
+        [JsonPropertyName("customRules")]
+        public Dictionary<string, string>? CustomRules { get; set; }
     }
 
     public class BattleJoinResponse
