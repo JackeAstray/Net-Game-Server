@@ -8,9 +8,14 @@ namespace Battle
 {
     public static class BattleServerApp
     {
+        private static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>? _handlers;
+
         public static async Task StartNetworkAsync()
         {
             int port = ConfigHelper.GetConfig<int>("BattlePort") == 0 ? 30007 : ConfigHelper.GetConfig<int>("BattlePort");
+
+            var roomHandler = new Battle.Handlers.RoomHandler();
+            _handlers = Battle.Handlers.MessageRouter.BuildHandlers(roomHandler);
 
             var networkManager = new NetworkManager();
             var tcpServer = new TcpServer();
@@ -39,9 +44,23 @@ namespace Battle
                         var payload = innerData.Slice(4);
 
                         // 战斗服高频包处理分发（如位移、技能同步）
+                        if (_handlers != null && _handlers.TryGetValue(msgId, out var handlerAction))
+                        {
+                            try
+                            {
+                                await handlerAction(payload, session, originalSessionId);
+                            }
+                            catch (Exception ex)
+                            {
+                                Log.Error($"Battle 处理消息 ({msgId}) 发生异常: " + ex);
+                            }
+                        }
+                        else
+                        {
+                            // 打印或其他处理
+                        }
                     }
                 }
-                await Task.CompletedTask;
             };
 
             networkManager.RegisterServer("BattleTcp", tcpServer);
