@@ -16,6 +16,8 @@ namespace Login.Handlers
     {
         private readonly TcpClientWrapper dbClient;
 
+        private static long sequenceId = 0;
+
         /// <summary>
         /// 创建 LoginHandler 的实例。
         /// </summary>
@@ -238,8 +240,6 @@ namespace Login.Handlers
             };
             await CallDbAsync<Shared.Messages.Db.UpdateOnlineStateResponse>(1005, req);
         }
-
-        private static long sequenceId = 0;
 
         /// <summary>
         /// 向 DB 服务发送请求并等待响应的通用方法。
