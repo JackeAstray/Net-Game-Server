@@ -22,7 +22,7 @@ namespace Center.Handlers
         /// <param name="clientSessionId">客户端会话 ID。</param>
         /// <param name="request">匹配请求对象。</param>
         /// <returns>匹配响应对象。</returns>
-        public async Task<CenterMatchResponse> HandleMatchRequestAsync(long clientSessionId, CenterMatchRequest request)
+        public async Task<CenterMatchResponse?> HandleMatchRequestAsync(long clientSessionId, CenterMatchRequest request, Network.ISession gatewaySession, Action<Network.ISession, long, int, CenterMatchResponse> sendToGatewayFunc)
         {
             string category = string.IsNullOrEmpty(request.CategoryId) ? "PVP" : request.CategoryId;
             bool isWorldMap = category.Equals("World", StringComparison.OrdinalIgnoreCase);
@@ -45,7 +45,11 @@ namespace Center.Handlers
                     };
                 }
 
-                while (pool.TryDequeue(out var _)) { }
+                var matchedPlayers = new List<long>();
+                while (pool.TryDequeue(out var pid)) 
+                { 
+                    matchedPlayers.Add(pid);
+                }
 
                 string roomId = isWorldMap ? "World_" + Guid.NewGuid().ToString("N") : "Room_" + Guid.NewGuid().ToString("N");
 
@@ -56,7 +60,7 @@ namespace Center.Handlers
 
                 var req = new CenterCreateSceneRequest { RoomId = roomId, SceneType = category, IsPrivate = false };
                 var payload = Shared.Json.SerializeToUtf8Bytes(req);
-                byte[] packet = Network.Routing.PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.CenterCreateSceneReq, payload); // 0 表示服务器之间的调用
+                byte[] packet = Network.Routing.PacketBuilder.BuildSessionWrapperPacket(0, Shared.Messages.MessageIds.CenterCreateSceneReq, payload); // 0 表示服务器之间的调用
                 battleNodeInfo?.Session.Send(packet);
 
                 // 等待真正的 BattleNode 返回创建结果，设定一个超时时间
@@ -69,7 +73,7 @@ namespace Center.Handlers
                     if (sceneResult.Success)
                     {
                         string sceneName = isWorldMap ? "大世界" : $"高级 {category} 对战房间";
-                        return new CenterMatchResponse
+                        var successResponse = new CenterMatchResponse
                         {
                             Success = true,
                             RoomId = roomId,
@@ -78,15 +82,36 @@ namespace Center.Handlers
                             SceneType = category,
                             Message = $"Match successful. Welcome to {sceneName}"
                         };
+
+                        // Notify all players except the current one triggering the match threshold
+                        foreach (var pid in matchedPlayers)
+                        {
+                            if (pid != clientSessionId)
+                            {
+                                sendToGatewayFunc(gatewaySession, pid, Shared.Messages.MessageIds.CenterMatchRes, successResponse);
+                            }
+                        }
+
+                        return successResponse;
                     }
                 }
 
                 pendingSceneCreations.TryRemove(roomId, out _);
-                return new CenterMatchResponse
+                var failedResponse = new CenterMatchResponse
                 {
                     Success = false,
                     Message = "Battle 节点创建房间失败或超时"
                 };
+
+                foreach (var pid in matchedPlayers)
+                {
+                    if (pid != clientSessionId)
+                    {
+                        sendToGatewayFunc(gatewaySession, pid, Shared.Messages.MessageIds.CenterMatchRes, failedResponse);
+                    }
+                }
+
+                return failedResponse;
             }
 
             return new CenterMatchResponse

@@ -17,8 +17,11 @@ namespace Center.Handlers
                 var req = Shared.Json.DeserializeFromUtf8Bytes<CenterMatchRequest>(payload.Span);
                 if (req != null)
                 {
-                    var res = await matchHandler.HandleMatchRequestAsync(clientSessionId, req);
-                    SendToGateway(session, clientSessionId, MessageIds.CenterMatchRes, res);
+                    var res = await matchHandler.HandleMatchRequestAsync(clientSessionId, req, session, SendToGateway);
+                    if (res != null)
+                    {
+                        SendToGateway(session, clientSessionId, MessageIds.CenterMatchRes, res);
+                    }
                 }
             };
 

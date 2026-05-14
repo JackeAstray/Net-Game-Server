@@ -17,6 +17,9 @@ namespace Battle.Handlers
 
         public int MaxPlayers { get; set; } = 100;
 
+        // 是否为私人房间
+        public bool IsPrivate { get; set; } = false;
+
         // 是否开启九宫格 AOI 视野剔除
         public bool UseAoi { get; set; } = false;
 

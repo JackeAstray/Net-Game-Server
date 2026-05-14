@@ -30,7 +30,8 @@ namespace Battle.Handlers
                     SceneType = request.SceneType,
                     UseAoi = request.SceneType.Contains("World", StringComparison.OrdinalIgnoreCase), // 示例：世界地图使用AOI
                     GridSize = 50.0f,
-                    MaxPlayers = 100
+                    MaxPlayers = 100,
+                    IsPrivate = request.IsPrivate
                 };
 
                 sceneManager.GetOrCreateScene(sceneConfig);
@@ -39,7 +40,8 @@ namespace Battle.Handlers
                 {
                     Success = true,
                     RoomId = request.RoomId,
-                    SceneId = request.RoomId
+                    SceneId = request.RoomId,
+                    BattleNodeId = Configs.ConfigManager.ServerId // Assuming server has its own ID config or we just leave it for Center to handle
                 });
             }
             catch (Exception ex)
