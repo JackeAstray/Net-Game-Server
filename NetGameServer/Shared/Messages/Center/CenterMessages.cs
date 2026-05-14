@@ -23,6 +23,12 @@ namespace Shared.Messages.Center
 
         [JsonPropertyName("message")]
         public string Message { get; set; } = string.Empty;
+
+        [JsonPropertyName("sceneId")]
+        public string SceneId { get; set; } = string.Empty;
+
+        [JsonPropertyName("sceneType")]
+        public string SceneType { get; set; } = string.Empty;
     }
 
     public class CenterCreateRoomRequest
@@ -35,5 +41,50 @@ namespace Shared.Messages.Center
 
     public class CenterCreateRoomResponse : CenterMatchResponse
     {
+    }
+
+    public class CenterRegisterNodeRequest
+    {
+        [JsonPropertyName("nodeId")]
+        public string NodeId { get; set; } = string.Empty;
+
+        [JsonPropertyName("nodeType")]
+        public string NodeType { get; set; } = string.Empty; // "Battle", "Game"
+
+        [JsonPropertyName("host")]
+        public string Host { get; set; } = string.Empty;
+
+        [JsonPropertyName("port")]
+        public int Port { get; set; }
+
+        [JsonPropertyName("currentLoad")]
+        public int CurrentLoad { get; set; }
+    }
+
+    public class CenterCreateSceneRequest
+    {
+        [JsonPropertyName("roomId")]
+        public string RoomId { get; set; } = string.Empty;
+
+        [JsonPropertyName("sceneType")]
+        public string SceneType { get; set; } = string.Empty;
+
+        [JsonPropertyName("isPrivate")]
+        public bool IsPrivate { get; set; }
+    }
+
+    public class CenterCreateSceneResponse
+    {
+        [JsonPropertyName("success")]
+        public bool Success { get; set; }
+
+        [JsonPropertyName("roomId")]
+        public string RoomId { get; set; } = string.Empty;
+
+        [JsonPropertyName("sceneId")]
+        public string SceneId { get; set; } = string.Empty;
+
+        [JsonPropertyName("battleNodeId")]
+        public string BattleNodeId { get; set; } = string.Empty;
     }
 }

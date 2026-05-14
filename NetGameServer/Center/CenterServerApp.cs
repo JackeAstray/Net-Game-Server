@@ -30,7 +30,7 @@ namespace Center
             tcpServer.OnSessionDisconnected += (session, reason) =>
             {
                 Log.Info($"节点从中心服断开，原因: {reason}");
-                // TODO: 节点断开时进行清理操作，离线玩家，或者标记节点不可用
+                Center.Handlers.NodeManager.Instance.RemoveNodeBySession(session);
             };
 
             tcpServer.OnDataReceived += async (session, data) =>

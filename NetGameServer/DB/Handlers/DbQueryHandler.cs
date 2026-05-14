@@ -266,6 +266,14 @@ namespace DB.Handlers
             }
         }
 
+        /// <summary>
+        /// 处理更新用户在线状态的请求。
+        /// 将根据请求中的用户ID查找对应用户并更新其在线状态（IsLoggedIn），
+        /// 若设置为离线则更新离线时间（LastLoginTime）。处理完成后返回一个简单的成功响应。
+        /// </summary>
+        /// <param name="session">当前的网络会话，用于发送响应数据。</param>
+        /// <param name="request">包含用户ID和在线状态的更新请求。</param>
+        /// <returns></returns>
         public static async Task HandleUpdateOnlineStateRequest(ISession session, UpdateOnlineStateRequest? request)
         {
             if (request == null) return;
@@ -300,8 +308,15 @@ namespace DB.Handlers
             }
         }
 
-        // --- Friend System Handlers ---
+        // --- Friend系统处理程序 ---
 
+        /// <summary>
+        /// 处理添加好友请求。
+        /// 检查两者是否已为好友，若不是则在数据库中创建好友记录并返回结果信息。
+        /// </summary>
+        /// <param name="session">当前网络会话，用于回复数据库处理结果。</param>
+        /// <param name="request">包含发起者用户ID、目标好友ID及备注等信息的请求对象。</param>
+        /// <returns></returns>
         public static async Task HandleAddFriendRequest(ISession session, DbAddFriendRequest? request)
         {
             if (request == null) return;
@@ -312,7 +327,7 @@ namespace DB.Handlers
                 var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
 
                 var response = new DbAddFriendResponse();
-                
+
                 // Check if already friends
                 bool exists = await dbContext.Friends.AnyAsync(f => f.UserId == request.UserId && f.FriendUserId == request.FriendUserId);
                 if (exists)
@@ -331,7 +346,7 @@ namespace DB.Handlers
                     };
                     dbContext.Friends.Add(newFriend);
                     await dbContext.SaveChangesAsync();
-                    
+
                     response.Success = true;
                     response.Message = "添加成功";
                 }
@@ -348,6 +363,13 @@ namespace DB.Handlers
             }
         }
 
+        /// <summary>
+        /// 处理移除好友请求。
+        /// 在数据库中查找对应的好友关系，若存在则删除并返回操作结果。
+        /// </summary>
+        /// <param name="session">当前网络会话，用于发送响应数据。</param>
+        /// <param name="request">包含发起者用户ID和要移除的好友用户ID的请求对象。</param>
+        /// <returns></returns>
         public static async Task HandleRemoveFriendRequest(ISession session, DbRemoveFriendRequest? request)
         {
             if (request == null) return;
@@ -358,7 +380,7 @@ namespace DB.Handlers
                 var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
 
                 var response = new DbRemoveFriendResponse();
-                
+
                 var friend = await dbContext.Friends.FirstOrDefaultAsync(f => f.UserId == request.UserId && f.FriendUserId == request.FriendUserId);
                 if (friend != null)
                 {
@@ -385,6 +407,13 @@ namespace DB.Handlers
             }
         }
 
+        /// <summary>
+        /// 处理设置好友备注请求。
+        /// 查找指定好友记录并更新备注文本，然后返回操作结果。
+        /// </summary>
+        /// <param name="session">当前网络会话，用于发送响应。</param>
+        /// <param name="request">包含用户ID、好友ID以及新的备注内容的请求对象。</param>
+        /// <returns></returns>
         public static async Task HandleSetFriendRemarkRequest(ISession session, DbSetFriendRemarkRequest? request)
         {
             if (request == null) return;
@@ -395,7 +424,7 @@ namespace DB.Handlers
                 var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
 
                 var response = new DbSetFriendRemarkResponse();
-                
+
                 var friend = await dbContext.Friends.FirstOrDefaultAsync(f => f.UserId == request.UserId && f.FriendUserId == request.FriendUserId);
                 if (friend != null)
                 {
@@ -422,6 +451,13 @@ namespace DB.Handlers
             }
         }
 
+        /// <summary>
+        /// 处理获取好友列表的请求。
+        /// 查询数据库中指定用户的好友关系并将好友列表作为响应返回。
+        /// </summary>
+        /// <param name="session">当前网络会话，用于发送查询结果。</param>
+        /// <param name="request">包含要查询好友列表的用户ID的请求对象。</param>
+        /// <returns></returns>
         public static async Task HandleGetFriendsRequest(ISession session, DbGetFriendsRequest? request)
         {
             if (request == null) return;
@@ -430,11 +466,11 @@ namespace DB.Handlers
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
                 using var scope = factory.CreateScope();
                 var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
-                
+
                 var response = new DbGetFriendsResponse();
-                
+
                 var friendsList = await dbContext.Friends.Where(f => f.UserId == request.UserId).ToListAsync();
-                
+
                 response.Success = true;
                 response.Message = "获取成功";
                 response.Friends = friendsList;

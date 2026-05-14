@@ -9,6 +9,10 @@ namespace DB.Routing
     {
         private readonly ConcurrentDictionary<int, Func<ISession, ReadOnlyMemory<byte>, Task>> handlers = new();
 
+        /// <summary>
+        /// 绑定服务器：将消息路由器绑定到网络服务器的事件上，以便在接收到数据时能够正确地处理消息。
+        /// </summary>
+        /// <param name="server"></param>
         public void BindServer(INetworkServer server)
         {
             server.OnDataReceived -= HandleRawData;

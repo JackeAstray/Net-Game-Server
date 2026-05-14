@@ -8,7 +8,7 @@ namespace Battle
 {
     public static class BattleServerApp
     {
-        private static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>? _handlers;
+        private static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>? handlers;
 
         public static async Task StartNetworkAsync()
         {
@@ -19,8 +19,9 @@ namespace Battle
             var sceneManager = new Battle.Handlers.SceneManager();
             var entitySyncHandler = new Battle.Handlers.EntitySyncHandler(sceneManager);
             var roomHandler = new Battle.Handlers.RoomHandler(sceneManager, entitySyncHandler);
+            var battleMainHandler = new Battle.Handlers.BattleMainHandler(sceneManager);
 
-            _handlers = Battle.Handlers.MessageRouter.BuildHandlers(roomHandler, entitySyncHandler);
+            handlers = Battle.Handlers.MessageRouter.BuildHandlers(roomHandler, entitySyncHandler, battleMainHandler);
 
             var networkManager = new NetworkManager();
             var tcpServer = new TcpServer();
@@ -49,7 +50,7 @@ namespace Battle
                         var payload = innerData.Slice(4);
 
                         // 战斗服高频包处理分发（如位移、技能同步）
-                        if (_handlers != null && _handlers.TryGetValue(msgId, out var handlerAction))
+                        if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
                         {
                             try
                             {

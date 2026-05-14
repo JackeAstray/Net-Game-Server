@@ -54,6 +54,11 @@ namespace Shared.Messages
         public const int CenterCreateRoomReq = 30003;
         public const int CenterCreateRoomRes = 30004;
 
+        public const int CenterRegisterNodeReq = 30005;
+        public const int CenterRegisterNodeRes = 30006;
+        public const int CenterCreateSceneReq = 30007; // Center -> Battle
+        public const int CenterCreateSceneRes = 30008; // Battle -> Center
+
         // === 战斗/房间服务器客户端通信 (40000-49999 网关转发过来) ===
         public const int BattleJoinReq = 40001;
         public const int BattleJoinRes = 40002;

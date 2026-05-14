@@ -14,7 +14,7 @@ namespace Battle.Handlers
         /// <param name="roomHandler">房间处理器实例</param>
         /// <param name="entitySyncHandler">实体同步处理器实例</param>
         /// <returns>消息处理器字典</returns>
-        public static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>> BuildHandlers(RoomHandler roomHandler, EntitySyncHandler entitySyncHandler)
+        public static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>> BuildHandlers(RoomHandler roomHandler, EntitySyncHandler entitySyncHandler, BattleMainHandler battleMainHandler)
         {
             var handlers = new Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>();
 
@@ -41,6 +41,19 @@ namespace Battle.Handlers
             {
                 roomHandler.HandleDisconnect(clientSessionId);
                 await Task.CompletedTask;
+            };
+
+            handlers[MessageIds.CenterCreateSceneReq] = async (payload, session, clientSessionId) =>
+            {
+                var req = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Center.CenterCreateSceneRequest>(payload.Span);
+                if (req != null)
+                {
+                    var res = await battleMainHandler.HandleCreateSceneRequestAsync(req);
+                    // 0 is for internal server communication
+                    byte[] resPayload = Shared.Json.SerializeToUtf8Bytes(res);
+                    byte[] packet = Network.Routing.PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.CenterCreateSceneRes, resPayload);
+                    session.Send(packet);
+                }
             };
 
             return handlers;

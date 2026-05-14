@@ -119,6 +119,7 @@ namespace DB
         /// - 注册各类消息处理器（通过 Routing.MessageRouter）。
         /// - 启动监听指定端口以接收来自网关或其他服务的请求。
         /// </summary>
+        /// <returns></returns>
         public static async Task StartNetworkAsync()
         {
             // 从配置读取端口，若未配置则使用默认 30005
