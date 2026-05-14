@@ -33,6 +33,9 @@ public class MessageRouter
     /// <summary>
     /// 手动分发消息
     /// </summary>
+    /// <param name="session">会话对象</param>
+    /// <param name="msgId">消息ID</param>
+    /// <param name="payload">消息负载</param>
     public void RouteMessage(ISession session, int msgId, ReadOnlyMemory<byte> payload)
     {
         if (handlers.TryGetValue(msgId, out var handler))
@@ -55,6 +58,8 @@ public class MessageRouter
     /// <summary>
     /// 注册一个针对特定消息ID的处理逻辑
     /// </summary>
+    /// <param name="msgId">消息ID</param>
+    /// <param name="handler">处理逻辑</param>
     public void RegisterHandler(int msgId, MessageHandler handler)
     {
         handlers.AddOrUpdate(msgId, handler, (_, existing) => existing + handler);
@@ -63,6 +68,8 @@ public class MessageRouter
     /// <summary>
     /// 注销消息ID的处理逻辑
     /// </summary>
+    /// <param name="msgId">消息ID</param>
+    /// <param name="handler">处理逻辑</param>
     public void UnregisterHandler(int msgId, MessageHandler handler)
     {
         if (handlers.TryGetValue(msgId, out var existing))
@@ -82,6 +89,8 @@ public class MessageRouter
     /// <summary>
     /// 解码接收到的数据：前4个字节视为 MsgId（小端序），后续为具体的协议包体（Payload）
     /// </summary>
+    /// <param name="session">会话对象</param>
+    /// <param name="data">接收到的原始数据</param>
     private void HandleRawData(ISession session, ReadOnlyMemory<byte> data)
     {
         if (data.Length < 4)

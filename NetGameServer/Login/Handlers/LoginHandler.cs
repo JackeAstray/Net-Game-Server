@@ -250,47 +250,41 @@ namespace Login.Handlers
         /// <returns>反序列化后的响应对象，或在超时/异常时返回 null。</returns>
         private async Task<T> CallDbAsync<T>(int msgId, object requestData) where T : class
         {
-            var tcs = new TaskCompletionSource<T>();
+            var tcs = new TaskCompletionSource<byte[]>();
             byte[] data = Shared.Json.SerializeToUtf8Bytes(requestData);
-            byte[] packet = new byte[data.Length + 4];
+            
+            // Generate sequence/request Id
+            long requestId = UIDGenerator.GenerateLongUID();
+            LoginServerApp.PendingRequests[requestId] = tcs;
+
+            byte[] packet = new byte[data.Length + 12];
+            // [MsgId(4)] + [RequestId(8)] + [Data]
             System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), msgId);
-            data.CopyTo(packet.AsSpan(4));
+            System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(packet.AsSpan(4, 8), requestId);
+            data.CopyTo(packet.AsSpan(12));
 
-            Network.DataReceivedHandler onDataReceived = null;
-            onDataReceived = (Network.ISession session, ReadOnlyMemory<byte> responseData) =>
-            {
-                if (responseData.Length >= 4)
-                {
-                    int resMsgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(responseData.Span.Slice(0, 4));
-                    if (resMsgId == msgId)
-                    {
-                        dbClient.OnDataReceived -= onDataReceived;
-                        try
-                        {
-                            var result = Shared.Json.DeserializeFromUtf8Bytes<T>(responseData.Span.Slice(4).ToArray());
-                            tcs.TrySetResult(result);
-                        }
-                        catch (Exception ex)
-                        {
-                            Log.Error($"反序列化响应异常: {ex}");
-                            tcs.TrySetResult(null);
-                        }
-                    }
-                }
-            };
-
-            dbClient.OnDataReceived += onDataReceived;
             dbClient.Send(packet);
 
             var timeoutTask = Task.Delay(5000);
             if (await Task.WhenAny(tcs.Task, timeoutTask) == timeoutTask)
             {
-                dbClient.OnDataReceived -= onDataReceived;
+                LoginServerApp.PendingRequests.TryRemove(requestId, out _);
                 Log.Warning($"向 DB 请求 MsgId:{msgId} 超时");
                 return null;
             }
 
-            return await tcs.Task;
+            var responseData = await tcs.Task;
+            if (responseData == null) return null;
+
+            try
+            {
+                return Shared.Json.DeserializeFromUtf8Bytes<T>(responseData);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"反序列化响应异常: {ex}");
+                return null;
+            }
         }
 
         /// <summary>

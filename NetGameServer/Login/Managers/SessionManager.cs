@@ -1,9 +1,9 @@
 using Shared.Data;
 using System;
 using System.Collections.Concurrent;
+using System.Threading;
 using System.Threading.Tasks;
 using Network;
-using Network.Tcp;
 
 namespace Login.Managers
 {
@@ -19,9 +19,11 @@ namespace Login.Managers
         public static SessionManager Instance => instance;
 
         public Action<int> OnUserOfflineAction { get; set; }
+        public Action<long, byte[]> SendToGatewayAction { get; set; }
 
-        private readonly ConcurrentDictionary<int, Network.ISession> userSessions = new ConcurrentDictionary<int, Network.ISession>();
-        private readonly ConcurrentDictionary<Network.ISession, int> sessionUsers = new ConcurrentDictionary<Network.ISession, int>();
+        private readonly ConcurrentDictionary<int, long> userSessions = new ConcurrentDictionary<int, long>();
+        private readonly ConcurrentDictionary<long, int> sessionUsers = new ConcurrentDictionary<long, int>();
+        private readonly ConcurrentDictionary<int, CancellationTokenSource> offlineTasks = new();
 
         private SessionManager() { }
 
@@ -29,37 +31,43 @@ namespace Login.Managers
         /// 处理用户登录事件的方法。
         /// </summary>
         /// <param name="user">登录的用户对象</param>
-        /// <param name="session">用户的会话对象</param>
+        /// <param name="clientSessionId">用户的网关会话ID</param>
         /// <returns>返回一个表示操作是否成功的任务</returns>
-        public async Task<bool> OnUserLoginAsync(User user, Network.ISession session)
+        public async Task<bool> OnUserLoginAsync(User user, long clientSessionId)
         {
-            // 顶号处理
-            if (userSessions.TryGetValue(user.Id, out var existingSession))
+            // 取消可能存在的该用户离线倒计时任务
+            if (offlineTasks.TryRemove(user.Id, out var cts))
             {
-                if (existingSession != session)
+                cts.Cancel();
+                cts.Dispose();
+            }
+
+            // 顶号处理
+            if (userSessions.TryGetValue(user.Id, out var existingSessionId))
+            {
+                if (existingSessionId != clientSessionId)
                 {
                     Shared.Log.Info($"用户{user.Id}从其他位置登录。正在断开旧会话的连接。");
-                    
-                    var kickMessage = new Shared.Messages.Login.KickedOffMessage 
-                    { 
+
+                    var kickMessage = new Shared.Messages.Login.KickedOffMessage
+                    {
                         Reason = "您的账号在其他设备登录",
-                        Time = System.DateTime.UtcNow 
+                        Time = System.DateTime.UtcNow
                     };
-                    byte[] data = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(kickMessage);
+                    byte[] data = Shared.Json.SerializeToUtf8Bytes(kickMessage);
                     byte[] packet = new byte[data.Length + 4];
                     System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1007); // 假设1007为KickedOffMessage的MsgId
                     data.CopyTo(packet.AsSpan(4));
-                    existingSession.Send(packet);
 
-                    existingSession.Close();
+                    SendToGatewayAction?.Invoke(existingSessionId, packet);
 
                     userSessions.TryRemove(user.Id, out _);
-                    sessionUsers.TryRemove(existingSession, out _);
+                    sessionUsers.TryRemove(existingSessionId, out _);
                 }
             }
 
-            userSessions[user.Id] = session;
-            sessionUsers[session] = user.Id;
+            userSessions[user.Id] = clientSessionId;
+            sessionUsers[clientSessionId] = user.Id;
             return true;
         }
 
@@ -69,50 +77,73 @@ namespace Login.Managers
         /// 而是启动一个延迟任务来处理实际的离线逻辑，
         /// 以便在用户短暂断线后重新连接时能够恢复状态。
         /// </summary>
-        /// <param name="session">断开连接的会话对象</param>
-        public void OnSessionDisconnected(Network.ISession session)
+        /// <param name="clientSessionId">断开连接的客户端会话ID</param>
+        public void OnSessionDisconnected(long clientSessionId)
         {
-            if (sessionUsers.TryGetValue(session, out var userId))
+            if (sessionUsers.TryGetValue(clientSessionId, out var userId))
             {
                 Shared.Log.Info($"用户{userId}断开连接。正在处理离线状态。");
                 // 断线/离线处理
-                sessionUsers.TryRemove(session, out _);
+                sessionUsers.TryRemove(clientSessionId, out _);
 
-                if (userSessions.TryGetValue(userId, out var currentSession) && currentSession == session)
+                if (userSessions.TryGetValue(userId, out var currentSessionId) && currentSessionId == clientSessionId)
                 {
                     userSessions.TryRemove(userId, out _);
 
-                    // 如果未重新连接，则启动延迟任务以处理实际的脱机处理
-                    Task.Delay(TimeSpan.FromMinutes(5)).ContinueWith(t =>
+                    var cts = new CancellationTokenSource();
+                    offlineTasks[userId] = cts;
+
+                    // 消除 Task.Delay 滥用，使用 CancellationTokenSource 来管理。一旦重连立即取消注销任务
+                    Task.Run(async () =>
                     {
-                        if (!userSessions.ContainsKey(userId))
+                        try
                         {
-                            Shared.Log.Info($"用户{userId}已离线5分钟。正在处理最终离线步骤。");
-                            // 离线处理真实数据，通知 DB 下线
-                            OnUserOfflineAction?.Invoke(userId);
+                            await Task.Delay(TimeSpan.FromMinutes(5), cts.Token);
+                            if (!cts.Token.IsCancellationRequested && !userSessions.ContainsKey(userId))
+                            {
+                                offlineTasks.TryRemove(userId, out _);
+                                Shared.Log.Info($"用户{userId}已离线5分钟。正在处理最终离线步骤。");
+                                // 离线处理真实数据，通知 DB 下线
+                                OnUserOfflineAction?.Invoke(userId);
+                            }
+                        }
+                        catch (TaskCanceledException)
+                        {
+                            Shared.Log.Info($"用户{userId}取消离线任务，可能已重连。");
                         }
                     });
                 }
             }
         }
 
+        /// <summary>
+        /// 强制用户下线的方法。
+        /// </summary>
+        /// <param name="userId">用户ID</param>
         public void ForceLogout(int userId)
         {
-            userSessions.TryRemove(userId, out var s);
-            if (s != null)
+            if (offlineTasks.TryRemove(userId, out var cts))
             {
-                sessionUsers.TryRemove(s, out _);
+                cts.Cancel();
+                cts.Dispose();
+            }
+
+            userSessions.TryRemove(userId, out var sId);
+            if (sId != 0)
+            {
+                sessionUsers.TryRemove(sId, out _);
                 // 主动踢下线通知
-                var kickMessage = new Shared.Messages.Login.KickedOffMessage 
-                { 
+                var kickMessage = new Shared.Messages.Login.KickedOffMessage
+                {
                     Reason = "已主动登出",
-                    Time = System.DateTime.UtcNow 
+                    Time = System.DateTime.UtcNow
                 };
-                byte[] data = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(kickMessage);
+                byte[] data = Shared.Json.SerializeToUtf8Bytes(kickMessage);
                 byte[] packet = new byte[data.Length + 4];
                 System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1007);
                 data.CopyTo(packet.AsSpan(4));
-                s.Send(packet);
+
+                SendToGatewayAction?.Invoke(sId, packet);
             }
 
             // 通知 DB 从内存/库里抹除
@@ -120,14 +151,14 @@ namespace Login.Managers
         }
 
         /// <summary>
-        /// 获取用户的Session信息
+        /// 获取用户的 Session ID
         /// </summary>
         /// <param name="userId"></param>
         /// <returns></returns>
-        public Network.ISession GetUserSession(int userId)
+        public long GetUserSessionId(int userId)
         {
-            userSessions.TryGetValue(userId, out var session);
-            return session;
+            userSessions.TryGetValue(userId, out var sessionId);
+            return sessionId;
         }
     }
 }

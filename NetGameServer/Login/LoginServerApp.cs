@@ -15,6 +15,8 @@ namespace Login
     /// </summary>
     public static class LoginServerApp
     {
+        public static readonly System.Collections.Concurrent.ConcurrentDictionary<long, object> PendingRequests = new System.Collections.Concurrent.ConcurrentDictionary<long, object>();
+
         /// <summary>
         /// 启动用于接收网关连接的 TCP 服务并处理来自网关的数据包。
         /// 数据包结构为: [SessionId(8)][MsgId(4)][Payload]
@@ -105,6 +107,32 @@ namespace Login
                 if (data.Length >= 4)
                 {
                     int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+
+                    if (data.Length >= 12)
+                    {
+                        long requestId = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(data.Span.Slice(4, 8));
+                        if (PendingRequests.TryRemove(requestId, out var tcsObj))
+                        {
+                            try
+                            {
+                                // 调用MakeGenericMethod或知道映射进行反序列化
+                                // 目前，跨类型最稳健的方法是保持TCS的盒装或注入响应类型
+                                // 我们假设来电者可以投。但实际上，我们在这里有原始跨度。
+                                // 也许TCS<byte[]> 和调用者反序列化而不是对象？
+                                // 让我们调整CallDbAsync来处理它，或者我们依赖于一个可以拆箱的包装器。
+                                if (tcsObj is TaskCompletionSource<byte[]> tcs)
+                                {
+                                    tcs.TrySetResult(data.Span.Slice(12).ToArray());
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Shared.Log.Error($"反序列化响应异常: {ex}");
+                            }
+                            return;
+                        }
+                    }
+
                     if (msgId == 1000)
                     {
                         var response = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.GetMaxUidResponse>(data.Span.Slice(4));
@@ -127,6 +155,11 @@ namespace Login
             return dbClient;
         }
 
+        /// <summary>
+        /// 启动 ASP.NET Core Web API 服务，提供登录相关的 HTTP 接口（如注册、登录、修改密码等）。
+        /// </summary>
+        /// <param name="args">命令行参数</param>
+        /// <returns>一个表示异步操作的任务</returns>
         public static async Task StartWebApiAsync(string[] args)
         {
             int apiPort = ConfigHelper.GetConfig<int>("ApiPort") == 0 ? 30003 : ConfigHelper.GetConfig<int>("ApiPort");

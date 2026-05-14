@@ -41,7 +41,7 @@ namespace Battle.Handlers
                     Success = true,
                     RoomId = request.RoomId,
                     SceneId = request.RoomId,
-                    BattleNodeId = Configs.ConfigManager.ServerId // Assuming server has its own ID config or we just leave it for Center to handle
+                    BattleNodeId = Shared.ConfigHelper.GetConfig<string>("ServerId") ?? "Battle_1"
                 });
             }
             catch (Exception ex)
