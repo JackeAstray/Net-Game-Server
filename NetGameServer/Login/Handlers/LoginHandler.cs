@@ -62,7 +62,7 @@ namespace Login.Handlers
         /// <param name="request">登录请求数据。</param>
         public void HandleLoginRequest(TcpSession session, LoginRequest request)
         {
-            // Backward compatibility placeholder
+            // 向后兼容性占位符
             Log.Info($"收到帐户的LoginRequest: {request.Account}");
         }
 
