@@ -15,7 +15,7 @@ namespace Login
     /// </summary>
     public static class LoginServerApp
     {
-        public static readonly System.Collections.Concurrent.ConcurrentDictionary<long, object> PendingRequests = new System.Collections.Concurrent.ConcurrentDictionary<long, object>();
+        public static readonly System.Collections.Concurrent.ConcurrentDictionary<long, TaskCompletionSource<byte[]>> PendingRequests = new System.Collections.Concurrent.ConcurrentDictionary<long, TaskCompletionSource<byte[]>>();
 
         /// <summary>
         /// 启动用于接收网关连接的 TCP 服务并处理来自网关的数据包。
@@ -34,10 +34,6 @@ namespace Login
             var networkManager = new NetworkManager();
             var tcpServer = new TcpServer();
 
-            // 连接与断开事件日志
-            tcpServer.OnSessionConnected += session => Shared.Log.Info($"网关已连接: {session.RemoteEndPoint}");
-            tcpServer.OnSessionDisconnected += (session, reason) => Shared.Log.Info($"网关断开连接，原因: {reason}");
-
             // 注册并启动服务器
             networkManager.RegisterServer("LoginTcp", tcpServer);
             networkManager.Router.UnbindServer(tcpServer);
@@ -49,8 +45,41 @@ namespace Login
             var dbClient = ConnectToDatabase();
             var loginHandler = new Login.Handlers.LoginHandler(dbClient);
             Login.Managers.SessionManager.Instance.OnUserOfflineAction = (userId) => { _ = loginHandler.HandleOfflineAsync(userId); };
+
             // 构建消息处理器字典，按 MsgId 分发
             var messageHandlers = Login.Handlers.MessageRouter.BuildHandlers(loginHandler);
+
+            // 给 SessionManager 设置 SendToGatewayAction，使它可以广播特殊包(例如踢人)到网关，这通过向任意活动网关session发送来完成，因为包头带了真实客户端长ID
+            // 如果我们需要支持多个网关的话，我们可能需要跟踪注册的网关会话，但由于LoginServer没有在 tcpServer 上公开已连接会话的集合，这里我们需要一个集合或者把 session存在某处
+            // 在此为了简化，我们在 tcpServer.OnSessionConnected 中存储所有活跃的网关会话，然后选取一个发送。
+            var activeGatewaySessions = new System.Collections.Concurrent.ConcurrentDictionary<long, Network.ISession>();
+
+            tcpServer.OnSessionConnected += session =>
+            {
+                Shared.Log.Info($"网关已连接: {session.RemoteEndPoint}");
+                activeGatewaySessions[session.SessionId] = session;
+            };
+            tcpServer.OnSessionDisconnected += (session, reason) =>
+            {
+                Shared.Log.Info($"网关断开连接，原因: {reason}");
+                activeGatewaySessions.TryRemove(session.SessionId, out _);
+            };
+
+            Login.Managers.SessionManager.Instance.SendToGatewayAction = (clientSessionId, packetData) =>
+            {
+                // 发送到负责的网关。
+                foreach (var session in activeGatewaySessions.Values)
+                {
+                    // [SessionId(8)][MsgId(4)][Payload]
+                    // 但网关直接转发到客户端，SendToGatewayAction 的 packetData 并没有加客户端 SessionId，我们需要包装一下
+                    byte[] wrapperMsg = new byte[8 + packetData.Length];
+                    System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(wrapperMsg.AsSpan(0, 8), clientSessionId);
+                    packetData.CopyTo(wrapperMsg.AsSpan(8));
+
+                    session.Send(wrapperMsg);
+                    break; // 假设所有网关都可以互通，或者按某种逻辑路由。一般只需转给连过来的那个网关
+                }
+            };
 
             // 处理收到的数据: 先解析 SessionId 与 MsgId，再将 Payload 交给对应的处理器
             tcpServer.OnDataReceived += async (session, data) =>
@@ -80,6 +109,10 @@ namespace Login
             };
         }
 
+        /// <summary>
+        /// 建立与 DB 服务器的 TCP 连接，并在连接成功后请求当前最大 UID 用于 UID 生成器的初始化。
+        /// </summary>
+        /// <returns>返回已连接的 TcpClientWrapper 实例。</returns>
         private static TcpClientWrapper ConnectToDatabase()
         {
             // 从配置读取 DB 连接信息，若未配置则使用默认值
@@ -111,19 +144,11 @@ namespace Login
                     if (data.Length >= 12)
                     {
                         long requestId = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(data.Span.Slice(4, 8));
-                        if (PendingRequests.TryRemove(requestId, out var tcsObj))
+                        if (PendingRequests.TryRemove(requestId, out var tcs))
                         {
                             try
                             {
-                                // 调用MakeGenericMethod或知道映射进行反序列化
-                                // 目前，跨类型最稳健的方法是保持TCS的盒装或注入响应类型
-                                // 我们假设来电者可以投。但实际上，我们在这里有原始跨度。
-                                // 也许TCS<byte[]> 和调用者反序列化而不是对象？
-                                // 让我们调整CallDbAsync来处理它，或者我们依赖于一个可以拆箱的包装器。
-                                if (tcsObj is TaskCompletionSource<byte[]> tcs)
-                                {
-                                    tcs.TrySetResult(data.Span.Slice(12).ToArray());
-                                }
+                                tcs.TrySetResult(data.Span.Slice(12).ToArray());
                             }
                             catch (Exception ex)
                             {

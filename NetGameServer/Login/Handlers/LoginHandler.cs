@@ -239,6 +239,8 @@ namespace Login.Handlers
             await CallDbAsync<Shared.Messages.Db.UpdateOnlineStateResponse>(1005, req);
         }
 
+        private static long sequenceId = 0;
+
         /// <summary>
         /// 向 DB 服务发送请求并等待响应的通用方法。
         /// 方法将请求序列化为 JSON，并在包头写入消息 ID；通过 dbClient 发送后，监听回包并在
@@ -252,9 +254,9 @@ namespace Login.Handlers
         {
             var tcs = new TaskCompletionSource<byte[]>();
             byte[] data = Shared.Json.SerializeToUtf8Bytes(requestData);
-            
+
             // Generate sequence/request Id
-            long requestId = UIDGenerator.GenerateLongUID();
+            long requestId = System.Threading.Interlocked.Increment(ref sequenceId);
             LoginServerApp.PendingRequests[requestId] = tcs;
 
             byte[] packet = new byte[data.Length + 12];
@@ -265,14 +267,17 @@ namespace Login.Handlers
 
             dbClient.Send(packet);
 
-            var timeoutTask = Task.Delay(5000);
-            if (await Task.WhenAny(tcs.Task, timeoutTask) == timeoutTask)
+            using var cts = new System.Threading.CancellationTokenSource();
+            var timeoutTask = Task.Delay(5000, cts.Token);
+            var completedTask = await Task.WhenAny(tcs.Task, timeoutTask);
+            if (completedTask == timeoutTask)
             {
                 LoginServerApp.PendingRequests.TryRemove(requestId, out _);
-                Log.Warning($"向 DB 请求 MsgId:{msgId} 超时");
+                Shared.Log.Warning($"向 DB 请求 MsgId:{msgId} 超时");
                 return null;
             }
 
+            cts.Cancel(); // 取消 Task.Delay 防止资源泄露
             var responseData = await tcs.Task;
             if (responseData == null) return null;
 
@@ -282,7 +287,7 @@ namespace Login.Handlers
             }
             catch (Exception ex)
             {
-                Log.Error($"反序列化响应异常: {ex}");
+                Shared.Log.Error($"反序列化响应异常: {ex}");
                 return null;
             }
         }
