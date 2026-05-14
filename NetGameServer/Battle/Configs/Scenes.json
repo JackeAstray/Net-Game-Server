@@ -1,0 +1,29 @@
+[
+  {
+    "SceneId": "World_01",
+    "Name": "大世界主城",
+    "SceneType": "World",
+    "MaxPlayers": 1000,
+    "UseAoi": true,
+    "GridSize": 20.0,
+    "CustomRules": {}
+  },
+  {
+    "SceneId": "PVP",
+    "Name": "竞技场",
+    "SceneType": "PVP",
+    "MaxPlayers": 10,
+    "UseAoi": false,
+    "GridSize": 0.0,
+    "CustomRules": {}
+  },
+  {
+    "SceneId": "PVE",
+    "Name": "对抗异形",
+    "SceneType": "PVE",
+    "MaxPlayers": 10,
+    "UseAoi": false,
+    "GridSize": 0.0,
+    "CustomRules": {}
+  }
+]

@@ -7,39 +7,47 @@ namespace Battle.Handlers
     /// </summary>
     public class SceneManager
     {
-        private readonly ConcurrentDictionary<string, BattleScene> _scenes = new();
+        private readonly ConcurrentDictionary<string, BattleScene> scenes = new();
 
         // 玩家到场景的映射，用来快速路由玩家消息到所在场景
-        private readonly ConcurrentDictionary<long, string> _playerToSceneBinding = new();
+        private readonly ConcurrentDictionary<long, string> playerToSceneBinding = new();
 
         public BattleScene GetOrCreateScene(SceneConfig config)
         {
-            return _scenes.GetOrAdd(config.SceneId, _ => new BattleScene(config));
+            return scenes.GetOrAdd(config.SceneId, _ => new BattleScene(config));
         }
 
         public BattleScene? GetScene(string sceneId)
         {
-            _scenes.TryGetValue(sceneId, out var scene);
+            scenes.TryGetValue(sceneId, out var scene);
             return scene;
         }
 
         public void BindPlayerToScene(long sessionId, string sceneId)
         {
-            _playerToSceneBinding[sessionId] = sceneId;
+            playerToSceneBinding[sessionId] = sceneId;
         }
 
         public void UnbindPlayer(long sessionId)
         {
-            _playerToSceneBinding.TryRemove(sessionId, out _);
+            playerToSceneBinding.TryRemove(sessionId, out _);
         }
 
         public BattleScene? GetSceneByPlayer(long sessionId)
         {
-            if (_playerToSceneBinding.TryGetValue(sessionId, out var sceneId))
+            if (playerToSceneBinding.TryGetValue(sessionId, out var sceneId))
             {
                 return GetScene(sceneId);
             }
             return null;
+        }
+
+        public void RemoveScene(string sceneId)
+        {
+            if (scenes.TryRemove(sceneId, out var removedScene))
+            {
+                Shared.Log.Info($" scene removed and cleaned up: {sceneId}");
+            }
         }
     }
 }

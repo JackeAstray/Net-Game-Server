@@ -73,4 +73,55 @@ namespace Shared.Messages.Db
     {
         public bool Success { get; set; }
     }
+
+    // --- Friend System Models ---
+    public class DbAddFriendRequest
+    {
+        public int UserId { get; set; }
+        public int FriendUserId { get; set; }
+        public string Remark { get; set; }
+    }
+
+    public class DbAddFriendResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; }
+    }
+
+    public class DbRemoveFriendRequest
+    {
+        public int UserId { get; set; }
+        public int FriendUserId { get; set; }
+    }
+
+    public class DbRemoveFriendResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; }
+    }
+
+    public class DbSetFriendRemarkRequest
+    {
+        public int UserId { get; set; }
+        public int FriendUserId { get; set; }
+        public string Remark { get; set; }
+    }
+
+    public class DbSetFriendRemarkResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; }
+    }
+
+    public class DbGetFriendsRequest
+    {
+        public int UserId { get; set; }
+    }
+
+    public class DbGetFriendsResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; }
+        public List<Shared.Data.Social.Friend> Friends { get; set; }
+    }
 }

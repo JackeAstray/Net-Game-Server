@@ -32,7 +32,7 @@ public class PipelineTcpServer : INetworkServer
             listenSocket.Bind(new IPEndPoint(IPAddress.Any, port));
             listenSocket.Listen(100);
 
-            Shared.Log.Info($"[PipelineTcpServer] Listening on port {port}...");
+            Shared.Log.Info($"[PipelineTcpServer] 监听端口 {port}...");
             _ = AcceptLoopAsync();
         }
         catch (Exception ex)

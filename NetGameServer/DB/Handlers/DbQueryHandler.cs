@@ -7,6 +7,7 @@ using Network;
 using Shared.Messages.Db;
 using Shared;
 using DB;
+using Shared.Data.Social;
 
 namespace DB.Handlers
 {
@@ -296,6 +297,157 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"更新在线状态异常: {ex}");
+            }
+        }
+
+        // --- Friend System Handlers ---
+
+        public static async Task HandleAddFriendRequest(ISession session, DbAddFriendRequest? request)
+        {
+            if (request == null) return;
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+
+                var response = new DbAddFriendResponse();
+                
+                // Check if already friends
+                bool exists = await dbContext.Friends.AnyAsync(f => f.UserId == request.UserId && f.FriendUserId == request.FriendUserId);
+                if (exists)
+                {
+                    response.Success = false;
+                    response.Message = "已经是好友了";
+                }
+                else
+                {
+                    var newFriend = new Shared.Data.Social.Friend
+                    {
+                        UserId = request.UserId,
+                        FriendUserId = request.FriendUserId,
+                        Remark = request.Remark ?? string.Empty,
+                        AddTime = DateTime.UtcNow
+                    };
+                    dbContext.Friends.Add(newFriend);
+                    await dbContext.SaveChangesAsync();
+                    
+                    response.Success = true;
+                    response.Message = "添加成功";
+                }
+
+                byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
+                byte[] packet = new byte[data.Length + 4];
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbAddFriendReq); // NOTE: Ideally use something like DbAddFriendRes, but using Req ID for simplicity based on previous pattern
+                data.CopyTo(packet.AsSpan(4));
+                session.Send(packet);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"添加好友异常: {ex}");
+            }
+        }
+
+        public static async Task HandleRemoveFriendRequest(ISession session, DbRemoveFriendRequest? request)
+        {
+            if (request == null) return;
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+
+                var response = new DbRemoveFriendResponse();
+                
+                var friend = await dbContext.Friends.FirstOrDefaultAsync(f => f.UserId == request.UserId && f.FriendUserId == request.FriendUserId);
+                if (friend != null)
+                {
+                    dbContext.Friends.Remove(friend);
+                    await dbContext.SaveChangesAsync();
+                    response.Success = true;
+                    response.Message = "删除成功";
+                }
+                else
+                {
+                    response.Success = false;
+                    response.Message = "好友不存在";
+                }
+
+                byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
+                byte[] packet = new byte[data.Length + 4];
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbRemoveFriendReq);
+                data.CopyTo(packet.AsSpan(4));
+                session.Send(packet);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"删除好友异常: {ex}");
+            }
+        }
+
+        public static async Task HandleSetFriendRemarkRequest(ISession session, DbSetFriendRemarkRequest? request)
+        {
+            if (request == null) return;
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+
+                var response = new DbSetFriendRemarkResponse();
+                
+                var friend = await dbContext.Friends.FirstOrDefaultAsync(f => f.UserId == request.UserId && f.FriendUserId == request.FriendUserId);
+                if (friend != null)
+                {
+                    friend.Remark = request.Remark ?? string.Empty;
+                    await dbContext.SaveChangesAsync();
+                    response.Success = true;
+                    response.Message = "设置成功";
+                }
+                else
+                {
+                    response.Success = false;
+                    response.Message = "好友不存在";
+                }
+
+                byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
+                byte[] packet = new byte[data.Length + 4];
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbSetFriendRemarkReq);
+                data.CopyTo(packet.AsSpan(4));
+                session.Send(packet);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"设置好友备注异常: {ex}");
+            }
+        }
+
+        public static async Task HandleGetFriendsRequest(ISession session, DbGetFriendsRequest? request)
+        {
+            if (request == null) return;
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+                
+                var response = new DbGetFriendsResponse();
+                
+                var friendsList = await dbContext.Friends.Where(f => f.UserId == request.UserId).ToListAsync();
+                
+                response.Success = true;
+                response.Message = "获取成功";
+                response.Friends = friendsList;
+
+                byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
+                byte[] packet = new byte[data.Length + 4];
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbGetFriendsReq);
+                data.CopyTo(packet.AsSpan(4));
+                session.Send(packet);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"获取好友列表异常: {ex}");
             }
         }
     }

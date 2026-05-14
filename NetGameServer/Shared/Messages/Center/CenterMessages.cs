@@ -24,4 +24,16 @@ namespace Shared.Messages.Center
         [JsonPropertyName("message")]
         public string Message { get; set; } = string.Empty;
     }
+
+    public class CenterCreateRoomRequest
+    {
+        [JsonPropertyName("sceneType")]
+        public string SceneType { get; set; } = string.Empty; // 可以是 "PVE_Defense", "PVP_DeathMatch" 等
+        [JsonPropertyName("isPrivate")]
+        public bool IsPrivate { get; set; }
+    }
+
+    public class CenterCreateRoomResponse : CenterMatchResponse
+    {
+    }
 }

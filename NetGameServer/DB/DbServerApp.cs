@@ -135,6 +135,10 @@ namespace DB
             router.RegisterHandler(MessageIds.DbAccountQueryReq, async (session, data) => await Handlers.DbQueryHandler.HandleAccountQueryRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.AccountQueryRequest>(data.Span)));
             router.RegisterHandler(MessageIds.DbOnlineStatsReq, async (session, data) => await Handlers.DbQueryHandler.HandleOnlineStatsRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.OnlineStatsRequest>(data.Span)));
             router.RegisterHandler(MessageIds.DbUpdateOnlineStateReq, async (session, data) => await Handlers.DbQueryHandler.HandleUpdateOnlineStateRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.UpdateOnlineStateRequest>(data.Span)));
+            router.RegisterHandler(MessageIds.DbAddFriendReq, async (session, data) => await Handlers.DbQueryHandler.HandleAddFriendRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbAddFriendRequest>(data.Span)));
+            router.RegisterHandler(MessageIds.DbRemoveFriendReq, async (session, data) => await Handlers.DbQueryHandler.HandleRemoveFriendRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbRemoveFriendRequest>(data.Span)));
+            router.RegisterHandler(MessageIds.DbSetFriendRemarkReq, async (session, data) => await Handlers.DbQueryHandler.HandleSetFriendRemarkRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbSetFriendRemarkRequest>(data.Span)));
+            router.RegisterHandler(MessageIds.DbGetFriendsReq, async (session, data) => await Handlers.DbQueryHandler.HandleGetFriendsRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbGetFriendsRequest>(data.Span)));
 
             // 简单的会话事件日志，用于监控连接与流量，实际部署时可扩展鉴权或限流逻辑
             tcpServer.OnSessionConnected += session => Shared.Log.Info($"客户端已连接: {session.RemoteEndPoint}");

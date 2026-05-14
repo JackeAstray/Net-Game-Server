@@ -27,9 +27,10 @@ namespace Battle.Handlers
         }
 
         /// <summary>
-        /// 根据坐标计算属于哪个网格坐标 (X, Y)
-        /// 我们主要处理 X 和 Z 平面上的 2D 距离区域
+        /// 获取给定世界坐标对应的网格坐标 (GridX, GridY)。使用向下取整确保坐标正确划分到网格中。
         /// </summary>
+        /// <param name="position">世界坐标</param>
+        /// <returns>网格坐标 (GridX, GridY)</returns>
         public (int, int) GetGridCoordinate(Vector3 position)
         {
             int gx = (int)Math.Floor(position.X / GridSize);
@@ -38,9 +39,13 @@ namespace Battle.Handlers
         }
 
         /// <summary>
-        /// 添加或更新实体及其所在的网格信息。
-        /// 若实体跨越了网格，返回 true，以及旧网格坐标和新网格坐标，方便外部计算视野增删。
+        /// 添加或更新实体的状态信息，并根据新旧位置更新网格索引。
         /// </summary>
+        /// <param name="sessionId">实体的会话ID</param>
+        /// <param name="state">实体的状态信息</param>
+        /// <param name="oldGrid">输出参数，表示实体的旧网格坐标</param>
+        /// <param name="newGrid">输出参数，表示实体的新网格坐标</param>
+        /// <returns>如果实体的网格发生变化，则返回 true；否则返回 false</returns>
         public bool AddOrUpdateEntity(long sessionId, EntityState state, out (int, int) oldGrid, out (int, int) newGrid)
         {
             oldGrid = (0, 0);
@@ -81,6 +86,10 @@ namespace Battle.Handlers
             return isGridChanged;
         }
 
+        /// <summary>
+        /// 移除实体及其所在的网格信息。
+        /// </summary>
+        /// <param name="sessionId">实体的会话ID</param>
         public void RemoveEntity(long sessionId)
         {
             if (entities.TryRemove(sessionId, out var state))
@@ -93,6 +102,11 @@ namespace Battle.Handlers
             }
         }
 
+        /// <summary>
+        /// 获取实体的状态信息。
+        /// </summary>
+        /// <param name="sessionId">实体的会话ID </param>
+        /// <returns>实体的状态信息，如果不存在则返回 null</returns>
         public EntityState? GetEntity(long sessionId)
         {
             if (entities.TryGetValue(sessionId, out var state))
@@ -102,14 +116,22 @@ namespace Battle.Handlers
             return null;
         }
 
+        /// <summary>
+        /// 获取所有实体的状态信息列表（用于调试或全局查询）。
+        /// 注意：在实际生产环境中，频繁调用可能会有性能问题，需谨慎使用。
+        /// </summary>
+        /// <returns></returns>
         public IEnumerable<EntityState> GetAllEntities()
         {
             return entities.Values;
         }
 
         /// <summary>
-        /// 获取给定网格周围一圈（九宫格，共9个网格）所有实体的 SessionId
+        /// 获取指定网格周围九宫格范围内的所有实体 SessionId 列表。
         /// </summary>
+        /// <param name="gridX">网格的 X 坐标</param>
+        /// <param name="gridZ">网格的 Z 坐标</param>
+        /// <returns>指定网格周围九宫格范围内的所有实体 SessionId 列表</returns>
         public List<long> GetSurroundingEntities(int gridX, int gridZ)
         {
             var result = new List<long>();
@@ -127,9 +149,12 @@ namespace Battle.Handlers
         }
 
         /// <summary>
-        /// 给定两个九宫格中心点（旧的和新的），计算出新增的关注网格列表和离开的关注网格列表
-        /// 从而找出"进入视野的主体"和"离开视野的主体"
+        /// 计算从旧网格到新网格的差异，返回进入视野的实体列表和离开视野的实体列表。
         /// </summary>
+        /// <param name="oldGrid">旧网格坐标</param>
+        /// <param name="newGrid">新网格坐标</param>
+        /// <param name="enterEntities">进入视野的实体列表</param>
+        /// <param name="leaveEntities">离开视野的实体列表</param>
         public void CalculateGridDiff((int x, int z) oldGrid, (int x, int z) newGrid, out List<long> enterEntities, out List<long> leaveEntities)
         {
             var oldSurroundings = new HashSet<(int, int)>();

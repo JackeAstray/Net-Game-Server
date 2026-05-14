@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Shared.Data;
+using Shared.Data.Social;
 
 namespace DB
 {
@@ -10,5 +11,7 @@ namespace DB
         }
 
         public DbSet<User> Users { get; set; }
+        public DbSet<Friend> Friends { get; set; }
+        public DbSet<Blacklist> Blacklists { get; set; }
     }
 }

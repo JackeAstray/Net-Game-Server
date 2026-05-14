@@ -13,6 +13,8 @@ namespace Game
     /// </summary>
     public static class GameServerApp
     {
+        public static TcpClientWrapper DbClient { get; private set; }
+
         /// <summary>
         /// 异步启动网络监听。
         /// 关键步骤：
@@ -35,6 +37,9 @@ namespace Game
             // 注册聊天处理器（示例），处理聊天相关消息并将其挂载到路由器
             var chatHandler = new Handlers.ChatHandler(networkManager);
             chatHandler.Register(router);
+
+            // 注册好友处理器
+            Handlers.FriendHandler.Register(router);
 
             // 当客户端建立连接时记录信息（可在此处加入鉴权或会话初始化逻辑）
             tcpServer.OnSessionConnected += session => Log.Info($"客户端已连接: {session.RemoteEndPoint}");
@@ -93,6 +98,7 @@ namespace Game
             int dbPort = ConfigHelper.GetConfig<int>("DBPort") == 0 ? 30005 : ConfigHelper.GetConfig<int>("DBPort");
             var dbHost = ConfigHelper.GetConfig<string>("DBHost") ?? "127.0.0.1";
             var dbClient = new TcpClientWrapper(dbHost, dbPort);
+            DbClient = dbClient;
 
             // 成功连接到 DB 时记录日志（可在此处进行首次握手或认证）
             dbClient.OnConnected += session => Log.Info($"已连接到 DB 服务器 (Host:{dbHost} Port:{dbPort})");

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text;
 
@@ -21,6 +21,12 @@ namespace Shared.Messages
         public const int DbAccountQueryReq = 1003;
         public const int DbOnlineStatsReq = 1004;
         public const int DbUpdateOnlineStateReq = 1005;
+
+        // DB Friend Messages
+        public const int DbAddFriendReq = 1006;
+        public const int DbRemoveFriendReq = 1007;
+        public const int DbSetFriendRemarkReq = 1008;
+        public const int DbGetFriendsReq = 1009;
 
         // === 登录服务器客户端通信 (10000-19999 网关转发过来) ===
         public const int LoginReq = 10001;
@@ -45,6 +51,8 @@ namespace Shared.Messages
         // === 中心/调度服务器客户端通信 (30000-39999 网关转发过来) ===
         public const int CenterMatchReq = 30001;
         public const int CenterMatchRes = 30002;
+        public const int CenterCreateRoomReq = 30003;
+        public const int CenterCreateRoomRes = 30004;
 
         // === 战斗/房间服务器客户端通信 (40000-49999 网关转发过来) ===
         public const int BattleJoinReq = 40001;
@@ -57,9 +65,25 @@ namespace Shared.Messages
         public const int EntityLeaveViewNotif = 40103;         // 广播：实体离开视野
         public const int EntityStateUpdateNotif = 40104;       // 广播：实体状态更新
 
+        // 网关发送给后端服务器的玩家掉线通知
+        public const int PlayerDisconnectNotif = 10000;
+
         // === 聊天功能通信 ===
         public const int ChatMessageReq = 30001;
         public const int ChatMessageRes = 30002;
         public const int ChatMessageNotif = 30003;
+
+        // === 好友功能通信 (50000-59999 网关转发过来) ===
+        public const int AddFriendReq = 50001;
+        public const int AddFriendRes = 50002;
+        public const int RemoveFriendReq = 50003;
+        public const int RemoveFriendRes = 50004;
+        public const int SetFriendRemarkReq = 50005;
+        public const int SetFriendRemarkRes = 50006;
+        public const int GetFriendsReq = 50007;
+        public const int GetFriendsRes = 50008;
+        public const int InviteGameReq = 50009;
+        public const int InviteGameRes = 50010;
+        public const int InviteGameNotif = 50011;
     }
 }

@@ -17,8 +17,18 @@ namespace Center.Handlers
                 var req = Shared.Json.DeserializeFromUtf8Bytes<CenterMatchRequest>(payload.Span);
                 if (req != null)
                 {
-                    var res = await matchHandler.HandleMatchRequestAsync(req);
+                    var res = await matchHandler.HandleMatchRequestAsync(clientSessionId, req);
                     SendToGateway(session, clientSessionId, MessageIds.CenterMatchRes, res);
+                }
+            };
+
+            handlers[MessageIds.CenterCreateRoomReq] = async (payload, session, clientSessionId) =>
+            {
+                var req = Shared.Json.DeserializeFromUtf8Bytes<CenterCreateRoomRequest>(payload.Span);
+                if (req != null)
+                {
+                    var res = await matchHandler.HandleCreateRoomRequestAsync(req);
+                    SendToGateway(session, clientSessionId, MessageIds.CenterCreateRoomRes, res);
                 }
             };
 
