@@ -122,8 +122,8 @@ namespace DB
         /// <returns></returns>
         public static async Task StartNetworkAsync()
         {
-            // 从配置读取端口，若未配置则使用默认 30005
-            int port = ConfigHelper.GetConfig<int>("DBPort") == 0 ? 30005 : ConfigHelper.GetConfig<int>("DBPort");
+            // 从配置读取端口，若未配置则使用默认 31305
+            int port = ConfigHelper.GetConfig<int>("DBPort") == 0 ? 31305 : ConfigHelper.GetConfig<int>("DBPort");
 
             var networkManager = new NetworkManager();
             var tcpServer = new TcpServer();

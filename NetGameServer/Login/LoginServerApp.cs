@@ -27,8 +27,8 @@ namespace Login
         /// </summary>
         public static async Task StartNetworkAsync()
         {
-            // 从配置读取监听端口，若未配置则使用默认 30002
-            int port = ConfigHelper.GetConfig<int>("LoginPort") == 0 ? 30002 : ConfigHelper.GetConfig<int>("LoginPort");
+            // 从配置读取监听端口，若未配置则使用默认 31302
+            int port = ConfigHelper.GetConfig<int>("LoginPort") == 0 ? 31302 : ConfigHelper.GetConfig<int>("LoginPort");
 
             // 创建网络管理器与 TCP 服务器（用于网关连接）
             var networkManager = new NetworkManager();
@@ -116,7 +116,7 @@ namespace Login
         private static TcpClientWrapper ConnectToDatabase()
         {
             // 从配置读取 DB 连接信息，若未配置则使用默认值
-            int dbPort = ConfigHelper.GetConfig<int>("DBPort") == 0 ? 30005 : ConfigHelper.GetConfig<int>("DBPort");
+            int dbPort = ConfigHelper.GetConfig<int>("DBPort") == 0 ? 31305 : ConfigHelper.GetConfig<int>("DBPort");
             var dbHost = ConfigHelper.GetConfig<string>("DBHost") ?? "127.0.0.1";
             var dbClient = new TcpClientWrapper(dbHost, dbPort);
 
@@ -187,7 +187,7 @@ namespace Login
         /// <returns>一个表示异步操作的任务</returns>
         public static async Task StartWebApiAsync(string[] args)
         {
-            int apiPort = ConfigHelper.GetConfig<int>("ApiPort") == 0 ? 30003 : ConfigHelper.GetConfig<int>("ApiPort");
+            int apiPort = ConfigHelper.GetConfig<int>("ApiPort") == 0 ? 31303 : ConfigHelper.GetConfig<int>("ApiPort");
 
             var builder = WebApplication.CreateBuilder(args);
 
@@ -202,7 +202,7 @@ namespace Login
             builder.Services.AddEndpointsApiExplorer();
             builder.Services.AddSwaggerGen();
 
-            int dbPort = ConfigHelper.GetConfig<int>("DBPort") == 0 ? 30005 : ConfigHelper.GetConfig<int>("DBPort");
+            int dbPort = ConfigHelper.GetConfig<int>("DBPort") == 0 ? 31305 : ConfigHelper.GetConfig<int>("DBPort");
             var dbHost = ConfigHelper.GetConfig<string>("DBHost") ?? "127.0.0.1";
             var dbClient = new TcpClientWrapper(dbHost, dbPort);
             var loginHandler = new Login.Handlers.LoginHandler(dbClient);

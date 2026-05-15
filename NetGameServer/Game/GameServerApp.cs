@@ -18,14 +18,14 @@ namespace Game
         /// <summary>
         /// 异步启动网络监听。
         /// 关键步骤：
-        /// 1. 从配置读取 GamePort（默认 30004）。
+        /// 1. 从配置读取 GamePort（默认 31304）。
         /// 2. 创建 NetworkManager 和 TcpServer，注册消息路由和处理器。
         /// 3. 处理客户端的连接、断开以及接收数据事件，并将数据解析后交由路由器分发。
         /// </summary>
         public static async Task StartNetworkAsync()
         {
-            // 从配置中读取端口，若未配置或为 0 则使用默认端口 30004
-            int port = ConfigHelper.GetConfig<int>("GamePort") == 0 ? 30004 : ConfigHelper.GetConfig<int>("GamePort");
+            // 从配置中读取端口，若未配置或为 0 则使用默认端口 31304
+            int port = ConfigHelper.GetConfig<int>("GamePort") == 0 ? 31304 : ConfigHelper.GetConfig<int>("GamePort");
 
             // 创建网络管理器，用于管理多个服务器实例
             var networkManager = new NetworkManager();
@@ -88,14 +88,14 @@ namespace Game
         /// <summary>
         /// 连接到外部数据库服务器（通过 TcpClientWrapper 封装的 TCP 客户端）。
         /// 关键点：
-        /// 1. 从配置读取 DBHost 和 DBPort（默认 127.0.0.1:30005）。
+        /// 1. 从配置读取 DBHost 和 DBPort（默认 127.0.0.1:31305）。
         /// 2. 订阅连接/断开事件以记录和处理重连/告警逻辑。
         /// 3. 启动异步连接（不阻塞调用者）。
         /// </summary>
         public static void ConnectToDatabase()
         {
             // 从配置中读取 DB 端口与主机，使用默认值作为回退
-            int dbPort = ConfigHelper.GetConfig<int>("DBPort") == 0 ? 30005 : ConfigHelper.GetConfig<int>("DBPort");
+            int dbPort = ConfigHelper.GetConfig<int>("DBPort") == 0 ? 31305 : ConfigHelper.GetConfig<int>("DBPort");
             var dbHost = ConfigHelper.GetConfig<string>("DBHost") ?? "127.0.0.1";
             var dbClient = new TcpClientWrapper(dbHost, dbPort);
             DbClient = dbClient;

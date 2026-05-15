@@ -13,8 +13,8 @@ namespace Center
 
         public static async Task StartNetworkAsync()
         {
-            // 例如配置中 CenterPort 默认 30006
-            int port = ConfigHelper.GetConfig<int>("CenterPort") == 0 ? 30006 : ConfigHelper.GetConfig<int>("CenterPort");
+            // 例如配置中 CenterPort 默认 31306
+            int port = ConfigHelper.GetConfig<int>("CenterPort") == 0 ? 31306 : ConfigHelper.GetConfig<int>("CenterPort");
 
             var matchHandler = new Center.Handlers.MatchHandler();
             _handlers = Center.Handlers.MessageRouter.BuildHandlers(matchHandler);

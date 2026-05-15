@@ -18,7 +18,7 @@ namespace Gateway
     {
         /// <summary>
         /// 启动网关的网络服务并注册事件处理器。
-        /// - 根据配置获取监听端口（默认 TCP/UDP:30000，WebSocket:30001）。
+        /// - 根据配置获取监听端口（默认 TCP/UDP:31300，WebSocket:31301）。
         /// - 创建并注册 TCP/UDP/WebSocket 三种服务器实例，统一将连接加入会话管理器。
         /// - 将接收到的客户端数据解析出 MsgId，并在客户端 SessionId 前附加 8 字节后转发给后端服务器（Login/Game）。
         /// - 处理客户端断开事件并从会话管理器移除对应会话。
@@ -26,7 +26,7 @@ namespace Gateway
         public static async Task StartNetworkAsync()
         {
             // 读取配置端口，若配置为 0 或未配置则使用默认端口
-            int port = ConfigHelper.GetConfig<int>("GatewayPort") == 0 ? 30000 : ConfigHelper.GetConfig<int>("GatewayPort");
+            int port = ConfigHelper.GetConfig<int>("GatewayPort") == 0 ? 31300 : ConfigHelper.GetConfig<int>("GatewayPort");
 
             // 创建网络管理器和各类型的监听服务器（TCP/UDP/KCP/WebSocket）
             var networkManager = new NetworkManager();
@@ -123,7 +123,7 @@ namespace Gateway
             networkManager.RegisterServer("GatewayWebSocket", webSocketServer);
 
             await networkManager.StartServerAsync("GatewayTcp", port);
-            await networkManager.StartServerAsync("GatewayUdp", port); 
+            await networkManager.StartServerAsync("GatewayUdp", port);
             await networkManager.StartServerAsync("GatewayWebSocket", port + 1);
 
             Shared.Log.Info($"网关服务器已启动，监听 TCP 端口: {port}, UDP/KCP 端口: {port}, WebSocket 端口: {port + 1}");
@@ -137,12 +137,12 @@ namespace Gateway
         private static (TcpClientWrapper, TcpClientWrapper, TcpClientWrapper, TcpClientWrapper) ConnectToBackendServers()
         {
             // 读取 Login 后端配置（支持默认端口）
-            int loginPort = ConfigHelper.GetConfig<int>("LoginPort") == 0 ? 30002 : ConfigHelper.GetConfig<int>("LoginPort");
+            int loginPort = ConfigHelper.GetConfig<int>("LoginPort") == 0 ? 31302 : ConfigHelper.GetConfig<int>("LoginPort");
             string loginHost = ConfigHelper.GetConfig<string>("LoginHost") ?? "127.0.0.1";
             var loginClient = new TcpClientWrapper(loginHost, loginPort);
             loginClient.OnConnected += session => Shared.Log.Info($"已连接到 Login 服务器 (Host:{loginHost} Port:{loginPort})");
             loginClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"与 Login 服务器断开连接: {reason}");
-            loginClient.OnDataReceived += (session, data) => 
+            loginClient.OnDataReceived += (session, data) =>
             {
                 if (data.Length >= 12)
                 {
@@ -154,11 +154,11 @@ namespace Gateway
                         var payload = data.Span.Slice(12);
 
                         byte[] clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
-                        try 
+                        try
                         {
                             clientSession.Send(clientPacket.AsSpan(0, totalLength).ToArray());
-                        } 
-                        finally 
+                        }
+                        finally
                         {
                             System.Buffers.ArrayPool<byte>.Shared.Return(clientPacket);
                         }
@@ -167,14 +167,14 @@ namespace Gateway
             };
             _ = loginClient.ConnectAsync();
 
-            int gamePort = ConfigHelper.GetConfig<int>("GamePort") == 0 ? 30004 : ConfigHelper.GetConfig<int>("GamePort");
+            int gamePort = ConfigHelper.GetConfig<int>("GamePort") == 0 ? 31304 : ConfigHelper.GetConfig<int>("GamePort");
             string gameHost = ConfigHelper.GetConfig<string>("GameHost") ?? "127.0.0.1";
             var gameClient = new TcpClientWrapper(gameHost, gamePort);
             gameClient.OnConnected += session => Shared.Log.Info($"已连接到 Game 服务器 (Host:{gameHost} Port:{gamePort})");
             gameClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"与 Game 服务器断开连接: {reason}");
-            gameClient.OnDataReceived += (session, data) => 
+            gameClient.OnDataReceived += (session, data) =>
             {
-                if (data.Length >= 12) 
+                if (data.Length >= 12)
                 {
                     long sessionId = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(data.Span.Slice(0, 8));
                     int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(8, 4));
@@ -198,11 +198,11 @@ namespace Gateway
                         if (clientSession != null)
                         {
                             var clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
-                            try 
+                            try
                             {
                                 clientSession.Send(clientPacket.AsSpan(0, totalLength).ToArray());
-                            } 
-                            finally 
+                            }
+                            finally
                             {
                                 System.Buffers.ArrayPool<byte>.Shared.Return(clientPacket);
                             }
@@ -212,14 +212,14 @@ namespace Gateway
             };
             _ = gameClient.ConnectAsync();
 
-            int centerPort = ConfigHelper.GetConfig<int>("CenterPort") == 0 ? 30006 : ConfigHelper.GetConfig<int>("CenterPort");
+            int centerPort = ConfigHelper.GetConfig<int>("CenterPort") == 0 ? 31306 : ConfigHelper.GetConfig<int>("CenterPort");
             string centerHost = ConfigHelper.GetConfig<string>("CenterHost") ?? "127.0.0.1";
             var centerClient = new TcpClientWrapper(centerHost, centerPort);
             centerClient.OnConnected += session => Shared.Log.Info($"已连接到 Center 服务器 (Host:{centerHost} Port:{centerPort})");
             centerClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"与 Center 服务器断开连接: {reason}");
             centerClient.OnDataReceived += delegate (Network.ISession session, ReadOnlyMemory<byte> data)
             {
-                if (data.Length >= 12) 
+                if (data.Length >= 12)
                 {
                     long sessionId = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(data.Span.Slice(0, 8));
                     int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(8, 4));
@@ -237,7 +237,7 @@ namespace Gateway
                         if (clientSession != null)
                         {
                             var clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
-                            try { clientSession.Send(clientPacket.AsSpan(0, totalLength).ToArray()); } 
+                            try { clientSession.Send(clientPacket.AsSpan(0, totalLength).ToArray()); }
                             finally { System.Buffers.ArrayPool<byte>.Shared.Return(clientPacket); }
                         }
                     }
@@ -245,14 +245,14 @@ namespace Gateway
             };
             _ = centerClient.ConnectAsync();
 
-            int battlePort = ConfigHelper.GetConfig<int>("BattlePort") == 0 ? 30007 : ConfigHelper.GetConfig<int>("BattlePort");
+            int battlePort = ConfigHelper.GetConfig<int>("BattlePort") == 0 ? 31307 : ConfigHelper.GetConfig<int>("BattlePort");
             string battleHost = ConfigHelper.GetConfig<string>("BattleHost") ?? "127.0.0.1";
             var battleClient = new TcpClientWrapper(battleHost, battlePort);
             battleClient.OnConnected += session => Shared.Log.Info($"已连接到 Battle 服务器 (Host:{battleHost} Port:{battlePort})");
             battleClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"与 Battle 服务器断开连接: {reason}");
             battleClient.OnDataReceived += delegate (Network.ISession session, ReadOnlyMemory<byte> data)
             {
-                if (data.Length >= 12) 
+                if (data.Length >= 12)
                 {
                     long sessionId = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(data.Span.Slice(0, 8));
                     int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(8, 4));
@@ -270,7 +270,7 @@ namespace Gateway
                         if (clientSession != null)
                         {
                             var clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
-                            try { clientSession.Send(clientPacket.AsSpan(0, totalLength).ToArray()); } 
+                            try { clientSession.Send(clientPacket.AsSpan(0, totalLength).ToArray()); }
                             finally { System.Buffers.ArrayPool<byte>.Shared.Return(clientPacket); }
                         }
                     }
@@ -289,8 +289,8 @@ namespace Gateway
         public static async Task StartReverseProxyAsync(string[] args)
         {
             // HTTP 监听端口和后端 Login HTTP 地址（支持默认值）
-            int httpPort = ConfigHelper.GetConfig<int>("GatewayHttpPort") == 0 ? 30001 : ConfigHelper.GetConfig<int>("GatewayHttpPort");
-            string loginHttpUrl = ConfigHelper.GetConfig<string>("LoginHttpUrl") ?? "http://127.0.0.1:30003";
+            int httpPort = ConfigHelper.GetConfig<int>("GatewayHttpPort") == 0 ? 31301 : ConfigHelper.GetConfig<int>("GatewayHttpPort");
+            string loginHttpUrl = ConfigHelper.GetConfig<string>("LoginHttpUrl") ?? "http://127.0.0.1:31303";
 
             var builder = WebApplication.CreateBuilder(args);
 

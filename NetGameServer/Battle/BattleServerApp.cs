@@ -14,7 +14,7 @@ namespace Battle
         {
             Configs.ConfigManager.LoadAll(); // 读取策划配置文件
 
-            int port = ConfigHelper.GetConfig<int>("BattlePort") == 0 ? 30007 : ConfigHelper.GetConfig<int>("BattlePort");
+            int port = ConfigHelper.GetConfig<int>("BattlePort") == 0 ? 31307 : ConfigHelper.GetConfig<int>("BattlePort");
 
             var sceneManager = new Battle.Handlers.SceneManager();
             var entitySyncHandler = new Battle.Handlers.EntitySyncHandler(sceneManager);
