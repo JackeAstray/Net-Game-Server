@@ -8,3 +8,6 @@
 
 ## JSON Serialization
 - Standardize all JSON serialization and deserialization across the project by using the custom helper `Shared.Json`. Replace all manual usages of `System.Text.Json.JsonSerializer` with `Shared.Json.SerializeToUtf8Bytes` and `Shared.Json.DeserializeFromUtf8Bytes` in `Login/Program.cs`.
+
+## Documentation Language
+- When requested, provide documentation in Chinese language.

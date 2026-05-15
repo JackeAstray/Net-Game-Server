@@ -1,18 +1,20 @@
-﻿# Login 服务器 (登录授权与创角系统)
+﻿# Login 登录服务器
 
-## 概述
-登录服 (Login Server) 作为集群环境里的专属单点业务组件，聚焦于用户游戏生命周期最初阶段的安全验证与角色数据初始化。
+`Login` 节点主要负责处理用户系统级别的操作。它既能够通过 HTTP 提供无状态的注册和状态校验能力，也能通过接受来自 `Gateway` 建立的 TCP 长连接从而支持 Socket 包驱动登录体系。
 
-## 核心职责
+## 核心特性
+- **双协议支持**:
+  - **Socket 路由 (长连接)**: 它通过监听 `TCP` 对应端口接受由于客户端过完 `Gateway` 转发而来的原始认证字节流。根据附带的 `MsgId` 与分发的处理函数对应，比如 `MsgId=10001` 等登录相关封包。
+  - **HTTP API**: 采用 ASP.NET Core Web API 实现提供给客户端及 Web 周边工具调用接口。
+- **与全局数据库交互**: 包含 UID 生成器的逻辑，在启动向 `DB` 节点发起请求同步最大全局用户 ID，保持分布式主键的正确增量。
 
-1. **账户鉴权 (Authentication)**
-   - 验证客户端提交的账密信息、或是通过对接各种渠道 SDK (如微信、Steam、Apple 登录) 返回的第三方 Token，给客户端颁发合法的登录会话态（Session Token）。
+## 工作流 (Socket登录举例)
+1. 客户端通过长连接向 `Gateway` 发出 `[MsgId][Payload]` 格式的登录请求。
+2. `Gateway` 转发给 `Login` 服务器，并在前面加上 `[ClientSessionId(8)]` 变成 `[ClientSessionId(8)][MsgId(4)][Payload]`。
+3. `Login` 解析头部的 ID 与 MsgId。
+4. 在 `MessageRouter` 或者 `LoginHandler` 根据特定 `MsgId` 进入响应逻辑。
+5. 去 `DB` 服务器校验账号密码。
+6. `Login` 返回同样的协议包携带应答，并使用 `SessionManager.Instance.SendToGatewayAction` 向原网关吐回数据，最终下发至客户端。
 
-2. **角色创建与选取**
-   - 玩家验证成功后拉取其名下的角色列表。如果在新的大区/服务器建立新角色，负责初始化初始角色模型、各项初始资产写入 DB，并在 Center 注册。
-   
-3. **顶号机制控制**
-   - 若检测到对应账号已经在同一/另一个区域被登录，Login 将下发消息去 Center 调用踢线逻辑，以满足独占长连接。
-
-## 升级注意点
-目前的 Login 服务为了效率可能主要提供了 HTTP / HTTPS 断连请求以简化验证，针对长连接需要特别考虑对 `[MsgId]` 包头路由处理，接收来自 Gateway 的直接 Socket 转发，并在验证通过后让 Center 下发 `Game` 分配结果给 Gateway 继续维系。
+## 启动注意
+`Login` 会依赖于 `DB` 系统的先决存在用以申请 `MaxUid` 初始化分发器。请务必优先启动 `DB` 进程。
