@@ -29,6 +29,8 @@ namespace Shared.Messages
         public const int DbGetFriendsReq = 1009;
 
         // === 登录服务器客户端通信 (10000-19999 网关转发过来) ===
+        public const int PlayerDisconnectNotif = 10000;
+
         public const int LoginReq = 10001;
         public const int LoginRes = 10002;
 
@@ -70,13 +72,10 @@ namespace Shared.Messages
         public const int EntityLeaveViewNotif = 40103;         // 广播：实体离开视野
         public const int EntityStateUpdateNotif = 40104;       // 广播：实体状态更新
 
-        // 网关发送给后端服务器的玩家掉线通知
-        public const int PlayerDisconnectNotif = 10000;
-
-        // === 聊天功能通信 ===
-        public const int ChatMessageReq = 30001;
-        public const int ChatMessageRes = 30002;
-        public const int ChatMessageNotif = 30003;
+        // === 聊天功能通信 (60000-69999 网关转发过来) ===
+        public const int ChatMessageReq = 60001;
+        public const int ChatMessageRes = 60002;
+        public const int ChatMessageNotif = 60003;
 
         // === 好友功能通信 (50000-59999 网关转发过来) ===
         public const int AddFriendReq = 50001;

@@ -293,6 +293,13 @@ namespace Gateway
             string loginHttpUrl = ConfigHelper.GetConfig<string>("LoginHttpUrl") ?? "http://127.0.0.1:30003";
 
             var builder = WebApplication.CreateBuilder(args);
+
+            // 配置 Kestrel 显式监听指定端口，避免被 IISExpress 或其他默认配置干扰
+            builder.WebHost.ConfigureKestrel(options =>
+            {
+                options.ListenAnyIP(httpPort);
+            });
+
             builder.Host.UseSerilog();
             builder.Services.AddReverseProxy()
                 .LoadFromMemory(
@@ -332,7 +339,7 @@ namespace Gateway
             app.MapReverseProxy();
 
             Shared.Log.Info($"网关 HTTP API 反向代理已启动，监听端口: {httpPort} 并路由 /api 至 {loginHttpUrl}");
-            _ = app.RunAsync($"http://*:{httpPort}");
+            _ = app.RunAsync();
         }
     }
 }

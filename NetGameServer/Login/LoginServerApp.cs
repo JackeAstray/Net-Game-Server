@@ -190,6 +190,13 @@ namespace Login
             int apiPort = ConfigHelper.GetConfig<int>("ApiPort") == 0 ? 30003 : ConfigHelper.GetConfig<int>("ApiPort");
 
             var builder = WebApplication.CreateBuilder(args);
+
+            // 配置 Kestrel 显式监听指定端口，避免被 IISExpress 或其他默认配置干扰
+            builder.WebHost.ConfigureKestrel(options =>
+            {
+                options.ListenAnyIP(apiPort);
+            });
+
             builder.Host.UseSerilog();
             builder.Services.AddControllers();
             builder.Services.AddEndpointsApiExplorer();
@@ -222,7 +229,7 @@ namespace Login
             app.MapControllers();
 
             Shared.Log.Info($"ASP.NET API已启动，正在监听 HTTP 端口 {apiPort}");
-            _ = app.RunAsync($"http://*:{apiPort}");
+            _ = app.RunAsync();
         }
     }
 }
