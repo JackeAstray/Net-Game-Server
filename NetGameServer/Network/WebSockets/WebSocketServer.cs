@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.WebSockets;
 
+using Network.Routing;
+
 namespace Network.WebSockets;
 
 /// <summary>
@@ -21,10 +23,23 @@ public class WebSocketServer : INetworkServer
         try
         {
             listener = new HttpListener();
-            // 注意：在Windows下绑定所有IP（如+或*）可能需要管理员权限或者netsh配置，这里默认使用localhost和127.0.0.1兼容开发
-            listener.Prefixes.Add($"http://localhost:{port}/");
-            listener.Prefixes.Add($"http://127.0.0.1:{port}/");
-            listener.Start();
+            // 优先绑定全部地址，满足跨机器客户端接入；若系统未授权则回退到本机地址用于本地开发。
+            listener.Prefixes.Add($"http://+:{port}/");
+
+            try
+            {
+                listener.Start();
+            }
+            catch (HttpListenerException ex) when (ex.ErrorCode == 5)
+            {
+                Shared.Log.Warning($"[WebSocketServer] 监听所有地址失败(权限不足)，回退本机监听。详细: {ex.Message}");
+                listener.Close();
+
+                listener = new HttpListener();
+                listener.Prefixes.Add($"http://localhost:{port}/");
+                listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+                listener.Start();
+            }
 
             cts = new CancellationTokenSource();
             _ = AcceptLoopAsync(cts.Token);
@@ -70,6 +85,7 @@ public class WebSocketServer : INetworkServer
     private async Task HandleWebSocketAsync(WebSocket webSocket, EndPoint? remoteEndPoint)
     {
         var session = new WebSocketSession(webSocket, remoteEndPoint);
+        var packetReader = new LengthPrefixedPacketReader();
         OnSessionConnected?.Invoke(session);
 
         var buffer = new byte[4096];
@@ -78,18 +94,31 @@ public class WebSocketServer : INetworkServer
         {
             while (webSocket.State == WebSocketState.Open)
             {
-                var receiveResult = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                WebSocketReceiveResult receiveResult;
+                do
+                {
+                    receiveResult = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+
+                    if (receiveResult.MessageType == WebSocketMessageType.Close)
+                    {
+                        break;
+                    }
+
+                    if (receiveResult.Count > 0)
+                    {
+                        packetReader.Append(buffer.AsSpan(0, receiveResult.Count));
+                    }
+                }
+                while (!receiveResult.EndOfMessage);
 
                 if (receiveResult.MessageType == WebSocketMessageType.Close)
                 {
                     break;
                 }
 
-                if (receiveResult.Count > 0)
+                while (packetReader.TryReadPacket(out var packet))
                 {
-                    var data = new byte[receiveResult.Count];
-                    Array.Copy(buffer, data, receiveResult.Count);
-                    OnDataReceived?.Invoke(session, data);
+                    OnDataReceived?.Invoke(session, packet);
                 }
             }
         }

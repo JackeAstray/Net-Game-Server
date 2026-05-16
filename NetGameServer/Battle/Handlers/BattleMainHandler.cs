@@ -15,10 +15,13 @@ namespace Battle.Handlers
         }
 
         /// <summary>
-        /// 处理中心服务器的创建场景请求，基于请求参数创建一个新的场景，并返回结果给中心服务器。
+        /// 处理创建场景请求，基于请求参数构造场景配置并通过场景管理器获取或创建场景，返回创建结果。
         /// </summary>
-        /// <param name="request"></param>
-        /// <returns></returns>
+        /// <remarks>内部捕获并记录异常，方法通过 Task.FromResult 返回同步完成的任务；实际场景由 sceneManager.GetOrCreateScene
+        /// 获取或创建。</remarks>
+        /// <param name="request">包含场景创建所需的信息（例如 RoomId、SceneType、IsPrivate），用于构建 SceneConfig 并决定是否使用 AOI 与私有设置。</param>
+        /// <returns>表示 CenterCreateSceneResponse 的任务，Success 指示操作是否成功；成功时包含 RoomId、SceneId 与 BattleNodeId，失败时 Success 为 false 且
+        /// SceneId 为空。</returns>
         public Task<CenterCreateSceneResponse> HandleCreateSceneRequestAsync(CenterCreateSceneRequest request)
         {
             try

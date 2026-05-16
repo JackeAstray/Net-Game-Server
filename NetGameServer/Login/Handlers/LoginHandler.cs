@@ -259,12 +259,7 @@ namespace Login.Handlers
             long requestId = System.Threading.Interlocked.Increment(ref sequenceId);
             LoginServerApp.PendingRequests[requestId] = tcs;
 
-            byte[] packet = new byte[data.Length + 12];
-            // [MsgId(4)] + [RequestId(8)] + [Data]
-            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), msgId);
-            System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(packet.AsSpan(4, 8), requestId);
-            data.CopyTo(packet.AsSpan(12));
-
+            byte[] packet = Network.Routing.PacketBuilder.BuildDbRequestPacket(msgId, requestId, data);
             dbClient.Send(packet);
 
             using var cts = new System.Threading.CancellationTokenSource();

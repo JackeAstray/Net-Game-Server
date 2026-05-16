@@ -49,4 +49,39 @@ public static class PacketBuilder
 
         return buffer;
     }
+
+    /// <summary>
+    /// 构建服务到 DB 的统一协议包：MsgId(4) + RequestId(8) + Payload(N)
+    /// </summary>
+    public static byte[] BuildDbRequestPacket(int msgId, long requestId, ReadOnlySpan<byte> payload)
+    {
+        int length = 12 + payload.Length;
+        byte[] buffer = new byte[length];
+
+        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(0, 4), msgId);
+        BinaryPrimitives.WriteInt64LittleEndian(buffer.AsSpan(4, 8), requestId);
+        payload.CopyTo(buffer.AsSpan(12));
+
+        return buffer;
+    }
+
+    /// <summary>
+    /// 解析服务与 DB 的统一协议包：MsgId(4) + RequestId(8) + Payload(N)
+    /// </summary>
+    public static bool TryParseDbPacket(ReadOnlyMemory<byte> data, out int msgId, out long requestId, out ReadOnlyMemory<byte> payload)
+    {
+        msgId = 0;
+        requestId = 0;
+        payload = default;
+
+        if (data.Length < 12)
+        {
+            return false;
+        }
+
+        msgId = BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+        requestId = BinaryPrimitives.ReadInt64LittleEndian(data.Span.Slice(4, 8));
+        payload = data.Slice(12);
+        return true;
+    }
 }

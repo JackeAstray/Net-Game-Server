@@ -60,6 +60,7 @@ namespace Shared.Messages
         public const int CenterRegisterNodeRes = 30006;
         public const int CenterCreateSceneReq = 30007; // Center -> Battle
         public const int CenterCreateSceneRes = 30008; // Battle -> Center
+        public const int CenterNodeStatusReq = 30009;
 
         // === 战斗/房间服务器客户端通信 (40000-49999 网关转发过来) ===
         public const int BattleJoinReq = 40001;

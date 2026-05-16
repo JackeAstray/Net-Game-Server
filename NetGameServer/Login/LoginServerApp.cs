@@ -2,10 +2,13 @@ using System;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
-using Shared;
 using Network;
+using Network.Routing;
 using Network.Tcp;
 using Serilog;
+using Shared;
+using Shared.Messages;
+using Shared.Messages.Center;
 
 namespace Login
 {
@@ -16,6 +19,7 @@ namespace Login
     public static class LoginServerApp
     {
         public static readonly System.Collections.Concurrent.ConcurrentDictionary<long, TaskCompletionSource<byte[]>> PendingRequests = new System.Collections.Concurrent.ConcurrentDictionary<long, TaskCompletionSource<byte[]>>();
+        private static System.Threading.CancellationTokenSource? centerHeartbeatCts;
 
         /// <summary>
         /// 启动用于接收网关连接的 TCP 服务并处理来自网关的数据包。
@@ -49,10 +53,9 @@ namespace Login
             // 构建消息处理器字典，按 MsgId 分发
             var messageHandlers = Login.Handlers.MessageRouter.BuildHandlers(loginHandler);
 
-            // 给 SessionManager 设置 SendToGatewayAction，使它可以广播特殊包(例如踢人)到网关，这通过向任意活动网关session发送来完成，因为包头带了真实客户端长ID
-            // 如果我们需要支持多个网关的话，我们可能需要跟踪注册的网关会话，但由于LoginServer没有在 tcpServer 上公开已连接会话的集合，这里我们需要一个集合或者把 session存在某处
-            // 在此为了简化，我们在 tcpServer.OnSessionConnected 中存储所有活跃的网关会话，然后选取一个发送。
+            // 跟踪所有活跃网关会话，并记录“客户端会话 -> 网关会话”的绑定，避免多网关场景下回包错路由。
             var activeGatewaySessions = new System.Collections.Concurrent.ConcurrentDictionary<long, Network.ISession>();
+            var clientGatewayBindings = new System.Collections.Concurrent.ConcurrentDictionary<long, long>();
 
             tcpServer.OnSessionConnected += session =>
             {
@@ -63,21 +66,37 @@ namespace Login
             {
                 Shared.Log.Info($"网关断开连接，原因: {reason}");
                 activeGatewaySessions.TryRemove(session.SessionId, out _);
+
+                foreach (var binding in clientGatewayBindings)
+                {
+                    if (binding.Value == session.SessionId)
+                    {
+                        clientGatewayBindings.TryRemove(binding.Key, out _);
+                    }
+                }
             };
 
             Login.Managers.SessionManager.Instance.SendToGatewayAction = (clientSessionId, packetData) =>
             {
-                // 发送到负责的网关。
+                // [SessionId(8)][MsgId(4)][Payload]
+                // SendToGatewayAction 的 packetData 仅为 [MsgId(4)][Payload]，这里补上客户端 SessionId 作为前缀。
+                byte[] wrapperMsg = new byte[8 + packetData.Length];
+                System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(wrapperMsg.AsSpan(0, 8), clientSessionId);
+                packetData.CopyTo(wrapperMsg.AsSpan(8));
+
+                if (clientGatewayBindings.TryGetValue(clientSessionId, out var gatewaySessionId)
+                    && activeGatewaySessions.TryGetValue(gatewaySessionId, out var targetGatewaySession))
+                {
+                    targetGatewaySession.Send(wrapperMsg);
+                    return;
+                }
+
+                // 兜底：若暂无绑定，尝试发送给任意活跃网关并建立绑定。
                 foreach (var session in activeGatewaySessions.Values)
                 {
-                    // [SessionId(8)][MsgId(4)][Payload]
-                    // 但网关直接转发到客户端，SendToGatewayAction 的 packetData 并没有加客户端 SessionId，我们需要包装一下
-                    byte[] wrapperMsg = new byte[8 + packetData.Length];
-                    System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(wrapperMsg.AsSpan(0, 8), clientSessionId);
-                    packetData.CopyTo(wrapperMsg.AsSpan(8));
-
                     session.Send(wrapperMsg);
-                    break; // 假设所有网关都可以互通，或者按某种逻辑路由。一般只需转给连过来的那个网关
+                    clientGatewayBindings[clientSessionId] = session.SessionId;
+                    break;
                 }
             };
 
@@ -89,6 +108,9 @@ namespace Login
                 long clientSessionId = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(data.Span.Slice(0, 8));
                 int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(8, 4));
                 var payload = data.Slice(12);
+
+                // 记录客户端会话对应的网关会话，用于回包精确路由。
+                clientGatewayBindings[clientSessionId] = session.SessionId;
 
                 try
                 {
@@ -107,6 +129,8 @@ namespace Login
                     Shared.Log.Error($"处理消息 MsgId:{msgId} 时出现异常: {ex}");
                 }
             };
+
+            ConnectToCenter(port, activeGatewaySessions);
         }
 
         /// <summary>
@@ -127,48 +151,42 @@ namespace Login
 
                 var request = new Shared.Messages.Db.GetMaxUidRequest();
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(request);
-                // 包格式: [MsgId(4) | Payload]
-                byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1000);
-                data.CopyTo(packet.AsSpan(4));
+                byte[] packet = Network.Routing.PacketBuilder.BuildDbRequestPacket(Shared.Messages.MessageIds.DbGetMaxUidReq, 0, data);
                 session.Send(packet);
             };
 
-            // 处理从 DB 返回的数据，用于解析 MsgId 并处理 GetMaxUidResponse
+            // 处理从 DB 返回的数据，严格按 [MsgId(4)][RequestId(8)][Payload] 解析
             dbClient.OnDataReceived += (session, data) =>
             {
-                if (data.Length >= 4)
+                if (!Network.Routing.PacketBuilder.TryParseDbPacket(data, out int msgId, out long requestId, out ReadOnlyMemory<byte> payload))
                 {
-                    int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                    Shared.Log.Error($"DB 返回协议异常，长度不足 12，实际: {data.Length}");
+                    return;
+                }
 
-                    if (data.Length >= 12)
+                if (PendingRequests.TryRemove(requestId, out var tcs))
+                {
+                    try
                     {
-                        long requestId = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(data.Span.Slice(4, 8));
-                        if (PendingRequests.TryRemove(requestId, out var tcs))
-                        {
-                            try
-                            {
-                                tcs.TrySetResult(data.Span.Slice(12).ToArray());
-                            }
-                            catch (Exception ex)
-                            {
-                                Shared.Log.Error($"反序列化响应异常: {ex}");
-                            }
-                            return;
-                        }
+                        tcs.TrySetResult(payload.ToArray());
                     }
-
-                    if (msgId == 1000)
+                    catch (Exception ex)
                     {
-                        var response = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.GetMaxUidResponse>(data.Span.Slice(4));
-                        if (response != null)
-                        {
-                            long currentMaxSequenceFromDB = response.MaxUid;
-                            int currentRegionId = ConfigHelper.GetConfig<int>("RegionId") == 0 ? 1 : ConfigHelper.GetConfig<int>("RegionId");
-                            // 初始化全局 UID 生成器
-                            Shared.UIDGenerator.Initialize(currentRegionId, currentMaxSequenceFromDB);
-                            Shared.Log.Info($"UID 生成器初始化完成，区服ID:{currentRegionId}，当前同步的最大序列:{currentMaxSequenceFromDB}");
-                        }
+                        Shared.Log.Error($"反序列化响应异常: {ex}");
+                    }
+                    return;
+                }
+
+                if (msgId == Shared.Messages.MessageIds.DbGetMaxUidReq)
+                {
+                    var response = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.GetMaxUidResponse>(payload.Span);
+                    if (response != null)
+                    {
+                        long currentMaxSequenceFromDB = response.MaxUid;
+                        int currentRegionId = ConfigHelper.GetConfig<int>("RegionId") == 0 ? 1 : ConfigHelper.GetConfig<int>("RegionId");
+                        // 初始化全局 UID 生成器
+                        Shared.UIDGenerator.Initialize(currentRegionId, currentMaxSequenceFromDB);
+                        Shared.Log.Info($"UID 生成器初始化完成，区服ID:{currentRegionId}，当前同步的最大序列:{currentMaxSequenceFromDB}");
                     }
                 }
             };
@@ -178,6 +196,75 @@ namespace Login
             _ = dbClient.ConnectAsync();
 
             return dbClient;
+        }
+
+        private static void ConnectToCenter(int port, System.Collections.Concurrent.ConcurrentDictionary<long, Network.ISession> activeGatewaySessions)
+        {
+            int centerPort = ConfigHelper.GetConfig<int>("CenterPort") == 0 ? 31306 : ConfigHelper.GetConfig<int>("CenterPort");
+            string centerHost = ConfigHelper.GetConfig<string>("CenterHost") ?? "127.0.0.1";
+            string loginHost = ConfigHelper.GetConfig<string>("LoginHost") ?? "127.0.0.1";
+            string nodeId = $"Login-{loginHost}:{port}";
+            var centerClient = new TcpClientWrapper(centerHost, centerPort);
+
+            centerClient.OnConnected += session =>
+            {
+                Shared.Log.Info($"已连接到 Center 服务器 (Host:{centerHost} Port:{centerPort})");
+                SendRegisterNode(centerClient, nodeId, "Login", loginHost, port, activeGatewaySessions.Count);
+
+                centerHeartbeatCts?.Cancel();
+                centerHeartbeatCts = new System.Threading.CancellationTokenSource();
+                var cancellationToken = centerHeartbeatCts.Token;
+
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        while (!cancellationToken.IsCancellationRequested)
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
+                            SendNodeStatus(centerClient, nodeId, activeGatewaySessions.Count);
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+                }, cancellationToken);
+            };
+
+            centerClient.OnDisconnected += (session, reason) =>
+            {
+                centerHeartbeatCts?.Cancel();
+                Shared.Log.Warning($"与 Center 服务器断开连接: {reason}");
+            };
+            centerClient.OnDataReceived += (session, data) => Shared.Log.Info($"Login 收到 Center 消息，长度: {data.Length}");
+            _ = centerClient.ConnectAsync();
+        }
+
+        private static void SendRegisterNode(TcpClientWrapper centerClient, string nodeId, string nodeType, string host, int port, int currentLoad)
+        {
+            var registerRequest = new CenterRegisterNodeRequest
+            {
+                NodeId = nodeId,
+                NodeType = nodeType,
+                Host = host,
+                Port = port,
+                CurrentLoad = currentLoad
+            };
+            byte[] payload = Shared.Json.SerializeToUtf8Bytes(registerRequest);
+            byte[] packet = PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.CenterRegisterNodeReq, payload);
+            centerClient.Send(packet);
+        }
+
+        private static void SendNodeStatus(TcpClientWrapper centerClient, string nodeId, int currentLoad)
+        {
+            var statusRequest = new CenterNodeStatusRequest
+            {
+                NodeId = nodeId,
+                CurrentLoad = currentLoad
+            };
+            byte[] payload = Shared.Json.SerializeToUtf8Bytes(statusRequest);
+            byte[] packet = PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.CenterNodeStatusReq, payload);
+            centerClient.Send(packet);
         }
 
         /// <summary>

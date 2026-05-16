@@ -2,6 +2,8 @@ using System;
 using System.Net.Sockets;
 using System.Threading.Tasks;
 
+using Network.Routing;
+
 namespace Network.Tcp;
 
 /// <summary>
@@ -60,6 +62,8 @@ public class TcpClientWrapper : INetworkClient
         if (tcpClient == null || !tcpClient.Connected || session == null)
             return;
 
+        var packetReader = new LengthPrefixedPacketReader();
+
         using (tcpClient)
         {
             var stream = tcpClient.GetStream();
@@ -73,11 +77,12 @@ public class TcpClientWrapper : INetworkClient
                     if (bytesRead == 0) break;
 
                     session.LastActivityTime = DateTime.UtcNow;
+                    packetReader.Append(buffer.AsSpan(0, bytesRead));
 
-                    var data = new byte[bytesRead];
-                    Array.Copy(buffer, data, bytesRead);
-
-                    OnDataReceived?.Invoke(session, data);
+                    while (packetReader.TryReadPacket(out var packet))
+                    {
+                        OnDataReceived?.Invoke(session, packet);
+                    }
                 }
             }
             catch (Exception ex)

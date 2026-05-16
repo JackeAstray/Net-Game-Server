@@ -30,21 +30,25 @@ namespace DB.Routing
         }
 
         /// <summary>
-        /// 处理原始数据：从数据中解析出消息 ID，并调用对应的处理函数。
+        /// 处理原始数据：严格按统一协议 [MsgId(4)][RequestId(8)][Payload] 解析并分发。
+        /// 响应统一回写为 [MsgId(4)][RequestId(8)][Payload]。
         /// </summary>
         /// <param name="session">当前的网络会话。</param>
         /// <param name="data">接收到的原始数据。</param>
         private async void HandleRawData(ISession session, ReadOnlyMemory<byte> data)
         {
-            if (data.Length < 4) return;
-
-            int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+            if (!Network.Routing.PacketBuilder.TryParseDbPacket(data, out int msgId, out long requestId, out ReadOnlyMemory<byte> payload))
+            {
+                Shared.Log.Error($"[MessageRouter] 收到非法 DB 协议包，长度不足 12，实际: {data.Length}");
+                return;
+            }
 
             if (handlers.TryGetValue(msgId, out var handler))
             {
                 try
                 {
-                    await handler(session, data.Slice(4));
+                    var targetSession = new RequestContextSession(session, requestId);
+                    await handler(targetSession, payload);
                 }
                 catch (Exception ex)
                 {
@@ -55,6 +59,45 @@ namespace DB.Routing
             {
                 Shared.Log.Error($"未知的消息 ID: {msgId}");
             }
+        }
+
+        private sealed class RequestContextSession : ISession
+        {
+            private readonly ISession inner;
+            private readonly long requestId;
+
+            public RequestContextSession(ISession inner, long requestId)
+            {
+                this.inner = inner;
+                this.requestId = requestId;
+            }
+
+            public long SessionId => inner.SessionId;
+            public System.Net.EndPoint? RemoteEndPoint => inner.RemoteEndPoint;
+            public bool IsConnected => inner.IsConnected;
+            public DateTime LastActivityTime => inner.LastActivityTime;
+            public object? UserData
+            {
+                get => inner.UserData;
+                set => inner.UserData = value;
+            }
+
+            public void Send(ReadOnlyMemory<byte> data)
+            {
+                if (data.Length < 4)
+                {
+                    inner.Send(data);
+                    return;
+                }
+
+                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                var payload = data.Span.Slice(4);
+
+                byte[] packet = Network.Routing.PacketBuilder.BuildDbRequestPacket(msgId, requestId, payload);
+                inner.Send(packet);
+            }
+
+            public void Close() => inner.Close();
         }
     }
 }

@@ -91,5 +91,15 @@ namespace Battle.Handlers
                 Shared.Log.Info($" 场景已移除并清理干净: {sceneId}");
             }
         }
+
+        public int GetSceneCount()
+        {
+            return scenes.Count;
+        }
+
+        public int GetBoundPlayerCount()
+        {
+            return playerToSceneBinding.Count;
+        }
     }
 }

@@ -1,6 +1,7 @@
 # Copilot Instructions
 
 ## 项目指南
+- 客户端应匹配服务端协议，不要改服务端去适配客户端。优先保持服务端协议稳定，按服务端定义实现客户端行为与报文格式。
 - When a user asks how to handle receiving messages with TCP, KCP, and WebSockets (like for login, registration, etc.), they want to ensure the gateway supports multiple listening protocols and aggregates their incoming connections and data events into the existing routing pipeline appropriately. This typically involves instantiating `TcpServer`, `UdpServer` (for UDP/KCP), and `WebSocketServer`, binding their `OnSessionConnected`, `OnDataReceived`, and `OnSessionDisconnected` events to the common underlying logic, and starting them on required ports via `NetworkManager`.
 - For login, registration, and password/nickname changes via a persistent connection in Unity instead of HTTP, build a network packet with length + MsgId (e.g., 10001 for login-related actions), payload, and send it through the client instance. The server gateway routes it based on MsgId (like 10000-19999 for Login). Deserialize responses locally. 
 - The Login Server currently only exposes HTTP APIs for user endpoints (Controllers/AccountController) and has NOT implemented socket-based incoming Client routing (via MsgId) for Login/Register. The routing logic is set to forward from Gateway to Login, but Login lacks handling those raw bytes from Gateway clients. To support long connections for login/registration, the client expects the LoginServer to map MsgId to the actual Account logic, rather than just HTTP.

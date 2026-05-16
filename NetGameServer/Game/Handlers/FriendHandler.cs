@@ -46,9 +46,7 @@ namespace Game.Handlers
                     Remark = req.Remark
                 };
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(dbReq);
-                byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), MessageIds.DbAddFriendReq);
-                data.CopyTo(packet.AsSpan(4));
+                byte[] packet = PacketBuilder.BuildDbRequestPacket(MessageIds.DbAddFriendReq, 0, data);
                 GameServerApp.DbClient.Send(packet);
             }
 
@@ -71,9 +69,7 @@ namespace Game.Handlers
                     FriendUserId = req.FriendUserId
                 };
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(dbReq);
-                byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), MessageIds.DbRemoveFriendReq);
-                data.CopyTo(packet.AsSpan(4));
+                byte[] packet = PacketBuilder.BuildDbRequestPacket(MessageIds.DbRemoveFriendReq, 0, data);
                 GameServerApp.DbClient.Send(packet);
             }
 
@@ -97,9 +93,7 @@ namespace Game.Handlers
                     Remark = req.Remark
                 };
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(dbReq);
-                byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), MessageIds.DbSetFriendRemarkReq);
-                data.CopyTo(packet.AsSpan(4));
+                byte[] packet = PacketBuilder.BuildDbRequestPacket(MessageIds.DbSetFriendRemarkReq, 0, data);
                 GameServerApp.DbClient.Send(packet);
             }
 
@@ -121,9 +115,7 @@ namespace Game.Handlers
                     UserId = (int)userId
                 };
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(dbReq);
-                byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), MessageIds.DbGetFriendsReq);
-                data.CopyTo(packet.AsSpan(4));
+                byte[] packet = PacketBuilder.BuildDbRequestPacket(MessageIds.DbGetFriendsReq, 0, data);
                 GameServerApp.DbClient.Send(packet);
             }
 

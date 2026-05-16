@@ -1,12 +1,16 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
-using Shared;
 using Network;
+using Network.Routing;
 using Network.Tcp;
 using Serilog;
+using Shared;
+using Shared.Messages;
+using Shared.Messages.Center;
 
 namespace Gateway
 {
@@ -16,6 +20,8 @@ namespace Gateway
     // 并处理后端返回的数据转发给相应的客户端会话。
     public static class GatewayServerApp
     {
+        private static CancellationTokenSource? centerHeartbeatCts;
+
         /// <summary>
         /// 启动网关的网络服务并注册事件处理器。
         /// - 根据配置获取监听端口（默认 TCP/UDP:31300，WebSocket:31301）。
@@ -75,9 +81,9 @@ namespace Gateway
                         // 登录相关消息路由到 Login 服务器
                         loginClient.Send(wrapperMsg);
                     }
-                    else if (msgId >= 20000 && msgId < 30000)
+                    else if ((msgId >= 20000 && msgId < 30000) || (msgId >= 50000 && msgId < 70000))
                     {
-                        // 游戏大世界相关消息路由到 Game 服务器
+                        // 游戏大世界、好友、聊天相关消息路由到 Game 服务器
                         gameClient.Send(wrapperMsg);
                     }
                     else if (msgId >= 30000 && msgId < 40000)
@@ -127,6 +133,8 @@ namespace Gateway
             await networkManager.StartServerAsync("GatewayWebSocket", port + 1);
 
             Shared.Log.Info($"网关服务器已启动，监听 TCP 端口: {port}, UDP/KCP 端口: {port}, WebSocket 端口: {port + 1}");
+
+            ConnectToCenter(port);
         }
 
         /// <summary>
@@ -286,6 +294,75 @@ namespace Gateway
         /// - 使用 YARP 以内存配置方式注册路由与集群。
         /// - 读取配置 GatewayHttpPort 和 LoginHttpUrl（支持默认值）。
         /// </summary>
+        private static void ConnectToCenter(int port)
+        {
+            int centerPort = ConfigHelper.GetConfig<int>("CenterPort") == 0 ? 31306 : ConfigHelper.GetConfig<int>("CenterPort");
+            string centerHost = ConfigHelper.GetConfig<string>("CenterHost") ?? "127.0.0.1";
+            string gatewayHost = ConfigHelper.GetConfig<string>("GatewayHost") ?? "127.0.0.1";
+            string nodeId = $"Gateway-{gatewayHost}:{port}";
+            var centerClient = new TcpClientWrapper(centerHost, centerPort);
+
+            centerClient.OnConnected += session =>
+            {
+                Shared.Log.Info($"已连接到 Center 服务器 (Host:{centerHost} Port:{centerPort})");
+                SendRegisterNode(centerClient, nodeId, "Gateway", gatewayHost, port, Gateway.Managers.GatewaySessionManager.Instance.GetOnlineCount());
+
+                centerHeartbeatCts?.Cancel();
+                centerHeartbeatCts = new CancellationTokenSource();
+                var cancellationToken = centerHeartbeatCts.Token;
+
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        while (!cancellationToken.IsCancellationRequested)
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
+                            SendNodeStatus(centerClient, nodeId, Gateway.Managers.GatewaySessionManager.Instance.GetOnlineCount());
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+                }, cancellationToken);
+            };
+
+            centerClient.OnDisconnected += (session, reason) =>
+            {
+                centerHeartbeatCts?.Cancel();
+                Shared.Log.Warning($"与 Center 服务器断开连接: {reason}");
+            };
+            centerClient.OnDataReceived += (session, data) => Shared.Log.Info($"Gateway 收到 Center 消息，长度: {data.Length}");
+            _ = centerClient.ConnectAsync();
+        }
+
+        private static void SendRegisterNode(TcpClientWrapper centerClient, string nodeId, string nodeType, string host, int port, int currentLoad)
+        {
+            var registerRequest = new CenterRegisterNodeRequest
+            {
+                NodeId = nodeId,
+                NodeType = nodeType,
+                Host = host,
+                Port = port,
+                CurrentLoad = currentLoad
+            };
+            byte[] payload = Shared.Json.SerializeToUtf8Bytes(registerRequest);
+            byte[] packet = PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.CenterRegisterNodeReq, payload);
+            centerClient.Send(packet);
+        }
+
+        private static void SendNodeStatus(TcpClientWrapper centerClient, string nodeId, int currentLoad)
+        {
+            var statusRequest = new CenterNodeStatusRequest
+            {
+                NodeId = nodeId,
+                CurrentLoad = currentLoad
+            };
+            byte[] payload = Shared.Json.SerializeToUtf8Bytes(statusRequest);
+            byte[] packet = PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.CenterNodeStatusReq, payload);
+            centerClient.Send(packet);
+        }
+
         public static async Task StartReverseProxyAsync(string[] args)
         {
             // HTTP 监听端口和后端 Login HTTP 地址（支持默认值）

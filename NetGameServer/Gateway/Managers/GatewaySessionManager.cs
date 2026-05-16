@@ -79,5 +79,10 @@ namespace Gateway.Managers
                 session.Send(data);
             }
         }
+
+        public int GetOnlineCount()
+        {
+            return clientSessions.Count;
+        }
     }
 }

@@ -1,8 +1,11 @@
 using System;
 using System.Threading.Tasks;
-using Shared;
 using Network;
+using Network.Routing;
 using Network.Tcp;
+using Shared;
+using Shared.Messages;
+using Shared.Messages.Center;
 
 namespace Game
 {
@@ -14,6 +17,7 @@ namespace Game
     public static class GameServerApp
     {
         public static TcpClientWrapper DbClient { get; private set; }
+        private static System.Threading.CancellationTokenSource? centerHeartbeatCts;
 
         /// <summary>
         /// 异步启动网络监听。
@@ -83,6 +87,8 @@ namespace Game
             // 启动指定名称的服务器并监听端口
             await networkManager.StartServerAsync("GameTcp", port);
             Log.Info($"游戏服务器已启动，监听端口: {port}");
+
+            ConnectToCenter(port);
         }
 
         /// <summary>
@@ -107,6 +113,80 @@ namespace Game
 
             // 开始异步连接（不等待结果），如需重试策略请在 TcpClientWrapper 外层实现
             _ = dbClient.ConnectAsync();
+        }
+
+        private static void ConnectToCenter(int port)
+        {
+            int centerPort = ConfigHelper.GetConfig<int>("CenterPort") == 0 ? 31306 : ConfigHelper.GetConfig<int>("CenterPort");
+            string centerHost = ConfigHelper.GetConfig<string>("CenterHost") ?? "127.0.0.1";
+            string gameHost = ConfigHelper.GetConfig<string>("GameHost") ?? "127.0.0.1";
+            string nodeId = $"Game-{gameHost}:{port}";
+            var centerClient = new TcpClientWrapper(centerHost, centerPort);
+
+            centerClient.OnConnected += session =>
+            {
+                Log.Info($"已连接到 Center 服务器 (Host:{centerHost} Port:{centerPort})");
+                SendRegisterNode(centerClient, nodeId, "Game", gameHost, port, GetCurrentLoad());
+
+                centerHeartbeatCts?.Cancel();
+                centerHeartbeatCts = new System.Threading.CancellationTokenSource();
+                var cancellationToken = centerHeartbeatCts.Token;
+
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        while (!cancellationToken.IsCancellationRequested)
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
+                            SendNodeStatus(centerClient, nodeId, GetCurrentLoad());
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+                }, cancellationToken);
+            };
+
+            centerClient.OnDisconnected += (session, reason) =>
+            {
+                centerHeartbeatCts?.Cancel();
+                Log.Warning($"与 Center 服务器断开连接: {reason}");
+            };
+            centerClient.OnDataReceived += (session, data) => Log.Info($"Game 收到 Center 消息，长度: {data.Length}");
+            _ = centerClient.ConnectAsync();
+        }
+
+        private static void SendRegisterNode(TcpClientWrapper centerClient, string nodeId, string nodeType, string host, int port, int currentLoad)
+        {
+            var registerRequest = new CenterRegisterNodeRequest
+            {
+                NodeId = nodeId,
+                NodeType = nodeType,
+                Host = host,
+                Port = port,
+                CurrentLoad = currentLoad
+            };
+            byte[] payload = Shared.Json.SerializeToUtf8Bytes(registerRequest);
+            byte[] packet = PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.CenterRegisterNodeReq, payload);
+            centerClient.Send(packet);
+        }
+
+        private static void SendNodeStatus(TcpClientWrapper centerClient, string nodeId, int currentLoad)
+        {
+            var statusRequest = new CenterNodeStatusRequest
+            {
+                NodeId = nodeId,
+                CurrentLoad = currentLoad
+            };
+            byte[] payload = Shared.Json.SerializeToUtf8Bytes(statusRequest);
+            byte[] packet = PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.CenterNodeStatusReq, payload);
+            centerClient.Send(packet);
+        }
+
+        private static int GetCurrentLoad()
+        {
+            return Game.Managers.PlayerSessionManager.Instance.GetOnlinePlayerCount();
         }
     }
 }

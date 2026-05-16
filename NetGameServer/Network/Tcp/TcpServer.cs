@@ -1,7 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 
-using Microsoft.IO;
+using Network.Routing;
 
 namespace Network.Tcp;
 
@@ -13,7 +13,6 @@ namespace Network.Tcp;
 public class TcpServer : INetworkServer
 {
     private TcpListener? tcpListener;
-    private static readonly RecyclableMemoryStreamManager memoryStreamManager = new RecyclableMemoryStreamManager();
 
     public event SessionConnectedHandler? OnSessionConnected;
     public event DataReceivedHandler? OnDataReceived;
@@ -58,6 +57,8 @@ public class TcpServer : INetworkServer
     private async Task HandleClientAsync(TcpClient client)
     {
         var session = new TcpSession(client);
+        var packetReader = new LengthPrefixedPacketReader();
+
         using (client)
         {
             var stream = client.GetStream();
@@ -71,12 +72,11 @@ public class TcpServer : INetworkServer
                     int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
                     if (bytesRead == 0) break;
 
-                    // 使用池化的 MemoryStream 来避免频繁的内存分配
-                    using var ms = memoryStreamManager.GetStream();
-                    ms.Write(buffer, 0, bytesRead);
-                    var data = new ReadOnlyMemory<byte>(ms.GetBuffer(), 0, (int)ms.Length);
-
-                    OnDataReceived?.Invoke(session, data);
+                    packetReader.Append(buffer.AsSpan(0, bytesRead));
+                    while (packetReader.TryReadPacket(out var packet))
+                    {
+                        OnDataReceived?.Invoke(session, packet);
+                    }
                 }
             }
             catch (Exception ex)

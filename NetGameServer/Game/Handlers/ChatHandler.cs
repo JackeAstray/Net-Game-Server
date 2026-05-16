@@ -56,10 +56,7 @@ namespace Game.Handlers
                 var errorResponse = new SendChatResponse { Success = false, Message = "非法操作：身份伪造。" };
                 var errPayload = Json.SerializeToUtf8Bytes(errorResponse);
                 var errData = PacketBuilder.BuildSessionWrapperPacket(session.SessionId, MessageIds.ChatMessageRes, errPayload);
-                var errWrapper = new byte[errData.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(errWrapper.AsSpan(0, 4), errData.Length);
-                errData.CopyTo(errWrapper.AsSpan(4));
-                session.Send(errWrapper);
+                session.Send(errData);
                 return;
             }
 
@@ -85,12 +82,7 @@ namespace Game.Handlers
             var response = new SendChatResponse { Success = true, Message = "消息处理成功。" };
             var responsePayload = Json.SerializeToUtf8Bytes(response);
             var responseData = PacketBuilder.BuildSessionWrapperPacket(session.SessionId, MessageIds.ChatMessageRes, responsePayload);
-
-            // Build the gateway wrap length for TcpClientWrapper
-            var responseWrapper = new byte[responseData.Length + 4];
-            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(responseWrapper.AsSpan(0, 4), responseData.Length);
-            responseData.CopyTo(responseWrapper.AsSpan(4));
-            session.Send(responseWrapper);
+            session.Send(responseData);
 
             var notifPayload = Json.SerializeToUtf8Bytes(notification);
 
@@ -102,10 +94,7 @@ namespace Game.Handlers
                 if (targetSessionId != 0)
                 {
                     var notifData = PacketBuilder.BuildSessionWrapperPacket(targetSessionId, MessageIds.ChatMessageNotif, notifPayload);
-                    var notifWrapper = new byte[notifData.Length + 4];
-                    System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(notifWrapper.AsSpan(0, 4), notifData.Length);
-                    notifData.CopyTo(notifWrapper.AsSpan(4));
-                    session.Send(notifWrapper);
+                    session.Send(notifData);
                 }
             }
             else if (request.Channel == ChatChannel.Team)
@@ -117,12 +106,7 @@ namespace Game.Handlers
             {
                 // 发送通知给所有的客户端（广播）, 通过 SessionId = 0 指示网关广播
                 var notifData = PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.ChatMessageNotif, notifPayload);
-
-                // Build the gateway wrap length for TcpClientWrapper
-                var notifWrapper = new byte[notifData.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(notifWrapper.AsSpan(0, 4), notifData.Length);
-                notifData.CopyTo(notifWrapper.AsSpan(4));
-                session.Send(notifWrapper);
+                session.Send(notifData);
             }
         }
     }

@@ -2,7 +2,6 @@ using System;
 using System.Collections.Concurrent;
 using System.Linq;
 using Shared;
-using Network;
 
 namespace Center.Handlers
 {
@@ -13,8 +12,19 @@ namespace Center.Handlers
         public string Host { get; set; } = string.Empty;
         public int Port { get; set; }
         public int CurrentLoad { get; set; }
-        public ISession Session { get; set; } = null!;
+        public Network.ISession Session { get; set; } = null!;
         public DateTime LastHeartbeat { get; set; }
+    }
+
+    public class NodeSnapshot
+    {
+        public string NodeId { get; set; } = string.Empty;
+        public string NodeType { get; set; } = string.Empty;
+        public string Host { get; set; } = string.Empty;
+        public int Port { get; set; }
+        public int CurrentLoad { get; set; }
+        public DateTime LastHeartbeat { get; set; }
+        public bool IsConnected { get; set; }
     }
 
     public class NodeManager
@@ -24,6 +34,8 @@ namespace Center.Handlers
 
         // NodeId => NodeInfo
         private readonly ConcurrentDictionary<string, ServerNodeInfo> nodes = new();
+        // ClientSessionId => GatewaySession（用于将 Center 的回包精确路由到正确网关）
+        private readonly ConcurrentDictionary<long, Network.ISession> clientGatewayRoutes = new();
 
         /// <summary>
         /// 注册节点信息，包含节点ID、类型、地址、端口和会话对象。如果节点已存在，则更新其会话和心跳时间。
@@ -33,7 +45,7 @@ namespace Center.Handlers
         /// <param name="host">节点主机地址。</param>
         /// <param name="port">节点端口号。</param>
         /// <param name="session">节点会话对象。</param>
-        public void RegisterNode(string nodeId, string nodeType, string host, int port, ISession session)
+        public void RegisterNode(string nodeId, string nodeType, string host, int port, Network.ISession session)
         {
             var info = new ServerNodeInfo
             {
@@ -62,7 +74,7 @@ namespace Center.Handlers
         /// 根据节点会话移除节点信息。如果节点不存在，则忽略该操作。
         /// </summary>
         /// <param name="session">要移除的节点的会话对象。不能为空。</param>
-        public void RemoveNodeBySession(ISession session)
+        public void RemoveNodeBySession(Network.ISession session)
         {
             var node = nodes.Values.FirstOrDefault(n => n.Session == session);
             if (node != null)
@@ -70,6 +82,8 @@ namespace Center.Handlers
                 nodes.TryRemove(node.NodeId, out _);
                 Log.Info($"节点已 断开连接 / 已删除: [{node.NodeType}] {node.NodeId}");
             }
+
+            RemoveClientRoutesByGatewaySession(session);
         }
 
         /// <summary>
@@ -83,6 +97,32 @@ namespace Center.Handlers
             {
                 node.CurrentLoad = load;
                 node.LastHeartbeat = DateTime.UtcNow;
+            }
+        }
+
+        public void BindClientGatewayRoute(long clientSessionId, Network.ISession gatewaySession)
+        {
+            if (clientSessionId <= 0)
+            {
+                return;
+            }
+
+            clientGatewayRoutes[clientSessionId] = gatewaySession;
+        }
+
+        public bool TryGetGatewaySessionByClientSessionId(long clientSessionId, out Network.ISession gatewaySession)
+        {
+            return clientGatewayRoutes.TryGetValue(clientSessionId, out gatewaySession!);
+        }
+
+        private void RemoveClientRoutesByGatewaySession(Network.ISession gatewaySession)
+        {
+            foreach (var route in clientGatewayRoutes)
+            {
+                if (route.Value == gatewaySession)
+                {
+                    clientGatewayRoutes.TryRemove(route.Key, out _);
+                }
             }
         }
 
@@ -113,6 +153,51 @@ namespace Center.Handlers
         {
             nodes.TryGetValue(nodeId, out var node);
             return node;
+        }
+
+        public int GetNodeCount()
+        {
+            return nodes.Count;
+        }
+
+        public int RemoveInactiveNodes(TimeSpan timeout)
+        {
+            int removedCount = 0;
+            DateTime now = DateTime.UtcNow;
+
+            foreach (var pair in nodes)
+            {
+                if (now - pair.Value.LastHeartbeat <= timeout)
+                {
+                    continue;
+                }
+
+                if (nodes.TryRemove(pair.Key, out var removedNode))
+                {
+                    removedCount++;
+                    Log.Warning($"节点心跳超时，已移除: [{removedNode.NodeType}] {removedNode.NodeId}");
+                }
+            }
+
+            return removedCount;
+        }
+
+        public IReadOnlyList<NodeSnapshot> GetNodeSnapshots()
+        {
+            return nodes.Values
+                .Select(node => new NodeSnapshot
+                {
+                    NodeId = node.NodeId,
+                    NodeType = node.NodeType,
+                    Host = node.Host,
+                    Port = node.Port,
+                    CurrentLoad = node.CurrentLoad,
+                    LastHeartbeat = node.LastHeartbeat,
+                    IsConnected = node.Session.IsConnected
+                })
+                .OrderBy(node => node.NodeType)
+                .ThenBy(node => node.NodeId)
+                .ToList();
         }
     }
 }

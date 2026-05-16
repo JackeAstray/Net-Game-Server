@@ -51,11 +51,22 @@ namespace Center.Handlers
                 if (req != null)
                 {
                     NodeManager.Instance.RegisterNode(req.NodeId, req.NodeType, req.Host, req.Port, session);
+                    NodeManager.Instance.UpdateLoad(req.NodeId, req.CurrentLoad);
 
                     // 响应注册成功 (这里假设 0 是保留给内网节点的 ClientSessionId)
                     // var resPayload = Shared.Json.SerializeToUtf8Bytes(new { Success = true });
                     // byte[] packet = Shared.Network.PacketBuilder.BuildInternalPacket(0, MessageIds.CenterRegisterNodeRes, resPayload);
                     // session.Send(packet);
+                }
+                return Task.CompletedTask;
+            };
+
+            handlers[MessageIds.CenterNodeStatusReq] = (payload, session, clientSessionId) =>
+            {
+                var req = Shared.Json.DeserializeFromUtf8Bytes<CenterNodeStatusRequest>(payload.Span);
+                if (req != null && !string.IsNullOrWhiteSpace(req.NodeId))
+                {
+                    NodeManager.Instance.UpdateLoad(req.NodeId, req.CurrentLoad);
                 }
                 return Task.CompletedTask;
             };
@@ -78,6 +89,15 @@ namespace Center.Handlers
             System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(packet.AsSpan(0, 8), clientSessionId);
             System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(8, 4), msgId);
             responsePayload.CopyTo(packet.AsSpan(12));
+
+            if (clientSessionId > 0
+                && NodeManager.Instance.TryGetGatewaySessionByClientSessionId(clientSessionId, out var routedGatewaySession)
+                && routedGatewaySession.IsConnected)
+            {
+                routedGatewaySession.Send(packet);
+                return;
+            }
+
             gatewaySession.Send(packet);
         }
     }

@@ -73,6 +73,15 @@ namespace Shared.Messages.Center
         public bool IsPrivate { get; set; }
     }
 
+    public class CenterNodeStatusRequest
+    {
+        [JsonPropertyName("nodeId")]
+        public string NodeId { get; set; } = string.Empty;
+
+        [JsonPropertyName("currentLoad")]
+        public int CurrentLoad { get; set; }
+    }
+
     public class CenterCreateSceneResponse
     {
         [JsonPropertyName("success")]

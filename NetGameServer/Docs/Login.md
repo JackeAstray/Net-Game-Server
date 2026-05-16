@@ -11,10 +11,10 @@
 ## 工作流 (Socket登录举例)
 1. 客户端通过长连接向 `Gateway` 发出 `[MsgId][Payload]` 格式的登录请求。
 2. `Gateway` 转发给 `Login` 服务器，并在前面加上 `[ClientSessionId(8)]` 变成 `[ClientSessionId(8)][MsgId(4)][Payload]`。
-3. `Login` 解析头部的 ID 与 MsgId。
+3. `Login` 解析头部的 `ClientSessionId` 与 `MsgId`。
 4. 在 `MessageRouter` 或者 `LoginHandler` 根据特定 `MsgId` 进入响应逻辑。
-5. 去 `DB` 服务器校验账号密码。
-6. `Login` 返回同样的协议包携带应答，并使用 `SessionManager.Instance.SendToGatewayAction` 向原网关吐回数据，最终下发至客户端。
+5. `Login` 请求 `DB` 时统一使用 `[MsgId(4)][RequestId(8)][Payload]` 协议，响应同样为 `[MsgId(4)][RequestId(8)][Payload]`。
+6. `Login` 返回给 `Gateway` 的业务响应使用 `[ClientSessionId(8)][MsgId(4)][Payload]`，由网关转发给客户端。
 
 ## 启动注意
 `Login` 会依赖于 `DB` 系统的先决存在用以申请 `MaxUid` 初始化分发器。请务必优先启动 `DB` 进程。

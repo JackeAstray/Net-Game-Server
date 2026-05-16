@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 
@@ -30,7 +31,8 @@ public class TcpSession : ISession
         {
             try
             {
-                tcpClient.GetStream().Write(data.Span);
+                var payload = EnsureLengthPrefixed(data.Span);
+                tcpClient.GetStream().Write(payload);
                 LastActivityTime = DateTime.UtcNow;
             }
             catch (Exception ex)
@@ -45,5 +47,22 @@ public class TcpSession : ISession
     public void Close()
     {
         tcpClient.Close();
+    }
+
+    private static ReadOnlySpan<byte> EnsureLengthPrefixed(ReadOnlySpan<byte> data)
+    {
+        if (data.Length >= 4)
+        {
+            int declaredLength = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(0, 4));
+            if (declaredLength == data.Length - 4)
+            {
+                return data;
+            }
+        }
+
+        byte[] framed = new byte[data.Length + 4];
+        BinaryPrimitives.WriteInt32LittleEndian(framed.AsSpan(0, 4), data.Length);
+        data.CopyTo(framed.AsSpan(4));
+        return framed;
     }
 }

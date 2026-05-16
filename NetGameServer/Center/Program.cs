@@ -1,5 +1,4 @@
-﻿using System;
-using System.Threading.Tasks;
+﻿using Microsoft.AspNetCore.Builder;
 using Shared;
 using Log = Shared.Log;
 
@@ -13,17 +12,45 @@ namespace Center
     {
         static async Task Main(string[] args)
         {
-            // 初始化日志组件
             Log.Configure(true, "Logs/Center.log");
             Log.Info("中心服务器(Center Server)正在启动...");
 
-            // 启动网络通信监听网关/Login/Game的内部RPC和指令
             await CenterServerApp.StartNetworkAsync();
 
-            Log.Info("中心服务器启动完成，等待其他服务节点接入...");
+            int httpPort = ConfigHelper.GetConfig<int>("CenterHttpPort") == 0 ? 31316 : ConfigHelper.GetConfig<int>("CenterHttpPort");
+            var builder = WebApplication.CreateBuilder(args);
+            builder.WebHost.ConfigureKestrel(options =>
+            {
+                options.ListenAnyIP(httpPort);
+            });
 
-            // 保持进程运行
-            await Task.Delay(-1);
+            var app = builder.Build();
+
+            app.MapGet("/health", () => Results.Ok(new
+            {
+                status = "ok",
+                nodeCount = Center.Handlers.NodeManager.Instance.GetNodeCount(),
+                timestamp = DateTime.UtcNow
+            }));
+
+            app.MapGet("/nodes", () => Results.Ok(Center.Handlers.NodeManager.Instance.GetNodeSnapshots()));
+
+            app.MapGet("/summary", () =>
+            {
+                var nodes = Center.Handlers.NodeManager.Instance.GetNodeSnapshots();
+                return Results.Ok(new
+                {
+                    total = nodes.Count,
+                    battle = nodes.Count(n => n.NodeType.Equals("Battle", StringComparison.OrdinalIgnoreCase)),
+                    game = nodes.Count(n => n.NodeType.Equals("Game", StringComparison.OrdinalIgnoreCase)),
+                    gateway = nodes.Count(n => n.NodeType.Equals("Gateway", StringComparison.OrdinalIgnoreCase)),
+                    login = nodes.Count(n => n.NodeType.Equals("Login", StringComparison.OrdinalIgnoreCase)),
+                    timestamp = DateTime.UtcNow
+                });
+            });
+
+            Log.Info($"中心服务器启动完成，等待其他服务节点接入。监控 HTTP 端口: {httpPort}");
+            await app.RunAsync();
         }
     }
 }

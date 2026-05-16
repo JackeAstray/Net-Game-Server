@@ -54,5 +54,10 @@ namespace Game.Managers
         {
             return userSessions.TryGetValue(userId, out long sessionId) ? sessionId : 0;
         }
+
+        public int GetOnlinePlayerCount()
+        {
+            return sessionUsers.Count;
+        }
     }
 }

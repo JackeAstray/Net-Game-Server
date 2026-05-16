@@ -39,6 +39,10 @@ namespace Center
                 if (data.Length >= 12)
                 {
                     long originalSessionId = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(data.Span.Slice(0, 8));
+                    if (originalSessionId > 0)
+                    {
+                        Center.Handlers.NodeManager.Instance.BindClientGatewayRoute(originalSessionId, session);
+                    }
                     var innerData = data.Slice(8);
 
                     if (innerData.Length >= 4)
@@ -72,6 +76,20 @@ namespace Center
 
             await networkManager.StartServerAsync("CenterTcp", port);
             Log.Info($"Center 调度服务器网络已启动，监听内部端口: {port}");
+
+            _ = Task.Run(async () =>
+            {
+                TimeSpan timeout = TimeSpan.FromSeconds(30);
+                while (true)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(10));
+                    int removedCount = Center.Handlers.NodeManager.Instance.RemoveInactiveNodes(timeout);
+                    if (removedCount > 0)
+                    {
+                        Log.Warning($"Center 已清理超时节点数: {removedCount}，当前剩余节点数: {Center.Handlers.NodeManager.Instance.GetNodeCount()}");
+                    }
+                }
+            });
         }
     }
 }

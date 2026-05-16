@@ -1,14 +1,19 @@
 using System;
 using System.Threading.Tasks;
-using Shared;
 using Network;
+using Network.Routing;
 using Network.Tcp;
+using Shared;
+using Shared.Messages;
+using Shared.Messages.Center;
 
 namespace Battle
 {
     public static class BattleServerApp
     {
         private static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>? handlers;
+        private static System.Threading.CancellationTokenSource? centerHeartbeatCts;
+        private static Battle.Handlers.SceneManager? sceneManager;
 
         public static async Task StartNetworkAsync()
         {
@@ -16,7 +21,7 @@ namespace Battle
 
             int port = ConfigHelper.GetConfig<int>("BattlePort") == 0 ? 31307 : ConfigHelper.GetConfig<int>("BattlePort");
 
-            var sceneManager = new Battle.Handlers.SceneManager();
+            sceneManager = new Battle.Handlers.SceneManager();
             var entitySyncHandler = new Battle.Handlers.EntitySyncHandler(sceneManager);
             var roomHandler = new Battle.Handlers.RoomHandler(sceneManager, entitySyncHandler);
             var battleMainHandler = new Battle.Handlers.BattleMainHandler(sceneManager);
@@ -73,6 +78,87 @@ namespace Battle
 
             await networkManager.StartServerAsync("BattleTcp", port);
             Log.Info($"Battle 战斗服务器网络已启动，监听端口: {port}");
+
+            ConnectToCenter(port);
+        }
+
+        private static void ConnectToCenter(int port)
+        {
+            int centerPort = ConfigHelper.GetConfig<int>("CenterPort") == 0 ? 31306 : ConfigHelper.GetConfig<int>("CenterPort");
+            string centerHost = ConfigHelper.GetConfig<string>("CenterHost") ?? "127.0.0.1";
+            string battleHost = ConfigHelper.GetConfig<string>("BattleHost") ?? "127.0.0.1";
+            string nodeId = $"Battle-{battleHost}:{port}";
+            var centerClient = new TcpClientWrapper(centerHost, centerPort);
+
+            centerClient.OnConnected += session =>
+            {
+                Log.Info($"已连接到 Center 服务器 (Host:{centerHost} Port:{centerPort})");
+                SendRegisterNode(centerClient, nodeId, "Battle", battleHost, port, GetCurrentLoad());
+
+                centerHeartbeatCts?.Cancel();
+                centerHeartbeatCts = new System.Threading.CancellationTokenSource();
+                var cancellationToken = centerHeartbeatCts.Token;
+
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        while (!cancellationToken.IsCancellationRequested)
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
+                            SendNodeStatus(centerClient, nodeId, GetCurrentLoad());
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+                }, cancellationToken);
+            };
+
+            centerClient.OnDisconnected += (session, reason) =>
+            {
+                centerHeartbeatCts?.Cancel();
+                Log.Warning($"与 Center 服务器断开连接: {reason}");
+            };
+            centerClient.OnDataReceived += (session, data) => Log.Info($"Battle 收到 Center 消息，长度: {data.Length}");
+            _ = centerClient.ConnectAsync();
+        }
+
+        private static void SendRegisterNode(TcpClientWrapper centerClient, string nodeId, string nodeType, string host, int port, int currentLoad)
+        {
+            var registerRequest = new CenterRegisterNodeRequest
+            {
+                NodeId = nodeId,
+                NodeType = nodeType,
+                Host = host,
+                Port = port,
+                CurrentLoad = currentLoad
+            };
+            byte[] payload = Shared.Json.SerializeToUtf8Bytes(registerRequest);
+            byte[] packet = PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.CenterRegisterNodeReq, payload);
+            centerClient.Send(packet);
+        }
+
+        private static void SendNodeStatus(TcpClientWrapper centerClient, string nodeId, int currentLoad)
+        {
+            var statusRequest = new CenterNodeStatusRequest
+            {
+                NodeId = nodeId,
+                CurrentLoad = currentLoad
+            };
+            byte[] payload = Shared.Json.SerializeToUtf8Bytes(statusRequest);
+            byte[] packet = PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.CenterNodeStatusReq, payload);
+            centerClient.Send(packet);
+        }
+
+        private static int GetCurrentLoad()
+        {
+            if (sceneManager == null)
+            {
+                return 0;
+            }
+
+            return Math.Max(sceneManager.GetBoundPlayerCount(), sceneManager.GetSceneCount());
         }
     }
 }
