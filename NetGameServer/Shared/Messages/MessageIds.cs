@@ -56,11 +56,12 @@ namespace Shared.Messages
         public const int CenterCreateRoomReq = 30003;
         public const int CenterCreateRoomRes = 30004;
 
-        public const int CenterRegisterNodeReq = 30005;
-        public const int CenterRegisterNodeRes = 30006;
-        public const int CenterCreateSceneReq = 30007; // Center -> Battle
-        public const int CenterCreateSceneRes = 30008; // Battle -> Center
-        public const int CenterNodeStatusReq = 30009;
+        // === Center 内部节点通信 (90000-90999，非客户端消息) ===
+        public const int CenterRegisterNodeReq = 90001;
+        public const int CenterRegisterNodeRes = 90002;
+        public const int CenterCreateSceneReq = 90003; // Center -> Battle
+        public const int CenterCreateSceneRes = 90004; // Battle -> Center
+        public const int CenterNodeStatusReq = 90005;
 
         // === 战斗/房间服务器客户端通信 (40000-49999 网关转发过来) ===
         public const int BattleJoinReq = 40001;

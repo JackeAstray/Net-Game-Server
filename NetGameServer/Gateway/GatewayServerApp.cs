@@ -86,9 +86,9 @@ namespace Gateway
                         // 游戏大世界、好友、聊天相关消息路由到 Game 服务器
                         gameClient.Send(wrapperMsg);
                     }
-                    else if (msgId >= 30000 && msgId < 40000)
+                    else if ((msgId >= 30000 && msgId < 40000) || (msgId >= 90000 && msgId < 91000))
                     {
-                        // 调度、匹配相关消息路由到 Center 服务器
+                        // 调度、匹配消息以及 Center 内部节点消息路由到 Center 服务器
                         centerClient.Send(wrapperMsg);
                     }
                     else if (msgId >= 40000 && msgId < 50000)
