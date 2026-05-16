@@ -9,15 +9,20 @@ namespace Center
 {
     public static class CenterServerApp
     {
-        private static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>? _handlers;
+        private static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>? handlers;
 
+        /// <summary>
+        /// 启动中心调度服务器的网络，注册并配置内部 TCP 服务器、消息路由和事件处理器，并监听指定端口。
+        /// </summary>
+        /// <remarks>从配置读取端口（默认 31306）。接收并分发网关转发的内部消息，维护会话绑定，并在后台周期性清理超时节点。</remarks>
+        /// <returns>表示启动操作完成的异步任务。</returns>
         public static async Task StartNetworkAsync()
         {
             // 例如配置中 CenterPort 默认 31306
             int port = ConfigHelper.GetConfig<int>("CenterPort") == 0 ? 31306 : ConfigHelper.GetConfig<int>("CenterPort");
 
             var matchHandler = new Center.Handlers.MatchHandler();
-            _handlers = Center.Handlers.MessageRouter.BuildHandlers(matchHandler);
+            handlers = Center.Handlers.MessageRouter.BuildHandlers(matchHandler);
 
             var networkManager = new NetworkManager();
             var tcpServer = new TcpServer();
@@ -52,7 +57,7 @@ namespace Center
 
                         // 使用 Router 或 Handler 分发匹配/调度逻辑
                         // 这里预留出处理和响应的回调，网关期望的返回格式依然是 [OriginalSessionId(8)][MsgId(4)][Payload]
-                        if (_handlers != null && _handlers.TryGetValue(msgId, out var handlerAction))
+                        if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
                         {
                             try
                             {

@@ -15,6 +15,14 @@ namespace Battle
         private static System.Threading.CancellationTokenSource? centerHeartbeatCts;
         private static Battle.Handlers.SceneManager? sceneManager;
 
+        /// <summary>
+        /// 加载配置，构建场景与消息处理器，注册并启动战斗服务器的 TCP 网络，处理会话连接/断开与数据接收并分发内部消息，随后连接到中心服。
+        /// </summary>
+        /// <remarks>使用 ConfigManager 加载配置；若未配置端口则使用默认端口 31307。初始化
+        /// SceneManager、EntitySyncHandler、RoomHandler 和 BattleMainHandler，并通过 MessageRouter 构建处理器集合。创建 NetworkManager 与
+        /// TcpServer，订阅连接/断开与数据接收事件；按二进制协议解析 [SessionId(8)][MsgId(4)][Payload] 并根据 MsgId 分发到相应处理器，处理器异常会被记录。注册并启动名为
+        /// BattleTcp 的服务器，启动完成后记录监听端口并调用 ConnectToCenter(port)。</remarks>
+        /// <returns>表示异步操作的任务。</returns>
         public static async Task StartNetworkAsync()
         {
             Configs.ConfigManager.LoadAll(); // 读取策划配置文件
@@ -82,6 +90,12 @@ namespace Battle
             ConnectToCenter(port);
         }
 
+        /// <summary>
+        /// 连接到 Center 服务器，向其注册本节点并维持心跳与事件处理。
+        /// </summary>
+        /// <remarks>从配置读取 CenterPort、CenterHost 和 BattleHost（分别默认为 31306、127.0.0.1、127.0.0.1）。建立
+        /// TcpClientWrapper，连接成功后发送注册信息、启动每 10 秒一次的心跳上报任务；断开时取消心跳并记录日志，同时处理接收的数据事件。</remarks>
+        /// <param name="port">用于对外的端口号，用于在注册和状态上报中标识节点。</param>
         private static void ConnectToCenter(int port)
         {
             int centerPort = ConfigHelper.GetConfig<int>("CenterPort") == 0 ? 31306 : ConfigHelper.GetConfig<int>("CenterPort");
@@ -124,6 +138,17 @@ namespace Battle
             _ = centerClient.ConnectAsync();
         }
 
+        /// <summary>
+        /// 将本节点的注册请求发送到中心服务器。
+        /// </summary>
+        /// <remarks>将 CenterRegisterNodeRequest 序列化为 UTF-8 JSON，构建包含 MessageIds.CenterRegisterNodeReq
+        /// 的会话包装数据包并通过 centerClient 发送。</remarks>
+        /// <param name="centerClient">用于与中心服务器通信并发送数据的客户端包装器。</param>
+        /// <param name="nodeId">节点的唯一标识符。</param>
+        /// <param name="nodeType">节点类型标识（例如角色或服务）。</param>
+        /// <param name="host">节点的主机名或 IP 地址。</param>
+        /// <param name="port">节点的监听端口。</param>
+        /// <param name="currentLoad">节点当前的负载值，用于负载均衡或监控。</param>
         private static void SendRegisterNode(TcpClientWrapper centerClient, string nodeId, string nodeType, string host, int port, int currentLoad)
         {
             var registerRequest = new CenterRegisterNodeRequest
@@ -139,6 +164,14 @@ namespace Battle
             centerClient.Send(packet);
         }
 
+        /// <summary>
+        /// 将节点的当前负载序列化为 CenterNodeStatusRequest 并通过中心客户端发送。
+        /// </summary>
+        /// <remarks>将 CenterNodeStatusRequest 序列化为 UTF-8 字节，使用 MessageIds.CenterNodeStatusReq 构建会话封装报文并通过
+        /// centerClient 发送。</remarks>
+        /// <param name="centerClient">用于向中心服务器发送封装报文的 TcpClientWrapper 实例。</param>
+        /// <param name="nodeId">节点的唯一标识符。</param>
+        /// <param name="currentLoad">节点当前的负载值。</param>
         private static void SendNodeStatus(TcpClientWrapper centerClient, string nodeId, int currentLoad)
         {
             var statusRequest = new CenterNodeStatusRequest
@@ -151,6 +184,12 @@ namespace Battle
             centerClient.Send(packet);
         }
 
+        /// <summary>
+        /// 返回当前负载计数，等于已绑定玩家数与场景数中的较大值。
+        /// </summary>
+        /// <remarks>通过比较 sceneManager.GetBoundPlayerCount() 与 sceneManager.GetSceneCount()
+        /// 的值确定负载。</remarks>
+        /// <returns>当前负载计数；sceneManager 为 null 时返回 0。</returns>
         private static int GetCurrentLoad()
         {
             if (sceneManager == null)

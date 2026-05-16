@@ -8,6 +8,13 @@ namespace Center.Handlers
 {
     public static class MessageRouter
     {
+        /// <summary>
+        /// 构建并返回一个将消息ID映射到异步处理委托的字典，用于解析消息负载并执行相应的匹配、房间和节点操作。
+        /// </summary>
+        /// <remarks>各处理程序负责反序列化负载、调用 MatchHandler 的异步或同步方法、向网关发送响应以及在节点注册或状态更新时更新
+        /// NodeManager。部分处理程序直接返回已完成的任务。</remarks>
+        /// <param name="matchHandler">用于处理匹配及相关请求的 MatchHandler 实例。</param>
+        /// <returns>包含消息ID到处理委托映射的字典；委托签名为 Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>。</returns>
         public static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>> BuildHandlers(MatchHandler matchHandler)
         {
             var handlers = new Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>();

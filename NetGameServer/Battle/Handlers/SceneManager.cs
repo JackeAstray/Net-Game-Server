@@ -92,11 +92,20 @@ namespace Battle.Handlers
             }
         }
 
+        /// <summary>
+        /// 获取当前场景集合中的场景数。
+        /// </summary>
+        /// <remarks>基于内部集合的 Count 值，为 O(1) 操作；如果集合在调用后被修改，结果可能随之改变。</remarks>
+        /// <returns>表示场景数量的整数。</returns>
         public int GetSceneCount()
         {
             return scenes.Count;
         }
 
+        /// <summary>
+        /// 获取当前绑定到场景的玩家数量。
+        /// </summary>
+        /// <returns>已绑定玩家的数量。</returns>
         public int GetBoundPlayerCount()
         {
             return playerToSceneBinding.Count;

@@ -100,6 +100,12 @@ namespace Center.Handlers
             }
         }
 
+        /// <summary>
+        /// 将指定的客户端会话标识符绑定到网关会话。
+        /// </summary>
+        /// <remarks>若已存在相同的客户端会话标识符映射，则会被新的网关会话覆盖。</remarks>
+        /// <param name="clientSessionId">要绑定的客户端会话标识符；小于或等于 0 时忽略绑定。</param>
+        /// <param name="gatewaySession">要与客户端会话绑定的网关会话。</param>
         public void BindClientGatewayRoute(long clientSessionId, Network.ISession gatewaySession)
         {
             if (clientSessionId <= 0)
@@ -110,11 +116,24 @@ namespace Center.Handlers
             clientGatewayRoutes[clientSessionId] = gatewaySession;
         }
 
+        /// <summary>
+        /// 尝试通过客户端会话 ID 获取对应的网关会话。
+        /// </summary>
+        /// <remarks>基于内部映射 clientGatewayRoutes 进行查找。</remarks>
+        /// <param name="clientSessionId">要查找的客户端会话 ID。</param>
+        /// <param name="gatewaySession">当返回 true 时包含匹配的网关会话；否则为 null。</param>
+        /// <returns>找到匹配的网关会话时返回 true，否则返回 false。</returns>
         public bool TryGetGatewaySessionByClientSessionId(long clientSessionId, out Network.ISession gatewaySession)
         {
             return clientGatewayRoutes.TryGetValue(clientSessionId, out gatewaySession!);
         }
 
+        /// <summary>
+        /// 从 clientGatewayRoutes 字典中移除与指定网关会话关联的所有客户端路由。
+        /// </summary>
+        /// <remarks>枚举 clientGatewayRoutes 并对匹配的键调用
+        /// TryRemove。若同一会话关联多个键，则全部移除。枚举为快照，可能不会反映并发修改。</remarks>
+        /// <param name="gatewaySession">要移除其关联路由的网关会话。</param>
         private void RemoveClientRoutesByGatewaySession(Network.ISession gatewaySession)
         {
             foreach (var route in clientGatewayRoutes)
@@ -155,11 +174,21 @@ namespace Center.Handlers
             return node;
         }
 
+        /// <summary>
+        /// 返回节点集合中的元素数量。
+        /// </summary>
+        /// <returns>集合中的节点数。</returns>
         public int GetNodeCount()
         {
             return nodes.Count;
         }
 
+        /// <summary>
+        /// 移除超过指定超时时间未更新心跳的节点。
+        /// </summary>
+        /// <remarks>使用 UTC 时间比较；对每个成功移除的节点记录警告日志；移除通过 TryRemove 执行以支持并发集合操作。</remarks>
+        /// <param name="timeout">用于判断节点最后心跳是否过期的超时时间（TimeSpan）。</param>
+        /// <returns>已移除的节点数量。</returns>
         public int RemoveInactiveNodes(TimeSpan timeout)
         {
             int removedCount = 0;
@@ -182,6 +211,12 @@ namespace Center.Handlers
             return removedCount;
         }
 
+        /// <summary>
+        /// 创建并返回当前节点集合的快照列表，按节点类型然后按节点标识排序。
+        /// </summary>
+        /// <remarks>返回的是时点快照；后续对原始节点的更改不会影响已返回的 NodeSnapshot 实例。快照由内部节点集合生成，并包含 Session.IsConnected
+        /// 的值。</remarks>
+        /// <returns>按节点类型和节点标识排序的 IReadOnlyList<NodeSnapshot>，包含节点标识、类型、主机、端口、当前负载、最后心跳时间和连接状态。</returns>
         public IReadOnlyList<NodeSnapshot> GetNodeSnapshots()
         {
             return nodes.Values

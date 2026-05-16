@@ -27,8 +27,9 @@ namespace Battle.Handlers
         }
 
         /// <summary>
-        /// 玩家离开或者断线时清理数据
+        /// 从玩家所在场景移除对应实体；若场景使用 AOI 且存在 AOI 管理器，则同时从 AOI 管理器移除该实体。
         /// </summary>
+        /// <param name="sessionId">要移除的玩家会话标识符。</param>
         public void OnPlayerLeave(long sessionId)
         {
             var scene = sceneManager.GetSceneByPlayer(sessionId);
