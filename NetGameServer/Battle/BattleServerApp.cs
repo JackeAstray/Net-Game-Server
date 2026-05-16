@@ -51,33 +51,30 @@ namespace Battle
 
             tcpServer.OnDataReceived += async (session, data) =>
             {
-                // 解析 SessionId 和内部消息结构 [SessionId(8)][MsgId(4)][Payload]
-                if (data.Length >= 12)
+                if (data.Length < 4)
                 {
-                    long originalSessionId = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(data.Span.Slice(0, 8));
-                    var innerData = data.Slice(8);
+                    return;
+                }
 
-                    if (innerData.Length >= 4)
+                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                byte[] payload = data.Slice(4).ToArray();
+
+                long originalSessionId = 0;
+                if (Shared.RouteMetadata.TryExtractClientSessionId(payload, out long clientSessionId, out var cleanPayload))
+                {
+                    originalSessionId = clientSessionId;
+                    payload = cleanPayload;
+                }
+
+                if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
+                {
+                    try
                     {
-                        var msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(innerData.Span.Slice(0, 4));
-                        var payload = innerData.Slice(4);
-
-                        // 战斗服高频包处理分发（如位移、技能同步）
-                        if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
-                        {
-                            try
-                            {
-                                await handlerAction(payload, session, originalSessionId);
-                            }
-                            catch (Exception ex)
-                            {
-                                Log.Error($"Battle 处理消息 ({msgId}) 发生异常: " + ex);
-                            }
-                        }
-                        else
-                        {
-                            // 打印或其他处理
-                        }
+                        await handlerAction(payload, session, originalSessionId);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error($"Battle 处理消息 ({msgId}) 发生异常: " + ex);
                     }
                 }
             };
@@ -160,8 +157,9 @@ namespace Battle
                 CurrentLoad = currentLoad
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(registerRequest);
-            byte[] packet = PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.CenterRegisterNodeReq, payload);
-            centerClient.Send(packet);
+            byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterRegisterNodeReq, payload, out int totalLength);
+            centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
+            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
         }
 
         /// <summary>
@@ -180,8 +178,9 @@ namespace Battle
                 CurrentLoad = currentLoad
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(statusRequest);
-            byte[] packet = PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.CenterNodeStatusReq, payload);
-            centerClient.Send(packet);
+            byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterNodeStatusReq, payload, out int totalLength);
+            centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
+            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
         }
 
         /// <summary>

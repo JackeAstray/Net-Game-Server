@@ -40,7 +40,6 @@ namespace Login
 
             // 注册并启动服务器
             networkManager.RegisterServer("LoginTcp", tcpServer);
-            networkManager.Router.UnbindServer(tcpServer);
 
             await networkManager.StartServerAsync("LoginTcp", port);
             Shared.Log.Info($"登录服务器已启动，监听端口: {port}");
@@ -100,24 +99,27 @@ namespace Login
                 }
             };
 
-            // 处理收到的数据: 先解析 SessionId 与 MsgId，再将 Payload 交给对应的处理器
+            // 处理收到的数据: 统一协议 [MsgId][Payload]，路由元数据在 payload 内
             tcpServer.OnDataReceived += async (session, data) =>
             {
-                if (data.Length < 12) return; // 无效包
+                if (data.Length < 4) return;
 
-                long clientSessionId = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(data.Span.Slice(0, 8));
-                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(8, 4));
-                var payload = data.Slice(12);
+                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                byte[] payload = data.Slice(4).ToArray();
 
-                // 记录客户端会话对应的网关会话，用于回包精确路由。
+                if (!Shared.RouteMetadata.TryExtractClientSessionId(payload, out long clientSessionId, out var cleanPayload))
+                {
+                    Shared.Log.Warning($"Login 收到缺少路由元数据的消息 MsgId:{msgId}");
+                    return;
+                }
+
                 clientGatewayBindings[clientSessionId] = session.SessionId;
 
                 try
                 {
                     if (messageHandlers.TryGetValue(msgId, out var handler))
                     {
-                        // 调用对应的消息处理器，传入 payload、会话对象和客户端会话 ID
-                        await handler(payload, session, clientSessionId);
+                        await handler(cleanPayload, session, clientSessionId);
                     }
                     else
                     {
@@ -151,24 +153,29 @@ namespace Login
 
                 var request = new Shared.Messages.Db.GetMaxUidRequest();
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(request);
-                byte[] packet = Network.Routing.PacketBuilder.BuildDbRequestPacket(Shared.Messages.MessageIds.DbGetMaxUidReq, 0, data);
-                session.Send(packet);
+                byte[] packet = Network.Routing.PacketBuilder.BuildPacket(Shared.Messages.MessageIds.DbGetMaxUidReq, data, out int totalLength);
+                session.Send(packet.AsSpan(0, totalLength).ToArray());
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
             };
 
             // 处理从 DB 返回的数据，严格按 [MsgId(4)][RequestId(8)][Payload] 解析
             dbClient.OnDataReceived += (session, data) =>
             {
-                if (!Network.Routing.PacketBuilder.TryParseDbPacket(data, out int msgId, out long requestId, out ReadOnlyMemory<byte> payload))
+                if (data.Length < 4)
                 {
-                    Shared.Log.Error($"DB 返回协议异常，长度不足 12，实际: {data.Length}");
+                    Shared.Log.Error($"DB 返回协议异常，长度不足 4，实际: {data.Length}");
                     return;
                 }
 
-                if (PendingRequests.TryRemove(requestId, out var tcs))
+                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                byte[] payload = data.Slice(4).ToArray();
+
+                if (Shared.RouteMetadata.TryExtractRequestId(payload, out long requestId, out var cleanPayload)
+                    && PendingRequests.TryRemove(requestId, out var tcs))
                 {
                     try
                     {
-                        tcs.TrySetResult(payload.ToArray());
+                        tcs.TrySetResult(cleanPayload);
                     }
                     catch (Exception ex)
                     {
@@ -179,12 +186,11 @@ namespace Login
 
                 if (msgId == Shared.Messages.MessageIds.DbGetMaxUidReq)
                 {
-                    var response = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.GetMaxUidResponse>(payload.Span);
+                    var response = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.GetMaxUidResponse>(payload);
                     if (response != null)
                     {
                         long currentMaxSequenceFromDB = response.MaxUid;
                         int currentRegionId = ConfigHelper.GetConfig<int>("RegionId") == 0 ? 1 : ConfigHelper.GetConfig<int>("RegionId");
-                        // 初始化全局 UID 生成器
                         Shared.UIDGenerator.Initialize(currentRegionId, currentMaxSequenceFromDB);
                         Shared.Log.Info($"UID 生成器初始化完成，区服ID:{currentRegionId}，当前同步的最大序列:{currentMaxSequenceFromDB}");
                     }
@@ -251,8 +257,9 @@ namespace Login
                 CurrentLoad = currentLoad
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(registerRequest);
-            byte[] packet = PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.CenterRegisterNodeReq, payload);
-            centerClient.Send(packet);
+            byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterRegisterNodeReq, payload, out int totalLength);
+            centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
+            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
         }
 
         private static void SendNodeStatus(TcpClientWrapper centerClient, string nodeId, int currentLoad)
@@ -263,8 +270,9 @@ namespace Login
                 CurrentLoad = currentLoad
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(statusRequest);
-            byte[] packet = PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.CenterNodeStatusReq, payload);
-            centerClient.Send(packet);
+            byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterNodeStatusReq, payload, out int totalLength);
+            centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
+            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
         }
 
         /// <summary>

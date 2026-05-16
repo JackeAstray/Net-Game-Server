@@ -46,13 +46,22 @@ namespace Game.Handlers
                     Remark = req.Remark
                 };
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(dbReq);
-                byte[] packet = PacketBuilder.BuildDbRequestPacket(MessageIds.DbAddFriendReq, 0, data);
-                GameServerApp.DbClient.Send(packet);
+                byte[] packet = PacketBuilder.BuildPacket(MessageIds.DbAddFriendReq, data, out int totalLength);
+                GameServerApp.DbClient.Send(packet.AsSpan(0, totalLength).ToArray());
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
             }
 
             var res = new AddFriendResponse { Success = true, Message = "已发送请求并等待DB处理" };
-            var resData = PacketBuilder.BuildSessionWrapperPacket(session.SessionId, MessageIds.AddFriendRes, Shared.Json.SerializeToUtf8Bytes(res));
-            session.Send(resData);
+            var resPayload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(res), session.SessionId);
+            var resData = PacketBuilder.BuildPacket(MessageIds.AddFriendRes, resPayload, out int resLength);
+            try
+            {
+                session.Send(resData.AsSpan(0, resLength).ToArray());
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(resData);
+            }
         }
 
         private static void HandleRemoveFriendRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
@@ -69,13 +78,22 @@ namespace Game.Handlers
                     FriendUserId = req.FriendUserId
                 };
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(dbReq);
-                byte[] packet = PacketBuilder.BuildDbRequestPacket(MessageIds.DbRemoveFriendReq, 0, data);
-                GameServerApp.DbClient.Send(packet);
+                byte[] packet = PacketBuilder.BuildPacket(MessageIds.DbRemoveFriendReq, data, out int totalLength);
+                GameServerApp.DbClient.Send(packet.AsSpan(0, totalLength).ToArray());
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
             }
 
             var res = new RemoveFriendResponse { Success = true, Message = "已发送请求并等待DB处理" };
-            var resData = PacketBuilder.BuildSessionWrapperPacket(session.SessionId, MessageIds.RemoveFriendRes, Shared.Json.SerializeToUtf8Bytes(res));
-            session.Send(resData);
+            var resPayload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(res), session.SessionId);
+            var resData = PacketBuilder.BuildPacket(MessageIds.RemoveFriendRes, resPayload, out int resLength);
+            try
+            {
+                session.Send(resData.AsSpan(0, resLength).ToArray());
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(resData);
+            }
         }
 
         private static void HandleSetFriendRemarkRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
@@ -93,13 +111,22 @@ namespace Game.Handlers
                     Remark = req.Remark
                 };
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(dbReq);
-                byte[] packet = PacketBuilder.BuildDbRequestPacket(MessageIds.DbSetFriendRemarkReq, 0, data);
-                GameServerApp.DbClient.Send(packet);
+                byte[] packet = PacketBuilder.BuildPacket(MessageIds.DbSetFriendRemarkReq, data, out int totalLength);
+                GameServerApp.DbClient.Send(packet.AsSpan(0, totalLength).ToArray());
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
             }
 
             var res = new SetFriendRemarkResponse { Success = true, Message = "已发送请求并等待DB处理" };
-            var resData = PacketBuilder.BuildSessionWrapperPacket(session.SessionId, MessageIds.SetFriendRemarkRes, Shared.Json.SerializeToUtf8Bytes(res));
-            session.Send(resData);
+            var resPayload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(res), session.SessionId);
+            var resData = PacketBuilder.BuildPacket(MessageIds.SetFriendRemarkRes, resPayload, out int resLength);
+            try
+            {
+                session.Send(resData.AsSpan(0, resLength).ToArray());
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(resData);
+            }
         }
 
         private static void HandleGetFriendsRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
@@ -115,13 +142,22 @@ namespace Game.Handlers
                     UserId = (int)userId
                 };
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(dbReq);
-                byte[] packet = PacketBuilder.BuildDbRequestPacket(MessageIds.DbGetFriendsReq, 0, data);
-                GameServerApp.DbClient.Send(packet);
+                byte[] packet = PacketBuilder.BuildPacket(MessageIds.DbGetFriendsReq, data, out int totalLength);
+                GameServerApp.DbClient.Send(packet.AsSpan(0, totalLength).ToArray());
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
             }
 
             var res = new GetFriendsResponse { Success = true, Message = "已发送请求并等待DB处理" }; // 在真实项目中最好异步等待或者依赖DB回到给客户端
-            var resData = PacketBuilder.BuildSessionWrapperPacket(session.SessionId, MessageIds.GetFriendsRes, Shared.Json.SerializeToUtf8Bytes(res));
-            session.Send(resData);
+            var resPayload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(res), session.SessionId);
+            var resData = PacketBuilder.BuildPacket(MessageIds.GetFriendsRes, resPayload, out int resLength);
+            try
+            {
+                session.Send(resData.AsSpan(0, resLength).ToArray());
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(resData);
+            }
         }
 
         private static void HandleInviteGameRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
@@ -142,15 +178,31 @@ namespace Game.Handlers
                         InviterNickname = $"Player_{userId}",
                         RoomId = req.RoomId
                     };
-                    var notifData = PacketBuilder.BuildSessionWrapperPacket(targetSessionId, MessageIds.InviteGameNotif, Shared.Json.SerializeToUtf8Bytes(notif));
-                    session.Send(notifData);
+                    var notifPayload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(notif), targetSessionId);
+                    var notifData = PacketBuilder.BuildPacket(MessageIds.InviteGameNotif, notifPayload, out int notifLength);
+                    try
+                    {
+                        session.Send(notifData.AsSpan(0, notifLength).ToArray());
+                    }
+                    finally
+                    {
+                        System.Buffers.ArrayPool<byte>.Shared.Return(notifData);
+                    }
                     res.Success = true;
                     res.Message = "邀请已发送";
                 }
             }
 
-            var resData = PacketBuilder.BuildSessionWrapperPacket(session.SessionId, MessageIds.InviteGameRes, Shared.Json.SerializeToUtf8Bytes(res));
-            session.Send(resData);
+            var resPayload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(res), session.SessionId);
+            var resData = PacketBuilder.BuildPacket(MessageIds.InviteGameRes, resPayload, out int resLength);
+            try
+            {
+                session.Send(resData.AsSpan(0, resLength).ToArray());
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(resData);
+            }
         }
     }
 }

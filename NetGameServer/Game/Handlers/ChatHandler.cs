@@ -55,8 +55,16 @@ namespace Game.Handlers
             {
                 var errorResponse = new SendChatResponse { Success = false, Message = "非法操作：身份伪造。" };
                 var errPayload = Json.SerializeToUtf8Bytes(errorResponse);
-                var errData = PacketBuilder.BuildSessionWrapperPacket(session.SessionId, MessageIds.ChatMessageRes, errPayload);
-                session.Send(errData);
+                var routedErrPayload = Shared.RouteMetadata.AttachTargetSessionId(errPayload, session.SessionId);
+                var errData = PacketBuilder.BuildPacket(MessageIds.ChatMessageRes, routedErrPayload, out int errLength);
+                try
+                {
+                    session.Send(errData.AsSpan(0, errLength).ToArray());
+                }
+                finally
+                {
+                    System.Buffers.ArrayPool<byte>.Shared.Return(errData);
+                }
                 return;
             }
 
@@ -81,8 +89,16 @@ namespace Game.Handlers
             // 先返回发送成功的响应
             var response = new SendChatResponse { Success = true, Message = "消息处理成功。" };
             var responsePayload = Json.SerializeToUtf8Bytes(response);
-            var responseData = PacketBuilder.BuildSessionWrapperPacket(session.SessionId, MessageIds.ChatMessageRes, responsePayload);
-            session.Send(responseData);
+            var routedResponsePayload = Shared.RouteMetadata.AttachTargetSessionId(responsePayload, session.SessionId);
+            var responseData = PacketBuilder.BuildPacket(MessageIds.ChatMessageRes, routedResponsePayload, out int responseLength);
+            try
+            {
+                session.Send(responseData.AsSpan(0, responseLength).ToArray());
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(responseData);
+            }
 
             var notifPayload = Json.SerializeToUtf8Bytes(notification);
 
@@ -93,8 +109,16 @@ namespace Game.Handlers
                 long targetSessionId = Game.Managers.PlayerSessionManager.Instance.GetSessionIdByUserId(request.ReceiverId.Value);
                 if (targetSessionId != 0)
                 {
-                    var notifData = PacketBuilder.BuildSessionWrapperPacket(targetSessionId, MessageIds.ChatMessageNotif, notifPayload);
-                    session.Send(notifData);
+                    var routedNotifPayload = Shared.RouteMetadata.AttachTargetSessionId(notifPayload, targetSessionId);
+                    var notifData = PacketBuilder.BuildPacket(MessageIds.ChatMessageNotif, routedNotifPayload, out int notifLength);
+                    try
+                    {
+                        session.Send(notifData.AsSpan(0, notifLength).ToArray());
+                    }
+                    finally
+                    {
+                        System.Buffers.ArrayPool<byte>.Shared.Return(notifData);
+                    }
                 }
             }
             else if (request.Channel == ChatChannel.Team)
@@ -105,8 +129,16 @@ namespace Game.Handlers
             else // World or Channel
             {
                 // 发送通知给所有的客户端（广播）, 通过 SessionId = 0 指示网关广播
-                var notifData = PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.ChatMessageNotif, notifPayload);
-                session.Send(notifData);
+                var routedNotifPayload = Shared.RouteMetadata.AttachBroadcast(notifPayload, true);
+                var notifData = PacketBuilder.BuildPacket(MessageIds.ChatMessageNotif, routedNotifPayload, out int notifLength);
+                try
+                {
+                    session.Send(notifData.AsSpan(0, notifLength).ToArray());
+                }
+                finally
+                {
+                    System.Buffers.ArrayPool<byte>.Shared.Return(notifData);
+                }
             }
         }
     }

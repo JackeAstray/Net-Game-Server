@@ -30,17 +30,25 @@ namespace DB.Routing
         }
 
         /// <summary>
-        /// 处理原始数据：严格按统一协议 [MsgId(4)][RequestId(8)][Payload] 解析并分发。
-        /// 响应统一回写为 [MsgId(4)][RequestId(8)][Payload]。
+        /// 处理原始数据：统一协议 [MsgId(4)][Payload(N)]。
+        /// 若 payload 中含 __requestId 元数据，则在响应时原样回传该元数据。
         /// </summary>
-        /// <param name="session">当前的网络会话。</param>
-        /// <param name="data">接收到的原始数据。</param>
         private async void HandleRawData(ISession session, ReadOnlyMemory<byte> data)
         {
-            if (!Network.Routing.PacketBuilder.TryParseDbPacket(data, out int msgId, out long requestId, out ReadOnlyMemory<byte> payload))
+            if (data.Length < 4)
             {
-                Shared.Log.Error($"[MessageRouter] 收到非法 DB 协议包，长度不足 12，实际: {data.Length}");
+                Shared.Log.Error($"[MessageRouter] 收到非法 DB 协议包，长度不足 4，实际: {data.Length}");
                 return;
+            }
+
+            int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+            ReadOnlyMemory<byte> payload = data.Slice(4);
+
+            long requestId = 0;
+            if (Shared.RouteMetadata.TryExtractRequestId(payload, out long extractedRequestId, out var cleanPayload))
+            {
+                requestId = extractedRequestId;
+                payload = cleanPayload;
             }
 
             if (handlers.TryGetValue(msgId, out var handler))
@@ -84,6 +92,12 @@ namespace DB.Routing
 
             public void Send(ReadOnlyMemory<byte> data)
             {
+                if (requestId <= 0)
+                {
+                    inner.Send(data);
+                    return;
+                }
+
                 if (data.Length < 4)
                 {
                     inner.Send(data);
@@ -91,10 +105,17 @@ namespace DB.Routing
                 }
 
                 int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
-                var payload = data.Span.Slice(4);
-
-                byte[] packet = Network.Routing.PacketBuilder.BuildDbRequestPacket(msgId, requestId, payload);
-                inner.Send(packet);
+                byte[] payload = data.Slice(4).ToArray();
+                byte[] payloadWithRequestId = Shared.RouteMetadata.AttachRequestId(payload, requestId);
+                byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payloadWithRequestId, out int totalLength);
+                try
+                {
+                    inner.Send(packet.AsSpan(0, totalLength).ToArray());
+                }
+                finally
+                {
+                    System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+                }
             }
 
             public void Close() => inner.Close();

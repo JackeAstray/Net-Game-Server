@@ -48,34 +48,26 @@ namespace Game
             // 当客户端建立连接时记录信息（可在此处加入鉴权或会话初始化逻辑）
             tcpServer.OnSessionConnected += session => Log.Info($"客户端已连接: {session.RemoteEndPoint}");
 
-            // 数据接收事件：期望的数据格式为 [SessionId(8)][MsgId(4)][Payload]
-            // - 先读取原始的客户端 SessionId（8 字节 little-endian）
-            // - 然后读取内部数据的 MsgId（4 字节 little-endian）与剩余的负载
-            // - 使用 ClientSessionWrapper 将原始 SessionId 传递给内部路由
+            // 数据接收事件：统一协议 [MsgId][Payload]，路由元数据在 payload 内
             tcpServer.OnDataReceived += (session, data) =>
             {
                 Log.Info($"接收到数据，长度: {data.Length}");
-                // 确保至少包含 8 字节 SessionId + 4 字节 MsgId
-                if (data.Length >= 12)
+                if (data.Length < 4)
                 {
-                    // 读取原始客户端会话 ID（8 字节，小端序）
-                    long originalSessionId = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(data.Span.Slice(0, 8));
-                    var innerData = data.Slice(8);
-
-                    // 检查内部数据至少包含 MsgId
-                    if (innerData.Length >= 4)
-                    {
-                        // 读取消息 ID（4 字节，小端序）
-                        var msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(innerData.Span.Slice(0, 4));
-                        // 剩余部分作为消息负载
-                        var payload = innerData.Slice(4);
-
-                        // 使用自定义的客户端会话包装器携带原始 SessionId，便于内部处理链路识别真实客户端
-                        var clientSession = new Game.Network.ClientSessionWrapper(session, originalSessionId);
-                        // 将消息交由路由器分发到对应的处理器
-                        router.RouteMessage(clientSession, msgId, payload);
-                    }
+                    return;
                 }
+
+                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                byte[] payload = data.Slice(4).ToArray();
+
+                if (!Shared.RouteMetadata.TryExtractClientSessionId(payload, out long originalSessionId, out var cleanPayload))
+                {
+                    Log.Warning($"Game 收到缺少路由元数据的消息 MsgId:{msgId}");
+                    return;
+                }
+
+                var clientSession = new Game.Network.ClientSessionWrapper(session, originalSessionId);
+                router.RouteMessage(clientSession, msgId, cleanPayload);
             };
 
             // 客户端断开连接事件（记录原因）。这里可以添加清理会话状态或通知其他子系统的逻辑。
@@ -168,8 +160,9 @@ namespace Game
                 CurrentLoad = currentLoad
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(registerRequest);
-            byte[] packet = PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.CenterRegisterNodeReq, payload);
-            centerClient.Send(packet);
+            byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterRegisterNodeReq, payload, out int totalLength);
+            centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
+            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
         }
 
         private static void SendNodeStatus(TcpClientWrapper centerClient, string nodeId, int currentLoad)
@@ -180,8 +173,9 @@ namespace Game
                 CurrentLoad = currentLoad
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(statusRequest);
-            byte[] packet = PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.CenterNodeStatusReq, payload);
-            centerClient.Send(packet);
+            byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterNodeStatusReq, payload, out int totalLength);
+            centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
+            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
         }
 
         private static int GetCurrentLoad()

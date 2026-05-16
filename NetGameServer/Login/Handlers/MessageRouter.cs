@@ -90,25 +90,22 @@ namespace Login.Handlers
         }
 
         /// <summary>
-        /// 将处理结果打包并发送回 Gateway。
-        /// 包格式: [ClientSessionId(8 bytes little endian)][MsgId(4 bytes little endian)][Payload]
+        /// 将处理结果发送回 Gateway。
+        /// 统一协议为 [MsgId][Payload]，客户端路由信息通过 payload 元数据 __clientSessionId 传递。
         /// </summary>
-        /// <typeparam name="T">响应对象的类型（将会序列化为 JSON 字节数组）。</typeparam>
-        /// <param name="gatewaySession">网关会话对象，用于发送数据给网关。</param>
-        /// <param name="clientSessionId">原始客户端会话 ID（由网关转发过来，需原样返回以便网关转发给正确客户端）。</param>
-        /// <param name="msgId">响应消息的 MsgId。</param>
-        /// <param name="response">要发送的响应对象，会被序列化为 JSON。</param>
         private static void SendToGateway<T>(Network.ISession gatewaySession, long clientSessionId, int msgId, T response)
         {
-            // 将响应对象序列化为 UTF8 JSON 字节数组
             byte[] responsePayload = Shared.Json.SerializeToUtf8Bytes(response);
-            // 构建最终包: 8 字节 ClientSessionId + 4 字节 MsgId + Payload
-            byte[] packet = new byte[12 + responsePayload.Length];
-            System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(packet.AsSpan(0, 8), clientSessionId);
-            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(8, 4), msgId);
-            responsePayload.CopyTo(packet.AsSpan(12));
-            // 发送到网关，由网关负责根据 clientSessionId 转发到具体客户端
-            gatewaySession.Send(packet);
+            byte[] routedPayload = Shared.RouteMetadata.AttachClientSessionId(responsePayload, clientSessionId);
+            byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
+            try
+            {
+                gatewaySession.Send(packet.AsSpan(0, totalLength).ToArray());
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            }
         }
     }
 }

@@ -259,8 +259,10 @@ namespace Login.Handlers
             long requestId = System.Threading.Interlocked.Increment(ref sequenceId);
             LoginServerApp.PendingRequests[requestId] = tcs;
 
-            byte[] packet = Network.Routing.PacketBuilder.BuildDbRequestPacket(msgId, requestId, data);
-            dbClient.Send(packet);
+            byte[] payloadWithRequestId = Shared.RouteMetadata.AttachRequestId(data, requestId);
+            byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payloadWithRequestId, out int totalLength);
+            dbClient.Send(packet.AsSpan(0, totalLength).ToArray());
+            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
 
             using var cts = new System.Threading.CancellationTokenSource();
             var timeoutTask = Task.Delay(5000, cts.Token);

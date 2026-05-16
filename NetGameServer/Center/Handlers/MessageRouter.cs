@@ -82,30 +82,30 @@ namespace Center.Handlers
         }
 
         /// <summary>
-        /// 将响应发送回网关服务器，网关服务器会根据clientSessionId将响应转发给对应的客户端。
+        /// 将响应发送回网关服务器，统一协议 [MsgId][Payload]，路由信息通过 payload 元数据传递。
         /// </summary>
-        /// <typeparam name="T">响应对象的类型。</typeparam>
-        /// <param name="gatewaySession">网关服务器的会话对象。</param>
-        /// <param name="clientSessionId">客户端会话 ID。</param>
-        /// <param name="msgId">消息 ID。</param>
-        /// <param name="response">响应对象。</param>
         private static void SendToGateway<T>(Network.ISession gatewaySession, long clientSessionId, int msgId, T response)
         {
             byte[] responsePayload = Shared.Json.SerializeToUtf8Bytes(response);
-            byte[] packet = new byte[12 + responsePayload.Length];
-            System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(packet.AsSpan(0, 8), clientSessionId);
-            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(8, 4), msgId);
-            responsePayload.CopyTo(packet.AsSpan(12));
+            byte[] routedPayload = Shared.RouteMetadata.AttachClientSessionId(responsePayload, clientSessionId);
+            byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
 
-            if (clientSessionId > 0
-                && NodeManager.Instance.TryGetGatewaySessionByClientSessionId(clientSessionId, out var routedGatewaySession)
-                && routedGatewaySession.IsConnected)
+            try
             {
-                routedGatewaySession.Send(packet);
-                return;
-            }
+                if (clientSessionId > 0
+                    && NodeManager.Instance.TryGetGatewaySessionByClientSessionId(clientSessionId, out var routedGatewaySession)
+                    && routedGatewaySession.IsConnected)
+                {
+                    routedGatewaySession.Send(packet.AsSpan(0, totalLength).ToArray());
+                    return;
+                }
 
-            gatewaySession.Send(packet);
+                gatewaySession.Send(packet.AsSpan(0, totalLength).ToArray());
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            }
         }
     }
 }

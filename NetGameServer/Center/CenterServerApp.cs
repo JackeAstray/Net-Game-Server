@@ -40,44 +40,44 @@ namespace Center
 
             tcpServer.OnDataReceived += async (session, data) =>
             {
-                // 解析 SessionId 和内部消息结构 [SessionId(8)][MsgId(4)][Payload]
-                if (data.Length >= 12)
+                if (data.Length < 4)
                 {
-                    long originalSessionId = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(data.Span.Slice(0, 8));
-                    if (originalSessionId > 0)
-                    {
-                        Center.Handlers.NodeManager.Instance.BindClientGatewayRoute(originalSessionId, session);
-                    }
-                    var innerData = data.Slice(8);
+                    return;
+                }
 
-                    if (innerData.Length >= 4)
-                    {
-                        var msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(innerData.Span.Slice(0, 4));
-                        var payload = innerData.Slice(4);
+                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                byte[] payload = data.Slice(4).ToArray();
 
-                        // 使用 Router 或 Handler 分发匹配/调度逻辑
-                        // 这里预留出处理和响应的回调，网关期望的返回格式依然是 [OriginalSessionId(8)][MsgId(4)][Payload]
-                        if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
-                        {
-                            try
-                            {
-                                await handlerAction(payload, session, originalSessionId);
-                            }
-                            catch (Exception ex)
-                            {
-                                Log.Error($"Center 处理消息 ({msgId}) 发生异常: " + ex);
-                            }
-                        }
-                        else
-                        {
-                            Log.Warning($"Center 收到未知 MsgId {msgId}");
-                        }
+                long originalSessionId = 0;
+                if (Shared.RouteMetadata.TryExtractClientSessionId(payload, out long clientSessionId, out var cleanPayload))
+                {
+                    originalSessionId = clientSessionId;
+                    payload = cleanPayload;
+                }
+
+                if (originalSessionId > 0)
+                {
+                    Center.Handlers.NodeManager.Instance.BindClientGatewayRoute(originalSessionId, session);
+                }
+
+                if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
+                {
+                    try
+                    {
+                        await handlerAction(payload, session, originalSessionId);
                     }
+                    catch (Exception ex)
+                    {
+                        Log.Error($"Center 处理消息 ({msgId}) 发生异常: " + ex);
+                    }
+                }
+                else
+                {
+                    Log.Warning($"Center 收到未知 MsgId {msgId}");
                 }
             };
 
             networkManager.RegisterServer("CenterTcp", tcpServer);
-            networkManager.Router.UnbindServer(tcpServer);
 
             await networkManager.StartServerAsync("CenterTcp", port);
             Log.Info($"Center 调度服务器网络已启动，监听内部端口: {port}");

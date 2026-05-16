@@ -60,41 +60,36 @@ namespace Gateway
             // 建立到后端 Login, Game, Center, Battle 服务器的连接（异步连接启动）
             var (loginClient, gameClient, centerClient, battleClient) = ConnectToBackendServers();
 
-            // 数据接收处理器：将客户端发送的原始数据打包成网关到后端的格式
-            // 格式为: [ClientSessionId(8)][原始数据...]
+            // 数据接收处理器：统一协议 [MsgId(4)][Payload]
+            // 会话路由信息放入 JSON payload 元数据 __clientSessionId
             DataReceivedHandler onDataReceived = (session, data) =>
             {
                 if (data.Length >= 4)
                 {
-                    // 客户端协议假定前 4 字节为 MsgId（小端）
                     int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
                     Shared.Log.Info($"Gateway 接收到数据 长度:{data.Length} MsgId:{msgId} 来自:{session.RemoteEndPoint}");
 
-                    // 在数据前面写入 8 字节的 SessionId，后端根据该 SessionId 知道要回发给哪个客户端
-                    byte[] wrapperMsg = new byte[8 + data.Length];
-                    System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(wrapperMsg.AsSpan(0, 8), session.SessionId);
-                    data.Span.CopyTo(wrapperMsg.AsSpan(8));
+                    byte[] payload = data.Slice(4).ToArray();
+                    byte[] routedPayload = Shared.RouteMetadata.AttachClientSessionId(payload, session.SessionId);
+                    byte[] wrapperMsg = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int routedLength);
+                    byte[] outbound = wrapperMsg.AsSpan(0, routedLength).ToArray();
+                    System.Buffers.ArrayPool<byte>.Shared.Return(wrapperMsg);
 
-                    // 根据 MsgId 范围选择路由到 Login 或 Game 或 Center 或 Battle 后端
                     if (msgId >= 10000 && msgId < 20000)
                     {
-                        // 登录相关消息路由到 Login 服务器
-                        loginClient.Send(wrapperMsg);
+                        loginClient.Send(outbound);
                     }
                     else if ((msgId >= 20000 && msgId < 30000) || (msgId >= 50000 && msgId < 70000))
                     {
-                        // 游戏大世界、好友、聊天相关消息路由到 Game 服务器
-                        gameClient.Send(wrapperMsg);
+                        gameClient.Send(outbound);
                     }
                     else if ((msgId >= 30000 && msgId < 40000) || (msgId >= 90000 && msgId < 91000))
                     {
-                        // 调度、匹配消息以及 Center 内部节点消息路由到 Center 服务器
-                        centerClient.Send(wrapperMsg);
+                        centerClient.Send(outbound);
                     }
                     else if (msgId >= 40000 && msgId < 50000)
                     {
-                        // 战斗、房间相关消息路由到 Battle 服务器
-                        battleClient.Send(wrapperMsg);
+                        battleClient.Send(outbound);
                     }
                     else
                     {
@@ -152,16 +147,20 @@ namespace Gateway
             loginClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"与 Login 服务器断开连接: {reason}");
             loginClient.OnDataReceived += (session, data) =>
             {
-                if (data.Length >= 12)
+                if (data.Length < 4)
                 {
-                    long sessionId = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(data.Span.Slice(0, 8));
+                    return;
+                }
+
+                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                byte[] payload = data.Slice(4).ToArray();
+
+                if (Shared.RouteMetadata.TryExtractClientSessionId(payload, out long sessionId, out var cleanPayload))
+                {
                     var clientSession = Gateway.Managers.GatewaySessionManager.Instance.GetSession(sessionId);
                     if (clientSession != null)
                     {
-                        int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(8, 4));
-                        var payload = data.Span.Slice(12);
-
-                        byte[] clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
+                        byte[] clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, cleanPayload, out int totalLength);
                         try
                         {
                             clientSession.Send(clientPacket.AsSpan(0, totalLength).ToArray());
@@ -182,38 +181,42 @@ namespace Gateway
             gameClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"与 Game 服务器断开连接: {reason}");
             gameClient.OnDataReceived += (session, data) =>
             {
-                if (data.Length >= 12)
+                if (data.Length < 4)
                 {
-                    long sessionId = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(data.Span.Slice(0, 8));
-                    int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(8, 4));
-                    var payload = data.Span.Slice(12);
+                    return;
+                }
 
-                    if (sessionId == 0)
+                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                byte[] payload = data.Slice(4).ToArray();
+
+                bool broadcast = Shared.RouteMetadata.TryExtractBroadcast(payload, out bool broadcastFlag, out var payloadAfterBroadcast) && broadcastFlag;
+                if (broadcast)
+                {
+                    var packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payloadAfterBroadcast, out int totalLength);
+                    try
                     {
-                        var packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
+                        Gateway.Managers.GatewaySessionManager.Instance.Broadcast(packet.AsSpan(0, totalLength).ToArray());
+                    }
+                    finally
+                    {
+                        System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+                    }
+                    return;
+                }
+
+                if (Shared.RouteMetadata.TryExtractTargetSessionId(payloadAfterBroadcast, out long targetSessionId, out var cleanPayload))
+                {
+                    var clientSession = Gateway.Managers.GatewaySessionManager.Instance.GetSession(targetSessionId);
+                    if (clientSession != null)
+                    {
+                        var clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, cleanPayload, out int totalLength);
                         try
                         {
-                            Gateway.Managers.GatewaySessionManager.Instance.Broadcast(packet.AsSpan(0, totalLength).ToArray());
+                            clientSession.Send(clientPacket.AsSpan(0, totalLength).ToArray());
                         }
                         finally
                         {
-                            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
-                        }
-                    }
-                    else
-                    {
-                        var clientSession = Gateway.Managers.GatewaySessionManager.Instance.GetSession(sessionId);
-                        if (clientSession != null)
-                        {
-                            var clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
-                            try
-                            {
-                                clientSession.Send(clientPacket.AsSpan(0, totalLength).ToArray());
-                            }
-                            finally
-                            {
-                                System.Buffers.ArrayPool<byte>.Shared.Return(clientPacket);
-                            }
+                            System.Buffers.ArrayPool<byte>.Shared.Return(clientPacket);
                         }
                     }
                 }
@@ -227,27 +230,31 @@ namespace Gateway
             centerClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"与 Center 服务器断开连接: {reason}");
             centerClient.OnDataReceived += delegate (Network.ISession session, ReadOnlyMemory<byte> data)
             {
-                if (data.Length >= 12)
+                if (data.Length < 4)
                 {
-                    long sessionId = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(data.Span.Slice(0, 8));
-                    int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(8, 4));
-                    var payload = data.Span.Slice(12);
+                    return;
+                }
 
-                    if (sessionId == 0)
+                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                byte[] payload = data.Slice(4).ToArray();
+
+                bool broadcast = Shared.RouteMetadata.TryExtractBroadcast(payload, out bool broadcastFlag, out var payloadAfterBroadcast) && broadcastFlag;
+                if (broadcast)
+                {
+                    var packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payloadAfterBroadcast, out int totalLength);
+                    try { Gateway.Managers.GatewaySessionManager.Instance.Broadcast(packet.AsSpan(0, totalLength).ToArray()); }
+                    finally { System.Buffers.ArrayPool<byte>.Shared.Return(packet); }
+                    return;
+                }
+
+                if (Shared.RouteMetadata.TryExtractTargetSessionId(payloadAfterBroadcast, out long targetSessionId, out var cleanPayload))
+                {
+                    var clientSession = Gateway.Managers.GatewaySessionManager.Instance.GetSession(targetSessionId);
+                    if (clientSession != null)
                     {
-                        var packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
-                        try { Gateway.Managers.GatewaySessionManager.Instance.Broadcast(packet.AsSpan(0, totalLength).ToArray()); }
-                        finally { System.Buffers.ArrayPool<byte>.Shared.Return(packet); }
-                    }
-                    else
-                    {
-                        var clientSession = Gateway.Managers.GatewaySessionManager.Instance.GetSession(sessionId);
-                        if (clientSession != null)
-                        {
-                            var clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
-                            try { clientSession.Send(clientPacket.AsSpan(0, totalLength).ToArray()); }
-                            finally { System.Buffers.ArrayPool<byte>.Shared.Return(clientPacket); }
-                        }
+                        var clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, cleanPayload, out int totalLength);
+                        try { clientSession.Send(clientPacket.AsSpan(0, totalLength).ToArray()); }
+                        finally { System.Buffers.ArrayPool<byte>.Shared.Return(clientPacket); }
                     }
                 }
             };
@@ -260,27 +267,31 @@ namespace Gateway
             battleClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"与 Battle 服务器断开连接: {reason}");
             battleClient.OnDataReceived += delegate (Network.ISession session, ReadOnlyMemory<byte> data)
             {
-                if (data.Length >= 12)
+                if (data.Length < 4)
                 {
-                    long sessionId = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(data.Span.Slice(0, 8));
-                    int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(8, 4));
-                    var payload = data.Span.Slice(12);
+                    return;
+                }
 
-                    if (sessionId == 0)
+                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                byte[] payload = data.Slice(4).ToArray();
+
+                bool broadcast = Shared.RouteMetadata.TryExtractBroadcast(payload, out bool broadcastFlag, out var payloadAfterBroadcast) && broadcastFlag;
+                if (broadcast)
+                {
+                    var packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payloadAfterBroadcast, out int totalLength);
+                    try { Gateway.Managers.GatewaySessionManager.Instance.Broadcast(packet.AsSpan(0, totalLength).ToArray()); }
+                    finally { System.Buffers.ArrayPool<byte>.Shared.Return(packet); }
+                    return;
+                }
+
+                if (Shared.RouteMetadata.TryExtractTargetSessionId(payloadAfterBroadcast, out long targetSessionId, out var cleanPayload))
+                {
+                    var clientSession = Gateway.Managers.GatewaySessionManager.Instance.GetSession(targetSessionId);
+                    if (clientSession != null)
                     {
-                        var packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
-                        try { Gateway.Managers.GatewaySessionManager.Instance.Broadcast(packet.AsSpan(0, totalLength).ToArray()); }
-                        finally { System.Buffers.ArrayPool<byte>.Shared.Return(packet); }
-                    }
-                    else
-                    {
-                        var clientSession = Gateway.Managers.GatewaySessionManager.Instance.GetSession(sessionId);
-                        if (clientSession != null)
-                        {
-                            var clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
-                            try { clientSession.Send(clientPacket.AsSpan(0, totalLength).ToArray()); }
-                            finally { System.Buffers.ArrayPool<byte>.Shared.Return(clientPacket); }
-                        }
+                        var clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, cleanPayload, out int totalLength);
+                        try { clientSession.Send(clientPacket.AsSpan(0, totalLength).ToArray()); }
+                        finally { System.Buffers.ArrayPool<byte>.Shared.Return(clientPacket); }
                     }
                 }
             };
@@ -347,8 +358,9 @@ namespace Gateway
                 CurrentLoad = currentLoad
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(registerRequest);
-            byte[] packet = PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.CenterRegisterNodeReq, payload);
-            centerClient.Send(packet);
+            byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterRegisterNodeReq, payload, out int totalLength);
+            centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
+            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
         }
 
         private static void SendNodeStatus(TcpClientWrapper centerClient, string nodeId, int currentLoad)
@@ -359,8 +371,9 @@ namespace Gateway
                 CurrentLoad = currentLoad
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(statusRequest);
-            byte[] packet = PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.CenterNodeStatusReq, payload);
-            centerClient.Send(packet);
+            byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterNodeStatusReq, payload, out int totalLength);
+            centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
+            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
         }
 
         public static async Task StartReverseProxyAsync(string[] args)

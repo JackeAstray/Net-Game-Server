@@ -60,8 +60,15 @@ namespace Center.Handlers
 
                 var req = new CenterCreateSceneRequest { RoomId = roomId, SceneType = category, IsPrivate = false };
                 var payload = Shared.Json.SerializeToUtf8Bytes(req);
-                byte[] packet = Network.Routing.PacketBuilder.BuildSessionWrapperPacket(0, Shared.Messages.MessageIds.CenterCreateSceneReq, payload); // 0 表示服务器之间的调用
-                battleNodeInfo?.Session.Send(packet);
+                byte[] packet = Network.Routing.PacketBuilder.BuildPacket(Shared.Messages.MessageIds.CenterCreateSceneReq, payload, out int totalLength); // 统一协议 [MsgId][Payload]
+                try
+                {
+                    battleNodeInfo?.Session.Send(packet.AsSpan(0, totalLength).ToArray());
+                }
+                finally
+                {
+                    System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+                }
 
                 // 等待真正的 BattleNode 返回创建结果，设定一个超时时间
                 var delayTask = Task.Delay(5000);
@@ -146,8 +153,15 @@ namespace Center.Handlers
 
             var req = new CenterCreateSceneRequest { RoomId = roomId, SceneType = request.SceneType, IsPrivate = request.IsPrivate };
             var payload = Shared.Json.SerializeToUtf8Bytes(req);
-            byte[] packet = Network.Routing.PacketBuilder.BuildSessionWrapperPacket(0, MessageIds.CenterCreateSceneReq, payload);
-            battleNodeInfo?.Session.Send(packet);
+            byte[] packet = Network.Routing.PacketBuilder.BuildPacket(MessageIds.CenterCreateSceneReq, payload, out int totalLength);
+            try
+            {
+                battleNodeInfo?.Session.Send(packet.AsSpan(0, totalLength).ToArray());
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            }
 
             var delayTask = Task.Delay(5000);
             if (await Task.WhenAny(tcs.Task, delayTask) == tcs.Task)
