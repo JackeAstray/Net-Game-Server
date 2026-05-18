@@ -18,6 +18,13 @@ namespace Shared
             return JsonConvert.SerializeObject(obj, formatting);
         }
 
+        /// <summary>
+        /// 将对象序列化为 JSON 并以 UTF-8 编码返回字节数组。
+        /// </summary>
+        /// <remarks>使用 Newtonsoft.Json 的 JsonConvert.SerializeObject 将对象转换为 JSON 文本，然后通过 UTF-8
+        /// 编码获取字节表示。</remarks>
+        /// <param name="obj">要序列化为 JSON 的对象。</param>
+        /// <returns>表示序列化结果的 UTF-8 编码字节数组。</returns>
         public static byte[] SerializeToUtf8Bytes(object obj)
         {
             return System.Text.Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(obj));
@@ -34,6 +41,14 @@ namespace Shared
             return JsonConvert.DeserializeObject<T>(value);
         }
 
+        /// <summary>
+        /// 将 UTF-8 编码的 JSON 字节序列反序列化为指定类型的对象。
+        /// </summary>
+        /// <remarks>使用 Newtonsoft.Json 的 JsonConvert，通过将字节序列解码为 UTF-8 字符串后进行反序列化。输入必须为有效的 UTF-8
+        /// JSON，否则可能抛出由 JsonConvert 引发的异常（例如 JsonReaderException）。</remarks>
+        /// <typeparam name="T">要反序列化为的目标类型。</typeparam>
+        /// <param name="utf8Json">包含 UTF-8 编码 JSON 的只读字节序列。</param>
+        /// <returns>已反序列化的 T 实例；若 JSON 表示 null 则返回 null。</returns>
         public static T? DeserializeFromUtf8Bytes<T>(System.ReadOnlySpan<byte> utf8Json)
         {
             return JsonConvert.DeserializeObject<T>(System.Text.Encoding.UTF8.GetString(utf8Json));

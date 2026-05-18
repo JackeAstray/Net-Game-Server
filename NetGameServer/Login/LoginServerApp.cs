@@ -1,4 +1,7 @@
 using System;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
@@ -20,10 +23,13 @@ namespace Login
     {
         public static readonly System.Collections.Concurrent.ConcurrentDictionary<long, TaskCompletionSource<byte[]>> PendingRequests = new System.Collections.Concurrent.ConcurrentDictionary<long, TaskCompletionSource<byte[]>>();
         private static System.Threading.CancellationTokenSource? centerHeartbeatCts;
+        private static readonly object sharedLoginSync = new object();
+        private static TcpClientWrapper? sharedDbClient;
+        private static Login.Handlers.LoginHandler? sharedLoginHandler;
 
         /// <summary>
         /// 启动用于接收网关连接的 TCP 服务并处理来自网关的数据包。
-        /// 数据包结构为: [SessionId(8)][MsgId(4)][Payload]
+        /// 数据包结构为: [MsgId(4)][Payload]，路由信息通过 payload 中的 RouteMetadata（如 __clientSessionId）传递。
         /// 该方法会:
         /// - 启动 NetworkManager 与 TcpServer
         /// - 绑定连接/断开/接收事件
@@ -34,19 +40,14 @@ namespace Login
             // 从配置读取监听端口，若未配置则使用默认 31302
             int port = ConfigHelper.GetConfig<int>("LoginPort") == 0 ? 31302 : ConfigHelper.GetConfig<int>("LoginPort");
 
-            // 创建网络管理器与 TCP 服务器（用于网关连接）
-            var networkManager = new NetworkManager();
+            // 创建 TCP 服务器（用于网关连接）
             var tcpServer = new TcpServer();
 
-            // 注册并启动服务器
-            networkManager.RegisterServer("LoginTcp", tcpServer);
-
-            await networkManager.StartServerAsync("LoginTcp", port);
+            await tcpServer.StartAsync(port);
             Shared.Log.Info($"登录服务器已启动，监听端口: {port}");
 
             // 初始化与 DB 的连接（用于 UID 同步或持久化操作）
-            var dbClient = ConnectToDatabase();
-            var loginHandler = new Login.Handlers.LoginHandler(dbClient);
+            var loginHandler = GetOrCreateLoginHandler();
             Login.Managers.SessionManager.Instance.OnUserOfflineAction = (userId) => { _ = loginHandler.HandleOfflineAsync(userId); };
 
             // 构建消息处理器字典，按 MsgId 分发
@@ -55,6 +56,22 @@ namespace Login
             // 跟踪所有活跃网关会话，并记录“客户端会话 -> 网关会话”的绑定，避免多网关场景下回包错路由。
             var activeGatewaySessions = new System.Collections.Concurrent.ConcurrentDictionary<long, Network.ISession>();
             var clientGatewayBindings = new System.Collections.Concurrent.ConcurrentDictionary<long, long>();
+
+            void RemoveClientGatewayBinding(long clientSessionId)
+            {
+                clientGatewayBindings.TryRemove(clientSessionId, out _);
+            }
+
+            void RemoveBindingsByGatewaySession(long gatewaySessionId)
+            {
+                foreach (var binding in clientGatewayBindings)
+                {
+                    if (binding.Value == gatewaySessionId)
+                    {
+                        clientGatewayBindings.TryRemove(binding.Key, out _);
+                    }
+                }
+            }
 
             tcpServer.OnSessionConnected += session =>
             {
@@ -65,38 +82,53 @@ namespace Login
             {
                 Shared.Log.Info($"网关断开连接，原因: {reason}");
                 activeGatewaySessions.TryRemove(session.SessionId, out _);
-
-                foreach (var binding in clientGatewayBindings)
-                {
-                    if (binding.Value == session.SessionId)
-                    {
-                        clientGatewayBindings.TryRemove(binding.Key, out _);
-                    }
-                }
+                RemoveBindingsByGatewaySession(session.SessionId);
             };
 
             Login.Managers.SessionManager.Instance.SendToGatewayAction = (clientSessionId, packetData) =>
             {
-                // [SessionId(8)][MsgId(4)][Payload]
-                // SendToGatewayAction 的 packetData 仅为 [MsgId(4)][Payload]，这里补上客户端 SessionId 作为前缀。
-                byte[] wrapperMsg = new byte[8 + packetData.Length];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(wrapperMsg.AsSpan(0, 8), clientSessionId);
-                packetData.CopyTo(wrapperMsg.AsSpan(8));
-
-                if (clientGatewayBindings.TryGetValue(clientSessionId, out var gatewaySessionId)
-                    && activeGatewaySessions.TryGetValue(gatewaySessionId, out var targetGatewaySession))
+                if (packetData.Length < 4)
                 {
-                    targetGatewaySession.Send(wrapperMsg);
+                    Shared.Log.Warning("SendToGatewayAction 收到无效包（长度不足 4），已丢弃。");
                     return;
                 }
 
-                // 兜底：若暂无绑定，尝试发送给任意活跃网关并建立绑定。
-                foreach (var session in activeGatewaySessions.Values)
+                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(packetData.AsSpan(0, 4));
+                byte[] payload = packetData.AsSpan(4).ToArray();
+                byte[] routedPayload = Shared.RouteMetadata.AttachClientSessionId(payload, clientSessionId);
+                byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
+                byte[] outbound = packet.AsSpan(0, totalLength).ToArray();
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+
+                if (clientGatewayBindings.TryGetValue(clientSessionId, out var gatewaySessionId))
                 {
-                    session.Send(wrapperMsg);
-                    clientGatewayBindings[clientSessionId] = session.SessionId;
-                    break;
+                    if (activeGatewaySessions.TryGetValue(gatewaySessionId, out var targetGatewaySession))
+                    {
+                        targetGatewaySession.Send(outbound);
+                        return;
+                    }
+
+                    RemoveClientGatewayBinding(clientSessionId);
                 }
+
+                // 单网关时允许兜底重绑；多网关时不做广播，避免重复下发或错路由。
+                if (activeGatewaySessions.Count == 1)
+                {
+                    foreach (var session in activeGatewaySessions.Values)
+                    {
+                        session.Send(outbound);
+                        clientGatewayBindings[clientSessionId] = session.SessionId;
+                        return;
+                    }
+                }
+
+                if (activeGatewaySessions.Count > 1)
+                {
+                    Shared.Log.Error($"SendToGatewayAction 目标网关绑定缺失，且存在多网关连接，回包已丢弃以避免广播误投 ClientSessionId:{clientSessionId} 活跃网关数:{activeGatewaySessions.Count}");
+                    return;
+                }
+
+                Shared.Log.Warning($"SendToGatewayAction 无可用网关会话，回包已丢弃 ClientSessionId:{clientSessionId}");
             };
 
             // 处理收到的数据: 统一协议 [MsgId][Payload]，路由元数据在 payload 内
@@ -120,10 +152,80 @@ namespace Login
                     if (messageHandlers.TryGetValue(msgId, out var handler))
                     {
                         await handler(cleanPayload, session, clientSessionId);
+
+                        if (msgId == MessageIds.PlayerDisconnectNotif)
+                        {
+                            RemoveClientGatewayBinding(clientSessionId);
+                        }
                     }
                     else
                     {
                         Shared.Log.Warning($"收到未处理的消息类型 MsgId: {msgId}");
+
+                        if (msgId >= 10000 && msgId < 20000)
+                        {
+                            int responseMsgId = msgId switch
+                            {
+                                MessageIds.LoginReq => MessageIds.LoginRes,
+                                MessageIds.RegisterReq => MessageIds.RegisterRes,
+                                MessageIds.LogoutReq => MessageIds.LogoutRes,
+                                MessageIds.ResetPasswordReq => MessageIds.ResetPasswordRes,
+                                MessageIds.UpdateNicknameReq => MessageIds.UpdateNicknameRes,
+                                MessageIds.FindPasswordWithCodeReq => MessageIds.FindPasswordWithCodeRes,
+                                _ => 0
+                            };
+
+                            if (responseMsgId > 0)
+                            {
+                                string errorMessage = $"未支持的登录消息类型: {msgId}";
+                                byte[] unknownPayload = responseMsgId switch
+                                {
+                                    MessageIds.LoginRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Login.LoginResponse
+                                    {
+                                        Success = false,
+                                        Message = errorMessage,
+                                        UserId = 0,
+                                        Token = string.Empty
+                                    }),
+                                    MessageIds.RegisterRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Login.RegisterResponse
+                                    {
+                                        Success = false,
+                                        Message = errorMessage
+                                    }),
+                                    MessageIds.LogoutRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Login.LogoutResponse
+                                    {
+                                        Success = false,
+                                        Message = errorMessage
+                                    }),
+                                    MessageIds.ResetPasswordRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Login.ChangePasswordResponse
+                                    {
+                                        Success = false,
+                                        Message = errorMessage
+                                    }),
+                                    MessageIds.UpdateNicknameRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Login.ChangeNicknameResponse
+                                    {
+                                        Success = false,
+                                        Message = errorMessage
+                                    }),
+                                    MessageIds.FindPasswordWithCodeRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Login.FindPasswordResponse
+                                    {
+                                        Success = false,
+                                        Message = errorMessage
+                                    }),
+                                    _ => Array.Empty<byte>()
+                                };
+
+                                if (unknownPayload.Length > 0)
+                                {
+                                    byte[] routedUnknownPayload = Shared.RouteMetadata.AttachClientSessionId(unknownPayload, clientSessionId);
+                                    byte[] unknownPacket = Network.Routing.PacketBuilder.BuildPacket(responseMsgId, routedUnknownPayload, out int unknownLength);
+                                    byte[] unknownOutbound = unknownPacket.AsSpan(0, unknownLength).ToArray();
+                                    System.Buffers.ArrayPool<byte>.Shared.Return(unknownPacket);
+
+                                    session.Send(unknownOutbound);
+                                }
+                            }
+                        }
                     }
                 }
                 catch (System.Exception ex)
@@ -133,6 +235,26 @@ namespace Login
             };
 
             ConnectToCenter(port, activeGatewaySessions);
+        }
+
+        private static Login.Handlers.LoginHandler GetOrCreateLoginHandler()
+        {
+            if (sharedLoginHandler != null)
+            {
+                return sharedLoginHandler;
+            }
+
+            lock (sharedLoginSync)
+            {
+                if (sharedLoginHandler != null)
+                {
+                    return sharedLoginHandler;
+                }
+
+                sharedDbClient = ConnectToDatabase();
+                sharedLoginHandler = new Login.Handlers.LoginHandler(sharedDbClient);
+                return sharedLoginHandler;
+            }
         }
 
         /// <summary>
@@ -184,7 +306,7 @@ namespace Login
                     return;
                 }
 
-                if (msgId == Shared.Messages.MessageIds.DbGetMaxUidReq)
+                if (msgId == Shared.Messages.MessageIds.DbGetMaxUidRes)
                 {
                     var response = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.GetMaxUidResponse>(payload);
                     if (response != null)
@@ -248,13 +370,17 @@ namespace Login
 
         private static void SendRegisterNode(TcpClientWrapper centerClient, string nodeId, string nodeType, string host, int port, int currentLoad)
         {
+            long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            string signatureSource = $"{nodeId}|{nodeType}|{host}|{port}|{currentLoad}|{timestamp}";
             var registerRequest = new CenterRegisterNodeRequest
             {
                 NodeId = nodeId,
                 NodeType = nodeType,
                 Host = host,
                 Port = port,
-                CurrentLoad = currentLoad
+                CurrentLoad = currentLoad,
+                Timestamp = timestamp,
+                Signature = ComputeCenterSignature(signatureSource)
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(registerRequest);
             byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterRegisterNodeReq, payload, out int totalLength);
@@ -264,15 +390,28 @@ namespace Login
 
         private static void SendNodeStatus(TcpClientWrapper centerClient, string nodeId, int currentLoad)
         {
+            long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            string signatureSource = $"{nodeId}|{currentLoad}|{timestamp}";
             var statusRequest = new CenterNodeStatusRequest
             {
                 NodeId = nodeId,
-                CurrentLoad = currentLoad
+                CurrentLoad = currentLoad,
+                Timestamp = timestamp,
+                Signature = ComputeCenterSignature(signatureSource)
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(statusRequest);
             byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterNodeStatusReq, payload, out int totalLength);
             centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
             System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+        }
+
+        private static string ComputeCenterSignature(string source)
+        {
+            string secret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            byte[] key = Encoding.UTF8.GetBytes(secret);
+            byte[] data = Encoding.UTF8.GetBytes(source);
+            using var hmac = new HMACSHA256(key);
+            return Convert.ToBase64String(hmac.ComputeHash(data));
         }
 
         /// <summary>
@@ -286,10 +425,29 @@ namespace Login
 
             var builder = WebApplication.CreateBuilder(args);
 
+            int httpsPort = ConfigHelper.GetConfig<int>("ApiHttpsPort") == 0 ? 31318 : ConfigHelper.GetConfig<int>("ApiHttpsPort");
+            string? certificatePath = ConfigHelper.GetConfig<string>("ApiHttpsCertificatePath");
+            string? certificatePassword = ConfigHelper.GetConfig<string>("ApiHttpsCertificatePassword");
+            bool httpsEnabled = !string.IsNullOrWhiteSpace(certificatePath) && File.Exists(certificatePath);
+
             // 配置 Kestrel 显式监听指定端口，避免被 IISExpress 或其他默认配置干扰
             builder.WebHost.ConfigureKestrel(options =>
             {
                 options.ListenAnyIP(apiPort);
+
+                if (httpsEnabled)
+                {
+                    options.ListenAnyIP(httpsPort, listenOptions =>
+                    {
+                        listenOptions.UseHttps(certificatePath!, certificatePassword);
+                    });
+
+                    Shared.Log.Info($"ASP.NET API 已启用 HTTPS 监听，端口 {httpsPort}，证书: {certificatePath}");
+                }
+                else
+                {
+                    Shared.Log.Warning("未配置有效的 API HTTPS 证书，Login API 仅启用 HTTP 监听。");
+                }
             });
 
             builder.Host.UseSerilog();
@@ -297,10 +455,8 @@ namespace Login
             builder.Services.AddEndpointsApiExplorer();
             builder.Services.AddSwaggerGen();
 
-            int dbPort = ConfigHelper.GetConfig<int>("DBPort") == 0 ? 31305 : ConfigHelper.GetConfig<int>("DBPort");
-            var dbHost = ConfigHelper.GetConfig<string>("DBHost") ?? "127.0.0.1";
-            var dbClient = new TcpClientWrapper(dbHost, dbPort);
-            var loginHandler = new Login.Handlers.LoginHandler(dbClient);
+            var loginHandler = GetOrCreateLoginHandler();
+            var dbClient = sharedDbClient!;
 
             builder.Services.AddSingleton<TcpClientWrapper>(dbClient);
             builder.Services.AddSingleton<Login.Handlers.LoginHandler>(loginHandler);
@@ -321,9 +477,14 @@ namespace Login
                 options.SwaggerEndpoint("/api/swagger/v1/swagger.json", "Login API V1");
             });
 
+            if (httpsEnabled)
+            {
+                app.UseHttpsRedirection();
+            }
+
             app.MapControllers();
 
-            Shared.Log.Info($"ASP.NET API已启动，正在监听 HTTP 端口 {apiPort}");
+            Shared.Log.Info($"ASP.NET API已启动，正在监听 HTTP 端口 {apiPort}{(httpsEnabled ? $", HTTPS 端口 {httpsPort}" : string.Empty)}");
             _ = app.RunAsync();
         }
     }

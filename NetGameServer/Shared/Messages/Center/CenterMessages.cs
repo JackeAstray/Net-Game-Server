@@ -59,6 +59,12 @@ namespace Shared.Messages.Center
 
         [JsonPropertyName("currentLoad")]
         public int CurrentLoad { get; set; }
+
+        [JsonPropertyName("timestamp")]
+        public long Timestamp { get; set; }
+
+        [JsonPropertyName("signature")]
+        public string Signature { get; set; } = string.Empty;
     }
 
     public class CenterCreateSceneRequest
@@ -80,6 +86,12 @@ namespace Shared.Messages.Center
 
         [JsonPropertyName("currentLoad")]
         public int CurrentLoad { get; set; }
+
+        [JsonPropertyName("timestamp")]
+        public long Timestamp { get; set; }
+
+        [JsonPropertyName("signature")]
+        public string Signature { get; set; } = string.Empty;
     }
 
     public class CenterCreateSceneResponse

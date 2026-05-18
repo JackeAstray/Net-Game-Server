@@ -50,8 +50,24 @@ namespace Game.Handlers
         {
             int realSenderId = Game.Managers.PlayerSessionManager.Instance.GetUserIdBySessionId(session.SessionId);
 
-            // 安全验证: 如果当前没有绑定(测试期)可暂不严格拦截。但如果绑定了或者强需求，则必须验证
-            if (realSenderId != 0 && realSenderId != request.SenderId)
+            if (realSenderId <= 0)
+            {
+                var errorResponse = new SendChatResponse { Success = false, Message = "会话未登录或未绑定。" };
+                var errPayload = Json.SerializeToUtf8Bytes(errorResponse);
+                var routedErrPayload = Shared.RouteMetadata.AttachTargetSessionId(errPayload, session.SessionId);
+                var errData = PacketBuilder.BuildPacket(MessageIds.ChatMessageRes, routedErrPayload, out int errLength);
+                try
+                {
+                    session.Send(errData.AsSpan(0, errLength).ToArray());
+                }
+                finally
+                {
+                    System.Buffers.ArrayPool<byte>.Shared.Return(errData);
+                }
+                return;
+            }
+
+            if (request.SenderId > 0 && realSenderId != request.SenderId)
             {
                 var errorResponse = new SendChatResponse { Success = false, Message = "非法操作：身份伪造。" };
                 var errPayload = Json.SerializeToUtf8Bytes(errorResponse);
@@ -68,8 +84,7 @@ namespace Game.Handlers
                 return;
             }
 
-            // 更新真实姓名和ID（如果从管理器取到）以防伪造
-            int actualSenderId = realSenderId != 0 ? realSenderId : request.SenderId;
+            int actualSenderId = realSenderId;
 
             // 创建聊天通知
             var notification = new ReceiveChatNotification

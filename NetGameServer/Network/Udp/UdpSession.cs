@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 
@@ -7,13 +8,12 @@ public class UdpSession : ISession
 {
     private readonly UdpClient udpClient;
     private readonly IPEndPoint remoteEndPoint;
-    private static long sessionCounter = 0;
 
     public UdpSession(UdpClient udpClient, IPEndPoint remoteEndPoint)
     {
         this.udpClient = udpClient;
         this.remoteEndPoint = remoteEndPoint;
-        SessionId = Interlocked.Increment(ref sessionCounter);
+        SessionId = SessionIdGenerator.Next();
     }
 
     public long SessionId { get; }
@@ -30,7 +30,8 @@ public class UdpSession : ISession
     {
         try
         {
-            udpClient.Send(data.Span.ToArray(), data.Length, remoteEndPoint);
+            byte[] payload = EnsureLengthPrefixed(data.Span);
+            udpClient.Send(payload, payload.Length, remoteEndPoint);
             LastActivityTime = DateTime.UtcNow;
         }
         catch (Exception ex)
@@ -38,6 +39,23 @@ public class UdpSession : ISession
             // 对于UDP发送异常只做日志记录，不用断开
              Shared.Log.Warning($"UdpSession Send Error: {ex.Message}");
         }
+    }
+
+    private static byte[] EnsureLengthPrefixed(ReadOnlySpan<byte> data)
+    {
+        if (data.Length >= 4)
+        {
+            int declaredLength = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(0, 4));
+            if (declaredLength == data.Length - 4)
+            {
+                return data.ToArray();
+            }
+        }
+
+        byte[] framed = new byte[data.Length + 4];
+        BinaryPrimitives.WriteInt32LittleEndian(framed.AsSpan(0, 4), data.Length);
+        data.CopyTo(framed.AsSpan(4));
+        return framed;
     }
 
     public void Close()

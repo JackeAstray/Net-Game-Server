@@ -47,13 +47,9 @@ namespace Login.Controllers
         /// <param name="request"></param>
         /// <returns></returns>
         [HttpPost("change-password")]
-        public IActionResult ChangePassword([FromBody] ChangePasswordRequest request)
+        public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest request)
         {
-            var result = new ChangePasswordResponse
-            {
-                Success = true,
-                Message = "更改密码成功"
-            };
+            var result = await loginHandler.HandleChangePasswordRequestAsync(request);
             return Ok(result);
         }
 

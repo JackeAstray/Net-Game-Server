@@ -1,5 +1,8 @@
+using System;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using Network.Routing;
 
 namespace Network.Udp;
 
@@ -36,21 +39,50 @@ public class UdpServer : INetworkServer
         // UDP中我们往往需要通过远程地址来标识某一个会话，这里简单使用字典存储当前存在的逻辑会话。
         // 在正式复杂的实现中，应该带上心跳检测等过期清理机制。
         var sessions = new Dictionary<IPEndPoint, UdpSession>();
-        
+        var packetReaders = new Dictionary<IPEndPoint, LengthPrefixedPacketReader>();
+        TimeSpan sessionTimeout = TimeSpan.FromMinutes(5);
+        DateTime nextCleanupAt = DateTime.UtcNow.AddSeconds(30);
+
         while (udpClient != null)
         {
             try
             {
                 var result = await udpClient.ReceiveAsync();
-                
+
                 if (!sessions.TryGetValue(result.RemoteEndPoint, out var session))
                 {
                     session = new UdpSession(udpClient, result.RemoteEndPoint);
                     sessions[result.RemoteEndPoint] = session;
+                    packetReaders[result.RemoteEndPoint] = new LengthPrefixedPacketReader();
                     OnSessionConnected?.Invoke(session);
                 }
-                
-                OnDataReceived?.Invoke(session, result.Buffer);
+
+                session.LastActivityTime = DateTime.UtcNow;
+
+                var packetReader = packetReaders[result.RemoteEndPoint];
+                packetReader.Append(result.Buffer);
+                while (packetReader.TryReadPacket(out var packet))
+                {
+                    OnDataReceived?.Invoke(session, packet);
+                }
+
+                if (DateTime.UtcNow >= nextCleanupAt)
+                {
+                    DateTime now = DateTime.UtcNow;
+                    foreach (var pair in sessions.ToArray())
+                    {
+                        if (now - pair.Value.LastActivityTime <= sessionTimeout)
+                        {
+                            continue;
+                        }
+
+                        sessions.Remove(pair.Key);
+                        packetReaders.Remove(pair.Key);
+                        OnSessionDisconnected?.Invoke(pair.Value, "UDP session timeout.");
+                    }
+
+                    nextCleanupAt = now.AddSeconds(30);
+                }
             }
             catch (ObjectDisposedException)
             {
@@ -61,7 +93,7 @@ public class UdpServer : INetworkServer
                 Console.WriteLine($"Error receiving UDP data: {ex.Message}");
             }
         }
-        
+
         // 服务器停止时触发所有存活 UDP 逻辑会话断开。
         foreach (var session in sessions.Values)
         {

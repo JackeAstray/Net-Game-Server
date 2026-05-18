@@ -152,7 +152,7 @@ namespace Center.Handlers
         public string? GetBestBattleNode()
         {
             var battleNodes = nodes.Values
-                .Where(n => n.NodeType.Equals("Battle", StringComparison.OrdinalIgnoreCase))
+                .Where(n => n.NodeType.Equals("Battle", StringComparison.OrdinalIgnoreCase) && n.Session.IsConnected)
                 .OrderBy(n => n.CurrentLoad)
                 .ToList();
 

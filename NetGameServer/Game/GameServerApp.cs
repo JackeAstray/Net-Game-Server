@@ -1,5 +1,7 @@
 using System;
 using System.Threading.Tasks;
+using System.Security.Cryptography;
+using System.Text;
 using Network;
 using Network.Routing;
 using Network.Tcp;
@@ -38,6 +40,10 @@ namespace Game
 
             // 创建消息路由器，将收到的消息分发到对应的处理器
             var router = new global::Network.Routing.MessageRouter();
+            router.RegisterHandler(MessageIds.PlayerDisconnectNotif, (clientSession, payload) =>
+            {
+                Game.Managers.PlayerSessionManager.Instance.UnbindSession(clientSession.SessionId);
+            });
             // 注册聊天处理器（示例），处理聊天相关消息并将其挂载到路由器
             var chatHandler = new Handlers.ChatHandler(networkManager);
             chatHandler.Register(router);
@@ -66,18 +72,94 @@ namespace Game
                     return;
                 }
 
+                if (msgId == MessageIds.PlayerDisconnectNotif)
+                {
+                    Game.Managers.PlayerSessionManager.Instance.UnbindSession(originalSessionId);
+                }
+                else
+                {
+                    if (Shared.RouteMetadata.TryExtractUserId(cleanPayload, out int routedUserId, out var payloadWithoutUserId) && routedUserId > 0)
+                    {
+                        Game.Managers.PlayerSessionManager.Instance.BindSession(originalSessionId, routedUserId);
+                        cleanPayload = payloadWithoutUserId;
+                    }
+                }
+
                 var clientSession = new Game.Network.ClientSessionWrapper(session, originalSessionId);
-                router.RouteMessage(clientSession, msgId, cleanPayload);
+                bool handled = router.TryRouteMessage(clientSession, msgId, cleanPayload);
+                if (!handled)
+                {
+                    int responseMsgId = msgId switch
+                    {
+                        MessageIds.ChatMessageReq => MessageIds.ChatMessageRes,
+                        MessageIds.AddFriendReq => MessageIds.AddFriendRes,
+                        MessageIds.RemoveFriendReq => MessageIds.RemoveFriendRes,
+                        MessageIds.SetFriendRemarkReq => MessageIds.SetFriendRemarkRes,
+                        MessageIds.GetFriendsReq => MessageIds.GetFriendsRes,
+                        MessageIds.InviteGameReq => MessageIds.InviteGameRes,
+                        _ => 0
+                    };
+
+                    if (responseMsgId > 0)
+                    {
+                        string errorMessage = $"未支持的游戏消息类型: {msgId}";
+                        byte[] unknownPayload = responseMsgId switch
+                        {
+                            MessageIds.ChatMessageRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Chat.SendChatResponse
+                            {
+                                Success = false,
+                                Message = errorMessage
+                            }),
+                            MessageIds.AddFriendRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.AddFriendResponse
+                            {
+                                Success = false,
+                                Message = errorMessage
+                            }),
+                            MessageIds.RemoveFriendRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.RemoveFriendResponse
+                            {
+                                Success = false,
+                                Message = errorMessage
+                            }),
+                            MessageIds.SetFriendRemarkRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.SetFriendRemarkResponse
+                            {
+                                Success = false,
+                                Message = errorMessage
+                            }),
+                            MessageIds.GetFriendsRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.GetFriendsResponse
+                            {
+                                Success = false,
+                                Message = errorMessage,
+                                Friends = Array.Empty<Shared.Messages.Social.FriendInfo>()
+                            }),
+                            MessageIds.InviteGameRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.InviteGameResponse
+                            {
+                                Success = false,
+                                Message = errorMessage
+                            }),
+                            _ => Array.Empty<byte>()
+                        };
+
+                        if (unknownPayload.Length > 0)
+                        {
+                            byte[] routedUnknownPayload = Shared.RouteMetadata.AttachTargetSessionId(unknownPayload, originalSessionId);
+                            byte[] unknownPacket = PacketBuilder.BuildPacket(responseMsgId, routedUnknownPayload, out int unknownLength);
+                            try
+                            {
+                                session.Send(unknownPacket.AsSpan(0, unknownLength).ToArray());
+                            }
+                            finally
+                            {
+                                System.Buffers.ArrayPool<byte>.Shared.Return(unknownPacket);
+                            }
+                        }
+                    }
+                }
             };
 
             // 客户端断开连接事件（记录原因）。这里可以添加清理会话状态或通知其他子系统的逻辑。
             tcpServer.OnSessionDisconnected += (session, reason) => Log.Info($"客户端断开连接，原因: {reason}");
 
-            // 在网络管理器中注册名为 "GameTcp" 的服务器实例，便于统一管理和启动
-            networkManager.RegisterServer("GameTcp", tcpServer);
-
-            // 启动指定名称的服务器并监听端口
-            await networkManager.StartServerAsync("GameTcp", port);
+            await tcpServer.StartAsync(port);
             Log.Info($"游戏服务器已启动，监听端口: {port}");
 
             ConnectToCenter(port);
@@ -151,13 +233,17 @@ namespace Game
 
         private static void SendRegisterNode(TcpClientWrapper centerClient, string nodeId, string nodeType, string host, int port, int currentLoad)
         {
+            long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            string signatureSource = $"{nodeId}|{nodeType}|{host}|{port}|{currentLoad}|{timestamp}";
             var registerRequest = new CenterRegisterNodeRequest
             {
                 NodeId = nodeId,
                 NodeType = nodeType,
                 Host = host,
                 Port = port,
-                CurrentLoad = currentLoad
+                CurrentLoad = currentLoad,
+                Timestamp = timestamp,
+                Signature = ComputeCenterSignature(signatureSource)
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(registerRequest);
             byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterRegisterNodeReq, payload, out int totalLength);
@@ -167,15 +253,28 @@ namespace Game
 
         private static void SendNodeStatus(TcpClientWrapper centerClient, string nodeId, int currentLoad)
         {
+            long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            string signatureSource = $"{nodeId}|{currentLoad}|{timestamp}";
             var statusRequest = new CenterNodeStatusRequest
             {
                 NodeId = nodeId,
-                CurrentLoad = currentLoad
+                CurrentLoad = currentLoad,
+                Timestamp = timestamp,
+                Signature = ComputeCenterSignature(signatureSource)
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(statusRequest);
             byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterNodeStatusReq, payload, out int totalLength);
             centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
             System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+        }
+
+        private static string ComputeCenterSignature(string source)
+        {
+            string secret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            byte[] key = Encoding.UTF8.GetBytes(secret);
+            byte[] data = Encoding.UTF8.GetBytes(source);
+            using var hmac = new HMACSHA256(key);
+            return Convert.ToBase64String(hmac.ComputeHash(data));
         }
 
         private static int GetCurrentLoad()

@@ -30,6 +30,7 @@ namespace Gateway.Managers
         /// - 当客户端断开时，从映射中移除对应的会话。
         /// </summary>
         private readonly ConcurrentDictionary<long, Network.ISession> clientSessions = new();
+        private readonly ConcurrentDictionary<long, int> sessionUsers = new();
 
         /// <summary>
         /// 私有构造函数，防止外部实例化（实现单例模式）
@@ -53,6 +54,7 @@ namespace Gateway.Managers
         public void RemoveSession(long sessionId)
         {
             clientSessions.TryRemove(sessionId, out _);
+            sessionUsers.TryRemove(sessionId, out _);
         }
 
         /// <summary>
@@ -78,6 +80,26 @@ namespace Gateway.Managers
             {
                 session.Send(data);
             }
+        }
+
+        public void BindUser(long sessionId, int userId)
+        {
+            if (sessionId <= 0 || userId <= 0)
+            {
+                return;
+            }
+
+            sessionUsers[sessionId] = userId;
+        }
+
+        public void UnbindUser(long sessionId)
+        {
+            sessionUsers.TryRemove(sessionId, out _);
+        }
+
+        public int GetUserIdBySessionId(long sessionId)
+        {
+            return sessionUsers.TryGetValue(sessionId, out var userId) ? userId : 0;
         }
 
         public int GetOnlineCount()

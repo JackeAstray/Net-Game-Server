@@ -38,27 +38,40 @@ namespace DB.Handlers
                 // 从当前作用域解析数据库上下文
                 var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
 
-                int maxUid = 0;
-                // 判断如果存在用户数据，则获取所有记录中最大的UID
-                if (await dbContext.Users.AnyAsync())
+                long maxSequence = 0;
+                var uniqueIds = await dbContext.Users
+                    .Where(u => !string.IsNullOrWhiteSpace(u.UniqueId))
+                    .Select(u => u.UniqueId)
+                    .ToListAsync();
+
+                foreach (var uniqueId in uniqueIds)
                 {
-                    maxUid = await dbContext.Users.MaxAsync(u => u.Id);
+                    if (!long.TryParse(uniqueId, out long parsedUid))
+                    {
+                        continue;
+                    }
+
+                    long sequence = parsedUid % 100000000L;
+                    if (sequence > maxSequence)
+                    {
+                        maxSequence = sequence;
+                    }
                 }
 
                 // 构造响应消息格式
                 var response = new GetMaxUidResponse
                 {
-                    MaxUid = maxUid
+                    MaxUid = maxSequence
                 };
 
                 // 将响应模型序列化为JSON UTF-8字节数组
-                byte[] data = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(response);
+                byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
 
                 // 创建一个足够容纳协议头(4字节)和数据长度的字节数组
                 byte[] packet = new byte[data.Length + 4];
 
-                // 写入消息ID（此处1000为模拟消息ID，使用小端序列化封装在封包前4个字节）
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1000);
+                // 写入消息ID
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbGetMaxUidRes);
 
                 // 将序列化后的数据复制到数据包中（从第4字节后开始）
                 data.CopyTo(packet.AsSpan(4));
@@ -92,21 +105,58 @@ namespace DB.Handlers
                 using var scope = factory.CreateScope();
                 var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
 
-                var user = await dbContext.Users.FirstOrDefaultAsync(u => u.Account == request.Account && u.Password == request.Password);
+                var user = await dbContext.Users.FirstOrDefaultAsync(u => u.Account == request.Account);
 
-                //string hashedPassword = Program.ComputeMd5Hash(request.Password);
-                //var user = await dbContext.Users.FirstOrDefaultAsync(u => u.Account == request.Account && u.Password == hashedPassword);
+                bool isEnabled = user?.IsEnabled ?? false;
+                bool isLocked = user?.IsLocked ?? false;
+                bool passwordMatched = user != null
+                                      && isEnabled
+                                      && !isLocked
+                                      && DB.DbServerApp.IsPbkdf2Hash(user.Password)
+                                      && DB.DbServerApp.VerifyPbkdf2Password(request.Password, user.Password);
+
+                if (passwordMatched && user != null)
+                {
+                    user.IsLoggedIn = true;
+                    user.LoginCount += 1;
+                    user.LastLoginTime = DateTime.UtcNow;
+                    await dbContext.SaveChangesAsync();
+                }
+
+                string message;
+                if (user == null)
+                {
+                    message = "账号或密码错误";
+                }
+                else if (!isEnabled)
+                {
+                    message = "账号未启用";
+                }
+                else if (isLocked)
+                {
+                    message = "账号已被锁定";
+                }
+                else
+                {
+                    message = passwordMatched ? "登录成功" : "账号或密码错误";
+                }
 
                 var response = new LoginVerifyResponse
                 {
-                    Success = user != null,
-                    Message = user != null ? "登录成功" : "账号或密码错误",
-                    UserId = user?.Id ?? 0
+                    Success = passwordMatched,
+                    Message = message,
+                    UserId = passwordMatched ? user!.Id : 0,
+                    UniqueId = passwordMatched ? user!.UniqueId ?? string.Empty : string.Empty,
+                    Nickname = passwordMatched ? user!.Nickname ?? string.Empty : string.Empty,
+                    Email = passwordMatched ? user!.Email ?? string.Empty : string.Empty,
+                    LastLoginTime = passwordMatched ? user!.LastLoginTime : default,
+                    LoginCount = passwordMatched ? user!.LoginCount : 0,
+                    IsAdmin = passwordMatched && user!.IsAdmin
                 };
 
-                byte[] data = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(response);
+                byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
                 byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1001);
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbLoginVerifyRes);
                 data.CopyTo(packet.AsSpan(4));
                 session.Send(packet);
             }
@@ -149,22 +199,30 @@ namespace DB.Handlers
                     var user = new Shared.Data.User
                     {
                         Account = request.Account,
-                        Password = request.Password,
+                        Password = DB.DbServerApp.HashPassword(request.Password),
                         Nickname = request.Nickname,
                         UniqueId = request.Uid.ToString(),
                         RegistrationTime = DateTime.UtcNow,
                         LastLoginTime = DateTime.UtcNow
                     };
                     dbContext.Users.Add(user);
-                    await dbContext.SaveChangesAsync();
 
-                    response.Success = true;
-                    response.Message = "注册成功";
+                    try
+                    {
+                        await dbContext.SaveChangesAsync();
+                        response.Success = true;
+                        response.Message = "注册成功";
+                    }
+                    catch (DbUpdateException)
+                    {
+                        response.Success = false;
+                        response.Message = "账号或UID已存在";
+                    }
                 }
 
-                byte[] data = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(response);
+                byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
                 byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1002);
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbRegisterVerifyRes);
                 data.CopyTo(packet.AsSpan(4));
                 session.Send(packet);
             }
@@ -203,17 +261,19 @@ namespace DB.Handlers
                     response.IsOnline = user.IsLoggedIn;
                     response.IsLocked = user.IsLocked;
                     response.IsAdmin = user.IsAdmin;
+                    response.Email = user.Email ?? string.Empty;
                     response.Message = "查询成功";
                 }
                 else
                 {
                     response.Exists = false;
+                    response.Email = string.Empty;
                     response.Message = "账户不存在";
                 }
 
-                byte[] data = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(response);
+                byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
                 byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1003);
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbAccountQueryRes);
                 data.CopyTo(packet.AsSpan(4));
                 session.Send(packet);
             }
@@ -254,9 +314,9 @@ namespace DB.Handlers
                     TotalCount = totalCount
                 };
 
-                byte[] data = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(response);
+                byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
                 byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1004);
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbOnlineStatsRes);
                 data.CopyTo(packet.AsSpan(4));
                 session.Send(packet);
             }
@@ -298,13 +358,129 @@ namespace DB.Handlers
                 var response = new UpdateOnlineStateResponse { Success = true };
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
                 byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbUpdateOnlineStateReq);
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbUpdateOnlineStateRes);
                 data.CopyTo(packet.AsSpan(4));
                 session.Send(packet);
             }
             catch (Exception ex)
             {
                 Log.Error($"更新在线状态异常: {ex}");
+            }
+        }
+
+        public static async Task HandleChangePasswordVerifyRequest(ISession session, ChangePasswordVerifyRequest? request)
+        {
+            if (request == null)
+            {
+                Log.Warning("收到无效的 ChangePasswordVerifyRequest，数据无法被反序列化。");
+                return;
+            }
+
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+
+                var user = await dbContext.Users.FirstOrDefaultAsync(u => u.Id == request.UserId);
+                var response = new ChangePasswordVerifyResponse();
+
+                if (user == null)
+                {
+                    user = await dbContext.Users.FirstOrDefaultAsync(u => u.Account == request.Account);
+                }
+
+                if (user == null)
+                {
+                    response.Success = false;
+                    response.Message = "用户不存在";
+                }
+                else if (!string.Equals(user.Account, request.Account, StringComparison.Ordinal))
+                {
+                    response.Success = false;
+                    response.Message = "账号不匹配";
+                }
+                else
+                {
+                    if (!DB.DbServerApp.IsPbkdf2Hash(user.Password))
+                    {
+                        response.Success = false;
+                        response.Message = "当前账号密码格式不受支持，请先由管理员重置为PBKDF2密码";
+                    }
+                    else
+                    {
+                        bool oldPasswordMatched = DB.DbServerApp.VerifyPbkdf2Password(request.OldPassword, user.Password);
+
+                        if (!oldPasswordMatched)
+                        {
+                            response.Success = false;
+                            response.Message = "旧密码错误";
+                        }
+                        else
+                        {
+                            user.Password = DB.DbServerApp.HashPassword(request.NewPassword);
+                            await dbContext.SaveChangesAsync();
+                            response.Success = true;
+                            response.Message = "更改密码成功";
+                        }
+                    }
+                }
+
+                byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
+                byte[] packet = new byte[data.Length + 4];
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbChangePasswordRes);
+                data.CopyTo(packet.AsSpan(4));
+                session.Send(packet);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"更改密码异常: {ex}");
+            }
+        }
+
+        public static async Task HandleResetPasswordByEmailRequest(ISession session, ResetPasswordByEmailRequest? request)
+        {
+            if (request == null)
+            {
+                Log.Warning("收到无效的 ResetPasswordByEmailRequest，数据无法被反序列化。");
+                return;
+            }
+
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+
+                var response = new ResetPasswordByEmailResponse();
+                var user = await dbContext.Users.FirstOrDefaultAsync(u => u.Account == request.Account);
+                if (user == null)
+                {
+                    response.Success = false;
+                    response.Message = "用户不存在";
+                }
+                else if (!string.Equals(user.Email?.Trim(), request.Email?.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    response.Success = false;
+                    response.Message = "邮箱与账号不匹配";
+                }
+                else
+                {
+                    user.Password = DB.DbServerApp.HashPassword(request.TemporaryPassword);
+                    await dbContext.SaveChangesAsync();
+                    response.Success = true;
+                    response.Message = "验证码校验通过，密码重置成功";
+                }
+
+                byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
+                byte[] packet = new byte[data.Length + 4];
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbResetPasswordByEmailRes);
+                data.CopyTo(packet.AsSpan(4));
+                session.Send(packet);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"邮箱重置密码异常: {ex}");
             }
         }
 
@@ -353,7 +529,7 @@ namespace DB.Handlers
 
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
                 byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbAddFriendReq); // NOTE: Ideally use something like DbAddFriendRes, but using Req ID for simplicity based on previous pattern
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbAddFriendRes);
                 data.CopyTo(packet.AsSpan(4));
                 session.Send(packet);
             }
@@ -397,7 +573,7 @@ namespace DB.Handlers
 
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
                 byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbRemoveFriendReq);
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbRemoveFriendRes);
                 data.CopyTo(packet.AsSpan(4));
                 session.Send(packet);
             }
@@ -441,7 +617,7 @@ namespace DB.Handlers
 
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
                 byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbSetFriendRemarkReq);
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbSetFriendRemarkRes);
                 data.CopyTo(packet.AsSpan(4));
                 session.Send(packet);
             }
@@ -477,7 +653,7 @@ namespace DB.Handlers
 
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
                 byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbGetFriendsReq);
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbGetFriendsRes);
                 data.CopyTo(packet.AsSpan(4));
                 session.Send(packet);
             }

@@ -39,7 +39,7 @@ namespace Battle.Handlers
 
             handlers[MessageIds.PlayerDisconnectNotif] = async (payload, session, clientSessionId) =>
             {
-                roomHandler.HandleDisconnect(clientSessionId);
+                roomHandler.HandleDisconnect(clientSessionId, session);
                 await Task.CompletedTask;
             };
 
@@ -71,7 +71,7 @@ namespace Battle.Handlers
         private static void SendToGateway<T>(Network.ISession gatewaySession, long clientSessionId, int msgId, T response)
         {
             byte[] responsePayload = Shared.Json.SerializeToUtf8Bytes(response);
-            byte[] routedPayload = Shared.RouteMetadata.AttachClientSessionId(responsePayload, clientSessionId);
+            byte[] routedPayload = Shared.RouteMetadata.AttachTargetSessionId(responsePayload, clientSessionId);
             byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
             try
             {

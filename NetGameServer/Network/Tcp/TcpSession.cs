@@ -7,12 +7,11 @@ namespace Network.Tcp;
 public class TcpSession : ISession
 {
     private readonly TcpClient tcpClient;
-    private static long sessionCounter = 0;
 
     public TcpSession(TcpClient tcpClient)
     {
         this.tcpClient = tcpClient;
-        SessionId = Interlocked.Increment(ref sessionCounter);
+        SessionId = SessionIdGenerator.Next();
     }
 
     public long SessionId { get; }

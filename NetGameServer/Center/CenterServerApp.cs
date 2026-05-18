@@ -24,7 +24,6 @@ namespace Center
             var matchHandler = new Center.Handlers.MatchHandler();
             handlers = Center.Handlers.MessageRouter.BuildHandlers(matchHandler);
 
-            var networkManager = new NetworkManager();
             var tcpServer = new TcpServer();
 
             tcpServer.OnSessionConnected += session =>
@@ -74,12 +73,39 @@ namespace Center
                 else
                 {
                     Log.Warning($"Center 收到未知 MsgId {msgId}");
+
+                    if (originalSessionId > 0 && msgId >= 30000 && msgId < 40000)
+                    {
+                        int responseMsgId = msgId switch
+                        {
+                            Shared.Messages.MessageIds.CenterMatchReq => Shared.Messages.MessageIds.CenterMatchRes,
+                            Shared.Messages.MessageIds.CenterCreateRoomReq => Shared.Messages.MessageIds.CenterCreateRoomRes,
+                            _ => 0
+                        };
+
+                        if (responseMsgId > 0)
+                        {
+                            byte[] unknownPayload = Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Center.CenterMatchResponse
+                            {
+                                Success = false,
+                                Message = $"未支持的中心消息类型: {msgId}"
+                            });
+                            byte[] routedUnknownPayload = Shared.RouteMetadata.AttachClientSessionId(unknownPayload, originalSessionId);
+                            byte[] unknownPacket = Network.Routing.PacketBuilder.BuildPacket(responseMsgId, routedUnknownPayload, out int unknownLength);
+                            try
+                            {
+                                session.Send(unknownPacket.AsSpan(0, unknownLength).ToArray());
+                            }
+                            finally
+                            {
+                                System.Buffers.ArrayPool<byte>.Shared.Return(unknownPacket);
+                            }
+                        }
+                    }
                 }
             };
 
-            networkManager.RegisterServer("CenterTcp", tcpServer);
-
-            await networkManager.StartServerAsync("CenterTcp", port);
+            await tcpServer.StartAsync(port);
             Log.Info($"Center 调度服务器网络已启动，监听内部端口: {port}");
 
             _ = Task.Run(async () =>

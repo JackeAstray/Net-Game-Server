@@ -29,6 +29,12 @@ namespace Shared.Messages.Login
         public string Message { get; set; }
         public int UserId { get; set; }
         public string Token { get; set; }
+        public string UniqueId { get; set; }
+        public string Nickname { get; set; }
+        public string Email { get; set; }
+        public DateTime LastLoginTime { get; set; }
+        public int LoginCount { get; set; }
+        public bool IsAdmin { get; set; }
     }
 
     /// <summary>
@@ -132,12 +138,10 @@ namespace Shared.Messages.Login
     }
 
     /// <summary>
-    /// 表示找回密码操作的请求信息。
+    /// 表示找回密码发送验证码的请求信息。
     /// </summary>
     /// <remarks>
-    /// 此类型用于封装找回密码操作所需的账户和邮箱信息。
-    /// 通常与用户找回密码 API 一起使用。所有属性均为必填项，
-    /// 调用方应确保提供有效的账户和邮箱值。
+    /// 此类型用于封装找回密码时的账号和邮箱信息，用于向邮箱发送一次性验证码。
     /// </remarks>
     public class FindPasswordRequest
     {
@@ -146,13 +150,29 @@ namespace Shared.Messages.Login
     }
 
     /// <summary>
-    /// 表示找回密码操作的结果。
+    /// 表示找回密码发送验证码的结果。
     /// </summary>
-    /// <remarks>
-    /// 此类型用于封装找回密码操作的响应状态和相关消息。
-    /// 通常与用户找回密码 API 一起返回，帮助调用方判断操作是否成功并获取详细提示。
-    /// </remarks>
     public class FindPasswordResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; }
+    }
+
+    /// <summary>
+    /// 表示验证码重置密码的请求信息。
+    /// </summary>
+    public class ResetPasswordWithCodeRequest
+    {
+        public string Account { get; set; }
+        public string Email { get; set; }
+        public string Code { get; set; }
+        public string NewPassword { get; set; }
+    }
+
+    /// <summary>
+    /// 表示验证码重置密码的结果。
+    /// </summary>
+    public class ResetPasswordWithCodeResponse
     {
         public bool Success { get; set; }
         public string Message { get; set; }

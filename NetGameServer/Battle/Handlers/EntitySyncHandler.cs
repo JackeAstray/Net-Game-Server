@@ -156,7 +156,7 @@ namespace Battle.Handlers
 
         /// <summary>
         /// 将消息组装成网关约定的包格式并发送：
-        /// [8 bytes OriginalSessionId][4 bytes MsgId][payload]
+        /// [MsgId(4)][Payload(带 __targetSessionId 路由元数据)]
         /// </summary>
         /// <param name="gatewaySession">网关会话</param>
         /// <param name="targetSessionId">目标玩家的会话ID</param>
@@ -164,11 +164,16 @@ namespace Battle.Handlers
         /// <param name="payload">消息负载</param>
         private void SendPacket(Network.ISession gatewaySession, long targetSessionId, int msgId, byte[] payload)
         {
-            byte[] packet = new byte[12 + payload.Length];
-            System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(packet.AsSpan(0, 8), targetSessionId);
-            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(8, 4), msgId);
-            payload.CopyTo(packet.AsSpan(12));
-            gatewaySession.Send(packet);
+            byte[] routedPayload = Shared.RouteMetadata.AttachTargetSessionId(payload, targetSessionId);
+            byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
+            try
+            {
+                gatewaySession.Send(packet.AsSpan(0, totalLength).ToArray());
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            }
         }
 
         /// <summary>
@@ -253,9 +258,6 @@ namespace Battle.Handlers
             var scene = sceneManager.GetSceneByPlayer(sessionId);
             if (scene == null) return;
 
-            // 从实体管理器中移除
-            scene.EntityManager.RemoveEntity(sessionId);
-
             var targetIds = new List<long>();
 
             if (scene.UseAoi && scene.AoiManager != null)
@@ -266,13 +268,16 @@ namespace Battle.Handlers
                     var grid = scene.AoiManager.GetGridCoordinate(entity.Position);
                     targetIds = scene.AoiManager.GetSurroundingEntities(grid.Item1, grid.Item2);
                 }
-                // 从 AOI 中移除此实体
+
+                // 从 AOI 与实体管理器中移除
                 scene.AoiManager.RemoveEntity(sessionId);
+                scene.EntityManager.RemoveEntity(sessionId);
             }
             else
             {
-                // 小房间：通知场景内所有玩家
-                targetIds = scene.EntityManager.GetAllSessionIds().ToList();
+                // 小房间：先取快照，再移除当前玩家，保证其余玩家都能收到离场通知
+                targetIds = scene.EntityManager.GetAllSessionIds().Where(id => id != sessionId).ToList();
+                scene.EntityManager.RemoveEntity(sessionId);
             }
 
             // 解除玩家与场景的绑定关系

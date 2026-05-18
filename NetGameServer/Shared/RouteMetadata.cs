@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 using System.Text;
 using Newtonsoft.Json.Linq;
 
@@ -10,6 +11,10 @@ public static class RouteMetadata
     public const string TargetSessionIdField = "__targetSessionId";
     public const string BroadcastField = "__broadcast";
     public const string RequestIdField = "__requestId";
+    public const string UserIdField = "__userId";
+
+    private const uint BinaryMetadataMagic = 0x4154454D;
+    private const int BinaryMetadataFooterSize = 8;
 
     /// <summary>
     /// 向 JSON 载荷中附加或更新客户端会话标识字段，并返回更新后的 UTF-8 字节数组。
@@ -112,6 +117,11 @@ public static class RouteMetadata
         return UpsertLongField(payload, RequestIdField, requestId);
     }
 
+    public static byte[] AttachUserId(ReadOnlyMemory<byte> payload, int userId)
+    {
+        return UpsertLongField(payload, UserIdField, userId);
+    }
+
     /// <summary>
     /// 尝试从给定的负载中提取请求标识符。
     /// </summary>
@@ -123,6 +133,13 @@ public static class RouteMetadata
     public static bool TryExtractRequestId(ReadOnlyMemory<byte> payload, out long requestId, out byte[] cleanPayload)
     {
         return TryExtractLongField(payload, RequestIdField, out requestId, out cleanPayload);
+    }
+
+    public static bool TryExtractUserId(ReadOnlyMemory<byte> payload, out int userId, out byte[] cleanPayload)
+    {
+        bool ok = TryExtractLongField(payload, UserIdField, out long value, out cleanPayload);
+        userId = ok ? (int)value : 0;
+        return ok;
     }
 
     /// <summary>
@@ -152,28 +169,35 @@ public static class RouteMetadata
             return false;
         }
 
-        value = 0;
-        cleanPayload = payload.ToArray();
-        return false;
+        return TryExtractLongFieldFromBinaryMetadata(payload, fieldName, out value, out cleanPayload);
     }
 
     /// <summary>
-    /// 在可解析为 JSON 对象的字节载荷中插入或更新名为 fieldName 的 long 值字段，并返回更新后对象的 UTF‑8 编码字节数组。解析失败时返回原始载荷的字节副本。
+    /// 在可解析为 JSON 对象的字节载荷中插入或更新名为 fieldName 的 long 值字段，并返回更新后对象的 UTF‑8 编码字节数组。解析失败时返回追加二进制元数据后的载荷。
     /// </summary>
-    /// <remarks>使用 TryParseObject 将负载解析为对象；使用 Newtonsoft.Json 的无格式化序列化生成输出。</remarks>
+    /// <remarks>使用 TryParseObject 将负载解析为对象；若非 JSON 对象，则在尾部追加可逆的路由元数据块。</remarks>
     /// <param name="payload">表示 JSON 编码的输入负载的只读字节序列。</param>
     /// <param name="fieldName">要插入或更新的字段名。</param>
     /// <param name="value">要设置的 long 类型字段值。</param>
-    /// <returns>若负载为 JSON 对象，返回包含更新字段的对象的 UTF‑8 编码字节数组；否则返回原始负载的字节副本。</returns>
+    /// <returns>若负载为 JSON 对象，返回包含更新字段的对象的 UTF‑8 编码字节数组；否则返回包含二进制元数据的字节副本。</returns>
     private static byte[] UpsertLongField(ReadOnlyMemory<byte> payload, string fieldName, long value)
     {
+        if (payload.IsEmpty)
+        {
+            var emptyObj = new JObject
+            {
+                [fieldName] = value
+            };
+            return Encoding.UTF8.GetBytes(emptyObj.ToString(Newtonsoft.Json.Formatting.None));
+        }
+
         if (TryParseObject(payload, out var obj))
         {
             obj[fieldName] = value;
             return Encoding.UTF8.GetBytes(obj.ToString(Newtonsoft.Json.Formatting.None));
         }
 
-        return payload.ToArray();
+        return AttachLongFieldToBinaryMetadata(payload, fieldName, value);
     }
 
     /// <summary>
@@ -187,6 +211,15 @@ public static class RouteMetadata
     /// <returns>如果 payload 可解析为 JSON 对象，则返回包含更新字段的 JSON 对象的 UTF‑8 字节数组；否则返回原始 payload 的字节副本。</returns>
     private static byte[] UpsertBoolField(ReadOnlyMemory<byte> payload, string fieldName, bool value)
     {
+        if (payload.IsEmpty)
+        {
+            var emptyObj = new JObject
+            {
+                [fieldName] = value
+            };
+            return Encoding.UTF8.GetBytes(emptyObj.ToString(Newtonsoft.Json.Formatting.None));
+        }
+
         if (TryParseObject(payload, out var obj))
         {
             obj[fieldName] = value;
@@ -194,6 +227,114 @@ public static class RouteMetadata
         }
 
         return payload.ToArray();
+    }
+
+    private static byte[] AttachLongFieldToBinaryMetadata(ReadOnlyMemory<byte> payload, string fieldName, long value)
+    {
+        var fields = new System.Collections.Generic.Dictionary<string, long>(StringComparer.Ordinal);
+        var body = payload;
+
+        if (TryParseBinaryMetadata(payload, out var existingBody, out var existingFields))
+        {
+            body = existingBody;
+            fields = existingFields;
+        }
+
+        fields[fieldName] = value;
+        return BuildBinaryMetadataPayload(body, fields);
+    }
+
+    private static bool TryExtractLongFieldFromBinaryMetadata(ReadOnlyMemory<byte> payload, string fieldName, out long value, out byte[] cleanPayload)
+    {
+        if (!TryParseBinaryMetadata(payload, out var body, out var fields))
+        {
+            value = 0;
+            cleanPayload = payload.ToArray();
+            return false;
+        }
+
+        if (!fields.TryGetValue(fieldName, out value))
+        {
+            cleanPayload = payload.ToArray();
+            return false;
+        }
+
+        fields.Remove(fieldName);
+        cleanPayload = fields.Count == 0 ? body.ToArray() : BuildBinaryMetadataPayload(body, fields);
+        return true;
+    }
+
+    private static bool TryParseBinaryMetadata(ReadOnlyMemory<byte> payload, out ReadOnlyMemory<byte> body, out System.Collections.Generic.Dictionary<string, long> fields)
+    {
+        body = payload;
+        fields = new System.Collections.Generic.Dictionary<string, long>(StringComparer.Ordinal);
+
+        if (payload.Length < BinaryMetadataFooterSize)
+        {
+            return false;
+        }
+
+        var span = payload.Span;
+        int footerStart = span.Length - BinaryMetadataFooterSize;
+        uint magic = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(footerStart, 4));
+        if (magic != BinaryMetadataMagic)
+        {
+            return false;
+        }
+
+        int metadataLength = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(footerStart + 4, 4));
+        if (metadataLength <= 0 || metadataLength > footerStart)
+        {
+            return false;
+        }
+
+        int metadataStart = footerStart - metadataLength;
+        string metadataJson;
+        try
+        {
+            metadataJson = Encoding.UTF8.GetString(span.Slice(metadataStart, metadataLength));
+        }
+        catch
+        {
+            return false;
+        }
+
+        JObject metadataObj;
+        try
+        {
+            metadataObj = JObject.Parse(metadataJson);
+        }
+        catch
+        {
+            return false;
+        }
+
+        foreach (var property in metadataObj.Properties())
+        {
+            if (property.Value.Type == JTokenType.Integer || property.Value.Type == JTokenType.Float)
+            {
+                fields[property.Name] = property.Value.Value<long>();
+            }
+        }
+
+        body = payload.Slice(0, metadataStart);
+        return true;
+    }
+
+    private static byte[] BuildBinaryMetadataPayload(ReadOnlyMemory<byte> body, System.Collections.Generic.Dictionary<string, long> fields)
+    {
+        string metadataJson = new JObject(fields).ToString(Newtonsoft.Json.Formatting.None);
+        byte[] metadataBytes = Encoding.UTF8.GetBytes(metadataJson);
+        int totalLength = body.Length + metadataBytes.Length + BinaryMetadataFooterSize;
+        byte[] result = new byte[totalLength];
+
+        body.CopyTo(result.AsMemory(0, body.Length));
+        metadataBytes.CopyTo(result.AsMemory(body.Length, metadataBytes.Length));
+
+        var footerSpan = result.AsSpan(body.Length + metadataBytes.Length, BinaryMetadataFooterSize);
+        BinaryPrimitives.WriteUInt32LittleEndian(footerSpan.Slice(0, 4), BinaryMetadataMagic);
+        BinaryPrimitives.WriteInt32LittleEndian(footerSpan.Slice(4, 4), metadataBytes.Length);
+        return result;
     }
 
     /// <summary>

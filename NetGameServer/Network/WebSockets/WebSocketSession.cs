@@ -7,13 +7,12 @@ namespace Network.WebSockets;
 public class WebSocketSession : ISession
 {
     private readonly WebSocket webSocket;
-    private static long sessionCounter = 0;
 
     public WebSocketSession(WebSocket webSocket, EndPoint? remoteEndPoint)
     {
         this.webSocket = webSocket;
         RemoteEndPoint = remoteEndPoint;
-        SessionId = Interlocked.Increment(ref sessionCounter);
+        SessionId = SessionIdGenerator.Next();
     }
 
     public long SessionId { get; }
@@ -26,22 +25,28 @@ public class WebSocketSession : ISession
 
     public object? UserData { get; set; }
 
-    public async void Send(ReadOnlyMemory<byte> data)
+    public void Send(ReadOnlyMemory<byte> data)
     {
-        if (IsConnected)
+        if (!IsConnected)
         {
-            try
-            {
-                byte[] payload = EnsureLengthPrefixed(data.Span);
-                await webSocket.SendAsync(payload, WebSocketMessageType.Binary, true, CancellationToken.None);
-                LastActivityTime = DateTime.UtcNow;
-            }
-            catch (Exception ex)
-            {
-                // 日志记录发送异常
-                Shared.Log.Warning($"WebSocketSession Send Error: {ex.Message}");
-                Close();
-            }
+            return;
+        }
+
+        byte[] payload = EnsureLengthPrefixed(data.Span);
+        _ = SendAsyncInternal(payload);
+    }
+
+    private async Task SendAsyncInternal(byte[] payload)
+    {
+        try
+        {
+            await webSocket.SendAsync(payload, WebSocketMessageType.Binary, true, CancellationToken.None);
+            LastActivityTime = DateTime.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            Shared.Log.Warning($"WebSocketSession Send Error: {ex.Message}");
+            Close();
         }
     }
 
@@ -49,7 +54,7 @@ public class WebSocketSession : ISession
     {
         if (IsConnected)
         {
-            webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closed by server", CancellationToken.None).Wait();
+            _ = webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closed by server", CancellationToken.None);
         }
     }
 

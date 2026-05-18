@@ -7,7 +7,6 @@ using Shared.Messages;
 using System;
 using System.Linq;
 using System.Security.Cryptography;
-using System.Text;
 using System.Threading.Tasks;
 
 namespace DB
@@ -25,24 +24,51 @@ namespace DB
         /// </summary>
         public static ServiceProvider ServiceProvider { get; private set; }
 
-        /// <summary>
-        /// 计算给定字符串的 MD5 哈希值，并返回十六进制小写字符串形式。
-        /// 注意：此方法用于兼容历史逻辑，生产环境中请使用带盐的更安全哈希算法（如 PBKDF2、bcrypt、Argon2 等）。
-        /// </summary>
-        /// <param name="rawData">要计算哈希的原始字符串</param>
-        /// <returns>MD5 哈希的十六进制小写表示</returns>
-        public static string ComputeMd5Hash(string rawData)
+        public static string HashPassword(string rawPassword)
         {
-            using (MD5 md5Hash = MD5.Create())
+            const int iterations = 100_000;
+            byte[] salt = RandomNumberGenerator.GetBytes(16);
+            byte[] hash = Rfc2898DeriveBytes.Pbkdf2(rawPassword, salt, iterations, HashAlgorithmName.SHA256, 32);
+            return $"PBKDF2${iterations}${Convert.ToBase64String(salt)}${Convert.ToBase64String(hash)}";
+        }
+
+        public static bool IsPbkdf2Hash(string storedPassword)
+        {
+            return !string.IsNullOrWhiteSpace(storedPassword) && storedPassword.StartsWith("PBKDF2$", StringComparison.Ordinal);
+        }
+
+        public static bool VerifyPbkdf2Password(string rawPassword, string storedPassword)
+        {
+            if (!IsPbkdf2Hash(storedPassword))
             {
-                byte[] bytes = md5Hash.ComputeHash(Encoding.UTF8.GetBytes(rawData));
-                StringBuilder builder = new StringBuilder();
-                for (int i = 0; i < bytes.Length; i++)
-                {
-                    builder.Append(bytes[i].ToString("x2"));
-                }
-                return builder.ToString();
+                return false;
             }
+
+            string[] parts = storedPassword.Split('$');
+            if (parts.Length != 4)
+            {
+                return false;
+            }
+
+            if (!int.TryParse(parts[1], out int iterations) || iterations <= 0)
+            {
+                return false;
+            }
+
+            byte[] salt;
+            byte[] expectedHash;
+            try
+            {
+                salt = Convert.FromBase64String(parts[2]);
+                expectedHash = Convert.FromBase64String(parts[3]);
+            }
+            catch
+            {
+                return false;
+            }
+
+            byte[] actualHash = Rfc2898DeriveBytes.Pbkdf2(rawPassword, salt, iterations, HashAlgorithmName.SHA256, expectedHash.Length);
+            return CryptographicOperations.FixedTimeEquals(actualHash, expectedHash);
         }
 
         /// <summary>
@@ -71,33 +97,47 @@ namespace DB
                     dbContext.Database.EnsureCreated();
                     Shared.Log.Info("数据库检查完毕.");
 
+                    int regionId = Shared.ConfigHelper.GetConfig<int>("RegionId") == 0 ? 1 : Shared.ConfigHelper.GetConfig<int>("RegionId");
+                    long currentMaxSequence = 0;
+                    foreach (var uniqueId in dbContext.Users.Where(u => !string.IsNullOrWhiteSpace(u.UniqueId)).Select(u => u.UniqueId).ToList())
+                    {
+                        if (!long.TryParse(uniqueId, out long parsedUid))
+                        {
+                            continue;
+                        }
+
+                        long sequence = parsedUid % 100000000L;
+                        if (sequence > currentMaxSequence)
+                        {
+                            currentMaxSequence = sequence;
+                        }
+                    }
+
+                    Shared.UIDGenerator.Initialize(regionId, currentMaxSequence);
+
+                    InitializeRedisConnection();
+
                     // 检查是否存在默认超级管理员账号，如不存在则创建一个（仅在首次初始化时执行）
                     if (!dbContext.Users.Any(u => u.Account == "SuperAdmin"))
                     {
-                        // UID 生成器在某些情况下可能尚未正确初始化，做一次容错处理保证 UniqueId 有效
-                        string adminUniqueId = UIDGenerator.GenerateStringUID();
-                        if (adminUniqueId == "0" || adminUniqueId.Length < 9)
-                        {
-                            adminUniqueId = "100000001";
-                        }
-
+                        long adminUid = Shared.UIDGenerator.GenerateLongUID();
                         var adminUser = new Shared.Data.User
                         {
                             Id = 1000,
                             Account = "SuperAdmin",
-                            Password = "SuperAdmin",
+                            Password = HashPassword("SuperAdmin"),
                             Email = "982109683@qq.com",
                             Nickname = "超级管理员",
-                            UniqueId = adminUniqueId,
-                            RegistrationTime = DateTime.Now,
-                            LastLoginTime = DateTime.Now,
+                            UniqueId = adminUid.ToString(),
+                            RegistrationTime = DateTime.UtcNow,
+                            LastLoginTime = DateTime.UtcNow,
                             LoginIP = "127.0.0.1",
                             IsEnabled = true,
                             IsAdmin = true
                         };
                         dbContext.Users.Add(adminUser);
                         dbContext.SaveChanges();
-                        Shared.Log.Info("成功创建默认超级管理员。");
+                        Shared.Log.Warning($"成功创建默认超级管理员，默认密码请在首次部署后立即修改。UID:{adminUid}");
                     }
                 }
                 catch (Exception ex)
@@ -109,6 +149,26 @@ namespace DB
                         Shared.Log.Error($"Detailed Inner Exception: {ex.InnerException.Message}");
                     }
                 }
+            }
+        }
+
+        /// <summary>
+        /// 初始化 Redis 连接，使用配置中的 RedisConnectionString。
+        /// 若配置缺失则回退到本地默认实例。
+        /// </summary>
+        private static void InitializeRedisConnection()
+        {
+            string redisConnectionString = ConfigHelper.GetConfig("RedisConnectionString") ?? "127.0.0.1:6379,abortConnect=false";
+
+            try
+            {
+                RedisHelper.Initialize(redisConnectionString);
+                _ = RedisHelper.Connection;
+                Shared.Log.Info("Redis 连接已建立。");
+            }
+            catch (Exception ex)
+            {
+                Shared.Log.Error($"Redis 连接初始化失败: {ex.Message}");
             }
         }
 
@@ -125,7 +185,6 @@ namespace DB
             // 从配置读取端口，若未配置则使用默认 31305
             int port = ConfigHelper.GetConfig<int>("DBPort") == 0 ? 31305 : ConfigHelper.GetConfig<int>("DBPort");
 
-            var networkManager = new NetworkManager();
             var tcpServer = new TcpServer();
 
             // 创建路由器并注册各类数据库相关的消息处理器
@@ -140,6 +199,8 @@ namespace DB
             router.RegisterHandler(MessageIds.DbRemoveFriendReq, async (session, data) => await Handlers.DbQueryHandler.HandleRemoveFriendRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbRemoveFriendRequest>(data.Span)));
             router.RegisterHandler(MessageIds.DbSetFriendRemarkReq, async (session, data) => await Handlers.DbQueryHandler.HandleSetFriendRemarkRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbSetFriendRemarkRequest>(data.Span)));
             router.RegisterHandler(MessageIds.DbGetFriendsReq, async (session, data) => await Handlers.DbQueryHandler.HandleGetFriendsRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbGetFriendsRequest>(data.Span)));
+            router.RegisterHandler(MessageIds.DbChangePasswordReq, async (session, data) => await Handlers.DbQueryHandler.HandleChangePasswordVerifyRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.ChangePasswordVerifyRequest>(data.Span)));
+            router.RegisterHandler(MessageIds.DbResetPasswordByEmailReq, async (session, data) => await Handlers.DbQueryHandler.HandleResetPasswordByEmailRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.ResetPasswordByEmailRequest>(data.Span)));
 
             // 简单的会话事件日志，用于监控连接与流量，实际部署时可扩展鉴权或限流逻辑
             tcpServer.OnSessionConnected += session => Shared.Log.Info($"客户端已连接: {session.RemoteEndPoint}");
@@ -152,10 +213,8 @@ namespace DB
             router.BindServer(tcpServer);
             tcpServer.OnSessionDisconnected += (session, reason) => Shared.Log.Info($"客户端断开连接，原因: {reason}");
 
-            networkManager.RegisterServer("DBTcp", tcpServer);
-
             // 启动监听并记录启动信息
-            await networkManager.StartServerAsync("DBTcp", port);
+            await tcpServer.StartAsync(port);
             Shared.Log.Info($"DB服务器已启动，监听端口: {port}");
         }
     }

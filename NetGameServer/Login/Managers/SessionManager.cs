@@ -1,4 +1,5 @@
 using Shared.Data;
+using Shared.Messages;
 using System;
 using System.Collections.Concurrent;
 using System.Threading;
@@ -18,8 +19,8 @@ namespace Login.Managers
 
         public static SessionManager Instance => instance;
 
-        public Action<int> OnUserOfflineAction { get; set; }
-        public Action<long, byte[]> SendToGatewayAction { get; set; }
+        public Action<int>? OnUserOfflineAction { get; set; }
+        public Action<long, byte[]>? SendToGatewayAction { get; set; }
 
         private readonly ConcurrentDictionary<int, long> userSessions = new ConcurrentDictionary<int, long>();
         private readonly ConcurrentDictionary<long, int> sessionUsers = new ConcurrentDictionary<long, int>();
@@ -56,7 +57,7 @@ namespace Login.Managers
                     };
                     byte[] data = Shared.Json.SerializeToUtf8Bytes(kickMessage);
                     byte[] packet = new byte[data.Length + 4];
-                    System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1007); // 假设1007为KickedOffMessage的MsgId
+                    System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), MessageIds.KickedOffNotif);
                     data.CopyTo(packet.AsSpan(4));
 
                     SendToGatewayAction?.Invoke(existingSessionId, packet);
@@ -140,7 +141,7 @@ namespace Login.Managers
                 };
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(kickMessage);
                 byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), 1007);
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), MessageIds.KickedOffNotif);
                 data.CopyTo(packet.AsSpan(4));
 
                 SendToGatewayAction?.Invoke(sId, packet);
@@ -159,6 +160,12 @@ namespace Login.Managers
         {
             userSessions.TryGetValue(userId, out var sessionId);
             return sessionId;
+        }
+
+        public int GetUserIdBySessionId(long clientSessionId)
+        {
+            sessionUsers.TryGetValue(clientSessionId, out var userId);
+            return userId;
         }
     }
 }

@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading.Tasks;
 using Shared.Messages;
 using Shared.Messages.Center;
@@ -57,13 +59,14 @@ namespace Center.Handlers
                 var req = Shared.Json.DeserializeFromUtf8Bytes<CenterRegisterNodeRequest>(payload.Span);
                 if (req != null)
                 {
+                    if (!VerifyRegisterSignature(req))
+                    {
+                        Shared.Log.Warning($"CenterRegisterNodeReq 签名校验失败，NodeId:{req.NodeId}");
+                        return Task.CompletedTask;
+                    }
+
                     NodeManager.Instance.RegisterNode(req.NodeId, req.NodeType, req.Host, req.Port, session);
                     NodeManager.Instance.UpdateLoad(req.NodeId, req.CurrentLoad);
-
-                    // 响应注册成功 (这里假设 0 是保留给内网节点的 ClientSessionId)
-                    // var resPayload = Shared.Json.SerializeToUtf8Bytes(new { Success = true });
-                    // byte[] packet = Shared.Network.PacketBuilder.BuildInternalPacket(0, MessageIds.CenterRegisterNodeRes, resPayload);
-                    // session.Send(packet);
                 }
                 return Task.CompletedTask;
             };
@@ -73,12 +76,73 @@ namespace Center.Handlers
                 var req = Shared.Json.DeserializeFromUtf8Bytes<CenterNodeStatusRequest>(payload.Span);
                 if (req != null && !string.IsNullOrWhiteSpace(req.NodeId))
                 {
+                    if (!VerifyStatusSignature(req))
+                    {
+                        Shared.Log.Warning($"CenterNodeStatusReq 签名校验失败，NodeId:{req.NodeId}");
+                        return Task.CompletedTask;
+                    }
+
                     NodeManager.Instance.UpdateLoad(req.NodeId, req.CurrentLoad);
                 }
                 return Task.CompletedTask;
             };
 
             return handlers;
+        }
+
+        private static bool VerifyRegisterSignature(CenterRegisterNodeRequest req)
+        {
+            if (!IsTimestampValid(req.Timestamp) || string.IsNullOrWhiteSpace(req.Signature))
+            {
+                return false;
+            }
+
+            string source = $"{req.NodeId}|{req.NodeType}|{req.Host}|{req.Port}|{req.CurrentLoad}|{req.Timestamp}";
+            string expected = ComputeSignature(source);
+            return FixedTimeEquals(expected, req.Signature);
+        }
+
+        private static bool VerifyStatusSignature(CenterNodeStatusRequest req)
+        {
+            if (!IsTimestampValid(req.Timestamp) || string.IsNullOrWhiteSpace(req.Signature))
+            {
+                return false;
+            }
+
+            string source = $"{req.NodeId}|{req.CurrentLoad}|{req.Timestamp}";
+            string expected = ComputeSignature(source);
+            return FixedTimeEquals(expected, req.Signature);
+        }
+
+        private static bool IsTimestampValid(long timestamp)
+        {
+            if (timestamp <= 0)
+            {
+                return false;
+            }
+
+            long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            long delta = Math.Abs(now - timestamp);
+            return delta <= 120;
+        }
+
+        private static string ComputeSignature(string source)
+        {
+            string secret = Shared.ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            byte[] key = Encoding.UTF8.GetBytes(secret);
+            byte[] data = Encoding.UTF8.GetBytes(source);
+
+            using var hmac = new HMACSHA256(key);
+            byte[] hash = hmac.ComputeHash(data);
+            return Convert.ToBase64String(hash);
+        }
+
+        private static bool FixedTimeEquals(string expected, string actual)
+        {
+            byte[] expectedBytes = Encoding.UTF8.GetBytes(expected);
+            byte[] actualBytes = Encoding.UTF8.GetBytes(actual);
+            return expectedBytes.Length == actualBytes.Length
+                   && CryptographicOperations.FixedTimeEquals(expectedBytes, actualBytes);
         }
 
         /// <summary>

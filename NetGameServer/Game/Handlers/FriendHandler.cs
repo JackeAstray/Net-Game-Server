@@ -33,9 +33,18 @@ namespace Game.Handlers
         {
             if (sessionBase is not ClientSessionWrapper session) return;
             var req = Shared.Json.DeserializeFromUtf8Bytes<AddFriendRequest>(payload.Span);
+            if (req == null)
+            {
+                SendSimpleResponse(session, MessageIds.AddFriendRes, new AddFriendResponse { Success = false, Message = "请求格式无效" });
+                return;
+            }
 
-            // Generate DB request
             var userId = PlayerSessionManager.Instance.GetUserIdBySessionId(session.SessionId);
+            if (userId <= 0)
+            {
+                SendSimpleResponse(session, MessageIds.AddFriendRes, new AddFriendResponse { Success = false, Message = "会话未登录或未绑定" });
+                return;
+            }
 
             if (GameServerApp.DbClient != null)
             {
@@ -51,7 +60,7 @@ namespace Game.Handlers
                 System.Buffers.ArrayPool<byte>.Shared.Return(packet);
             }
 
-            var res = new AddFriendResponse { Success = true, Message = "已发送请求并等待DB处理" };
+            var res = new AddFriendResponse { Success = true, Message = "已发送请求，等待DB处理结果" };
             var resPayload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(res), session.SessionId);
             var resData = PacketBuilder.BuildPacket(MessageIds.AddFriendRes, resPayload, out int resLength);
             try
@@ -68,8 +77,19 @@ namespace Game.Handlers
         {
             if (sessionBase is not ClientSessionWrapper session) return;
             var req = Shared.Json.DeserializeFromUtf8Bytes<RemoveFriendRequest>(payload.Span);
-            
+            if (req == null)
+            {
+                SendSimpleResponse(session, MessageIds.RemoveFriendRes, new RemoveFriendResponse { Success = false, Message = "请求格式无效" });
+                return;
+            }
+
             var userId = PlayerSessionManager.Instance.GetUserIdBySessionId(session.SessionId);
+            if (userId <= 0)
+            {
+                SendSimpleResponse(session, MessageIds.RemoveFriendRes, new RemoveFriendResponse { Success = false, Message = "会话未登录或未绑定" });
+                return;
+            }
+
             if (GameServerApp.DbClient != null)
             {
                 var dbReq = new Shared.Messages.Db.DbRemoveFriendRequest
@@ -83,7 +103,7 @@ namespace Game.Handlers
                 System.Buffers.ArrayPool<byte>.Shared.Return(packet);
             }
 
-            var res = new RemoveFriendResponse { Success = true, Message = "已发送请求并等待DB处理" };
+            var res = new RemoveFriendResponse { Success = true, Message = "已发送请求，等待DB处理结果" };
             var resPayload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(res), session.SessionId);
             var resData = PacketBuilder.BuildPacket(MessageIds.RemoveFriendRes, resPayload, out int resLength);
             try
@@ -100,8 +120,19 @@ namespace Game.Handlers
         {
             if (sessionBase is not ClientSessionWrapper session) return;
             var req = Shared.Json.DeserializeFromUtf8Bytes<SetFriendRemarkRequest>(payload.Span);
-            
+            if (req == null)
+            {
+                SendSimpleResponse(session, MessageIds.SetFriendRemarkRes, new SetFriendRemarkResponse { Success = false, Message = "请求格式无效" });
+                return;
+            }
+
             var userId = PlayerSessionManager.Instance.GetUserIdBySessionId(session.SessionId);
+            if (userId <= 0)
+            {
+                SendSimpleResponse(session, MessageIds.SetFriendRemarkRes, new SetFriendRemarkResponse { Success = false, Message = "会话未登录或未绑定" });
+                return;
+            }
+
             if (GameServerApp.DbClient != null)
             {
                 var dbReq = new Shared.Messages.Db.DbSetFriendRemarkRequest
@@ -116,7 +147,7 @@ namespace Game.Handlers
                 System.Buffers.ArrayPool<byte>.Shared.Return(packet);
             }
 
-            var res = new SetFriendRemarkResponse { Success = true, Message = "已发送请求并等待DB处理" };
+            var res = new SetFriendRemarkResponse { Success = true, Message = "已发送请求，等待DB处理结果" };
             var resPayload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(res), session.SessionId);
             var resData = PacketBuilder.BuildPacket(MessageIds.SetFriendRemarkRes, resPayload, out int resLength);
             try
@@ -133,8 +164,19 @@ namespace Game.Handlers
         {
             if (sessionBase is not ClientSessionWrapper session) return;
             var req = Shared.Json.DeserializeFromUtf8Bytes<GetFriendsRequest>(payload.Span);
-            
+            if (req == null)
+            {
+                SendSimpleResponse(session, MessageIds.GetFriendsRes, new GetFriendsResponse { Success = false, Message = "请求格式无效" });
+                return;
+            }
+
             var userId = PlayerSessionManager.Instance.GetUserIdBySessionId(session.SessionId);
+            if (userId <= 0)
+            {
+                SendSimpleResponse(session, MessageIds.GetFriendsRes, new GetFriendsResponse { Success = false, Message = "会话未登录或未绑定" });
+                return;
+            }
+
             if (GameServerApp.DbClient != null)
             {
                 var dbReq = new Shared.Messages.Db.DbGetFriendsRequest
@@ -147,7 +189,7 @@ namespace Game.Handlers
                 System.Buffers.ArrayPool<byte>.Shared.Return(packet);
             }
 
-            var res = new GetFriendsResponse { Success = true, Message = "已发送请求并等待DB处理" }; // 在真实项目中最好异步等待或者依赖DB回到给客户端
+            var res = new GetFriendsResponse { Success = true, Message = "已发送请求，等待DB处理结果" }; // 在真实项目中最好异步等待或者依赖DB回到给客户端
             var resPayload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(res), session.SessionId);
             var resData = PacketBuilder.BuildPacket(MessageIds.GetFriendsRes, resPayload, out int resLength);
             try
@@ -167,7 +209,15 @@ namespace Game.Handlers
             var userId = PlayerSessionManager.Instance.GetUserIdBySessionId(session.SessionId);
             var res = new InviteGameResponse { Success = false, Message = "不在线或无法邀请" };
 
-            if (userId > 0 && req != null)
+            if (req == null)
+            {
+                res.Message = "请求格式无效";
+            }
+            else if (userId <= 0)
+            {
+                res.Message = "会话未登录或未绑定";
+            }
+            else
             {
                 long targetSessionId = PlayerSessionManager.Instance.GetSessionIdByUserId(req.FriendUserId);
                 if (targetSessionId > 0)
@@ -202,6 +252,20 @@ namespace Game.Handlers
             finally
             {
                 System.Buffers.ArrayPool<byte>.Shared.Return(resData);
+            }
+        }
+
+        private static void SendSimpleResponse<T>(ClientSessionWrapper session, int msgId, T response)
+        {
+            var payload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(response), session.SessionId);
+            var packet = PacketBuilder.BuildPacket(msgId, payload, out int packetLength);
+            try
+            {
+                session.Send(packet.AsSpan(0, packetLength).ToArray());
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
             }
         }
     }

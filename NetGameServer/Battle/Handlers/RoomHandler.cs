@@ -79,15 +79,18 @@ namespace Battle.Handlers
         /// 处理玩家断线清理
         /// </summary>
         /// <param name="clientSessionId">玩家客户端会话 ID</param>
-        public void HandleDisconnect(long clientSessionId)
+        public void HandleDisconnect(long clientSessionId, Network.ISession gatewaySession)
         {
             var scene = sceneManager.GetSceneByPlayer(clientSessionId);
             if (scene != null)
             {
-                // 可以利用 entitySyncHandler 执行离开视野等广播通知逻辑（如果在 EntitySyncHandler 中有相关方法）
-                entitySyncHandler.OnPlayerLeave(clientSessionId);
+                entitySyncHandler.OnPlayerLeave(clientSessionId, gatewaySession);
             }
-            sceneManager.UnbindPlayer(clientSessionId);
+            else
+            {
+                sceneManager.UnbindPlayer(clientSessionId);
+            }
+
             Shared.Log.Info($"玩家 {clientSessionId} 已从场景解绑并清理");
         }
     }

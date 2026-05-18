@@ -8,7 +8,7 @@ namespace Shared.Messages.Db
 
     public class GetMaxUidResponse
     {
-        public int MaxUid { get; set; }
+        public long MaxUid { get; set; }
     }
 
     public class LoginVerifyRequest
@@ -22,6 +22,12 @@ namespace Shared.Messages.Db
         public bool Success { get; set; }
         public string Message { get; set; }
         public long UserId { get; set; }
+        public string UniqueId { get; set; }
+        public string Nickname { get; set; }
+        public string Email { get; set; }
+        public DateTime LastLoginTime { get; set; }
+        public int LoginCount { get; set; }
+        public bool IsAdmin { get; set; }
     }
 
     public class RegisterVerifyRequest
@@ -49,6 +55,7 @@ namespace Shared.Messages.Db
         public bool IsOnline { get; set; }
         public bool IsLocked { get; set; }
         public bool IsAdmin { get; set; }
+        public string Email { get; set; }
         public string Message { get; set; }
     }
 
@@ -72,6 +79,33 @@ namespace Shared.Messages.Db
     public class UpdateOnlineStateResponse
     {
         public bool Success { get; set; }
+    }
+
+    public class ChangePasswordVerifyRequest
+    {
+        public int UserId { get; set; }
+        public string Account { get; set; }
+        public string OldPassword { get; set; }
+        public string NewPassword { get; set; }
+    }
+
+    public class ChangePasswordVerifyResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; }
+    }
+
+    public class ResetPasswordByEmailRequest
+    {
+        public string Account { get; set; }
+        public string Email { get; set; }
+        public string TemporaryPassword { get; set; }
+    }
+
+    public class ResetPasswordByEmailResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; }
     }
 
     // --- Friend System Models ---

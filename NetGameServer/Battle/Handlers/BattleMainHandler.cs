@@ -44,7 +44,7 @@ namespace Battle.Handlers
                     Success = true,
                     RoomId = request.RoomId,
                     SceneId = request.RoomId,
-                    BattleNodeId = Shared.ConfigHelper.GetConfig<string>("ServerId") ?? "Battle_1"
+                    BattleNodeId = Battle.BattleServerApp.CurrentNodeId
                 });
             }
             catch (Exception ex)

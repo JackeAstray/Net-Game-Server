@@ -1,5 +1,7 @@
 using System;
 using System.Threading.Tasks;
+using System.Security.Cryptography;
+using System.Text;
 using Network;
 using Network.Routing;
 using Network.Tcp;
@@ -14,6 +16,7 @@ namespace Battle
         private static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>? handlers;
         private static System.Threading.CancellationTokenSource? centerHeartbeatCts;
         private static Battle.Handlers.SceneManager? sceneManager;
+        public static string CurrentNodeId { get; private set; } = string.Empty;
 
         /// <summary>
         /// 加载配置，构建场景与消息处理器，注册并启动战斗服务器的 TCP 网络，处理会话连接/断开与数据接收并分发内部消息，随后连接到中心服。
@@ -36,7 +39,6 @@ namespace Battle
 
             handlers = Battle.Handlers.MessageRouter.BuildHandlers(roomHandler, entitySyncHandler, battleMainHandler);
 
-            var networkManager = new NetworkManager();
             var tcpServer = new TcpServer();
 
             tcpServer.OnSessionConnected += session =>
@@ -77,11 +79,41 @@ namespace Battle
                         Log.Error($"Battle 处理消息 ({msgId}) 发生异常: " + ex);
                     }
                 }
+                else
+                {
+                    Log.Warning($"Battle 收到未知 MsgId: {msgId}");
+
+                    if (originalSessionId > 0 && msgId >= 40000 && msgId < 50000)
+                    {
+                        int responseMsgId = msgId switch
+                        {
+                            MessageIds.BattleJoinReq => MessageIds.BattleJoinRes,
+                            _ => 0
+                        };
+
+                        if (responseMsgId > 0)
+                        {
+                            byte[] unknownPayload = Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Battle.BattleJoinResponse
+                            {
+                                Success = false,
+                                Message = $"未支持的战斗消息类型: {msgId}"
+                            });
+                            byte[] routedUnknownPayload = Shared.RouteMetadata.AttachTargetSessionId(unknownPayload, originalSessionId);
+                            byte[] unknownPacket = PacketBuilder.BuildPacket(responseMsgId, routedUnknownPayload, out int unknownLength);
+                            try
+                            {
+                                session.Send(unknownPacket.AsSpan(0, unknownLength).ToArray());
+                            }
+                            finally
+                            {
+                                System.Buffers.ArrayPool<byte>.Shared.Return(unknownPacket);
+                            }
+                        }
+                    }
+                }
             };
 
-            networkManager.RegisterServer("BattleTcp", tcpServer);
-
-            await networkManager.StartServerAsync("BattleTcp", port);
+            await tcpServer.StartAsync(port);
             Log.Info($"Battle 战斗服务器网络已启动，监听端口: {port}");
 
             ConnectToCenter(port);
@@ -99,6 +131,7 @@ namespace Battle
             string centerHost = ConfigHelper.GetConfig<string>("CenterHost") ?? "127.0.0.1";
             string battleHost = ConfigHelper.GetConfig<string>("BattleHost") ?? "127.0.0.1";
             string nodeId = $"Battle-{battleHost}:{port}";
+            CurrentNodeId = nodeId;
             var centerClient = new TcpClientWrapper(centerHost, centerPort);
 
             centerClient.OnConnected += session =>
@@ -131,7 +164,32 @@ namespace Battle
                 centerHeartbeatCts?.Cancel();
                 Log.Warning($"与 Center 服务器断开连接: {reason}");
             };
-            centerClient.OnDataReceived += (session, data) => Log.Info($"Battle 收到 Center 消息，长度: {data.Length}");
+            centerClient.OnDataReceived += async (session, data) =>
+            {
+                if (data.Length < 4)
+                {
+                    return;
+                }
+
+                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                byte[] payload = data.Slice(4).ToArray();
+
+                if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
+                {
+                    try
+                    {
+                        await handlerAction(payload, session, 0);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error($"Battle 处理 Center 下发消息 ({msgId}) 发生异常: " + ex);
+                    }
+                }
+                else
+                {
+                    Log.Warning($"Battle 收到未处理的 Center MsgId: {msgId}");
+                }
+            };
             _ = centerClient.ConnectAsync();
         }
 
@@ -148,13 +206,17 @@ namespace Battle
         /// <param name="currentLoad">节点当前的负载值，用于负载均衡或监控。</param>
         private static void SendRegisterNode(TcpClientWrapper centerClient, string nodeId, string nodeType, string host, int port, int currentLoad)
         {
+            long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            string signatureSource = $"{nodeId}|{nodeType}|{host}|{port}|{currentLoad}|{timestamp}";
             var registerRequest = new CenterRegisterNodeRequest
             {
                 NodeId = nodeId,
                 NodeType = nodeType,
                 Host = host,
                 Port = port,
-                CurrentLoad = currentLoad
+                CurrentLoad = currentLoad,
+                Timestamp = timestamp,
+                Signature = ComputeCenterSignature(signatureSource)
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(registerRequest);
             byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterRegisterNodeReq, payload, out int totalLength);
@@ -172,15 +234,28 @@ namespace Battle
         /// <param name="currentLoad">节点当前的负载值。</param>
         private static void SendNodeStatus(TcpClientWrapper centerClient, string nodeId, int currentLoad)
         {
+            long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            string signatureSource = $"{nodeId}|{currentLoad}|{timestamp}";
             var statusRequest = new CenterNodeStatusRequest
             {
                 NodeId = nodeId,
-                CurrentLoad = currentLoad
+                CurrentLoad = currentLoad,
+                Timestamp = timestamp,
+                Signature = ComputeCenterSignature(signatureSource)
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(statusRequest);
             byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterNodeStatusReq, payload, out int totalLength);
             centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
             System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+        }
+
+        private static string ComputeCenterSignature(string source)
+        {
+            string secret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            byte[] key = Encoding.UTF8.GetBytes(secret);
+            byte[] data = Encoding.UTF8.GetBytes(source);
+            using var hmac = new HMACSHA256(key);
+            return Convert.ToBase64String(hmac.ComputeHash(data));
         }
 
         /// <summary>

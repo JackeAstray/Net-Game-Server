@@ -1,5 +1,4 @@
 using System;
-using System.Security.Cryptography;
 using System.Threading.Tasks;
 using Network.Tcp;
 using Shared;
@@ -22,11 +21,8 @@ namespace Login.Handlers
         private static long sequenceId = 0;
         private const int MaxFailedAttempts = 5;
         private static readonly TimeSpan ThrottleLockDuration = TimeSpan.FromMinutes(5);
-        private static readonly TimeSpan FindPasswordCooldown = TimeSpan.FromMinutes(10);
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, ActionAttemptTracker> actionAttemptTrackers =
             new System.Collections.Concurrent.ConcurrentDictionary<string, ActionAttemptTracker>(StringComparer.OrdinalIgnoreCase);
-        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> findPasswordCooldowns =
-            new System.Collections.Concurrent.ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
         /// 创建 LoginHandler 的实例。
@@ -60,17 +56,6 @@ namespace Login.Handlers
                 };
             }
 
-            if (string.IsNullOrWhiteSpace(request.Password))
-            {
-                return new LoginResponse
-                {
-                    Success = false,
-                    Message = "密码不能为空",
-                    UserId = 0,
-                    Token = string.Empty
-                };
-            }
-
             if (TryGetThrottleRemaining("login", account, out var remaining))
             {
                 int waitSeconds = Math.Max(1, (int)Math.Ceiling(remaining.TotalSeconds));
@@ -97,13 +82,7 @@ namespace Login.Handlers
                 Success = verifyResp?.Success ?? false,
                 Message = verifyResp?.Message ?? "服务器内部错误",
                 UserId = (int)(verifyResp?.UserId ?? 0),
-                Token = verifyResp?.Success == true ? Guid.NewGuid().ToString() : string.Empty,
-                UniqueId = verifyResp?.Success == true ? verifyResp.UniqueId ?? string.Empty : string.Empty,
-                Nickname = verifyResp?.Success == true ? verifyResp.Nickname ?? string.Empty : string.Empty,
-                Email = verifyResp?.Success == true ? verifyResp.Email ?? string.Empty : string.Empty,
-                LastLoginTime = verifyResp?.Success == true ? verifyResp.LastLoginTime : default,
-                LoginCount = verifyResp?.Success == true ? verifyResp.LoginCount : 0,
-                IsAdmin = verifyResp?.Success == true && verifyResp.IsAdmin
+                Token = verifyResp?.Success == true ? Guid.NewGuid().ToString() : string.Empty
             };
 
             if (response.Success)
@@ -123,6 +102,16 @@ namespace Login.Handlers
             return response;
         }
 
+        /// <summary>
+        /// 同步处理登录请求的占位方法（向后兼容）。当前仅记录日志。
+        /// </summary>
+        /// <param name="session">TCP 会话对象（未使用）。</param>
+        /// <param name="request">登录请求数据。</param>
+        public void HandleLoginRequest(TcpSession session, LoginRequest request)
+        {
+            // 向后兼容性占位符
+            Log.Info($"收到帐户的LoginRequest: {request.Account}");
+        }
 
         /// <summary>
         /// 异步处理注册请求：向 DB 服务请求创建新用户并返回结果。
@@ -140,24 +129,6 @@ namespace Login.Handlers
                 {
                     Success = false,
                     Message = "账号不能为空"
-                };
-            }
-
-            if (string.IsNullOrWhiteSpace(request.Password))
-            {
-                return new RegisterResponse
-                {
-                    Success = false,
-                    Message = "密码不能为空"
-                };
-            }
-
-            if (string.IsNullOrWhiteSpace(request.Nickname))
-            {
-                return new RegisterResponse
-                {
-                    Success = false,
-                    Message = "昵称不能为空"
                 };
             }
 
@@ -201,95 +172,67 @@ namespace Login.Handlers
             };
         }
 
-
-
+        /// <summary>
+        /// 处理注册请求。此方法将调用数据库创建新帐户。
+        /// </summary>
+        /// <param name="session"></param>
+        /// <param name="request"></param>
+        /// <summary>
+        /// 同步处理注册请求的占位方法（向后兼容）。当前仅记录日志。
+        /// </summary>
+        /// <param name="session">TCP 会话对象（未使用）。</param>
+        /// <param name="request">注册请求数据。</param>
+        public void HandleRegisterRequest(TcpSession session, RegisterRequest request)
+        {
+            Log.Info($"收到帐户的RegisterRequest: {request.Account}");
+        }
 
         /// <summary>
-        /// 异步处理找回密码请求。
-        /// 由于当前版本尚未实现完整的邮箱验证码/重置链接流程，这里显式返回失败，避免误报成功。
+        /// 同步处理更改密码请求的占位方法：当前只记录日志并返回成功响应（示例）。
+        /// 实际应校验旧密码并在 DB 中更新为新密码。
         /// </summary>
-        /// <param name="request">找回密码请求对象，包含用于定位用户的邮箱或账号信息。</param>
-        /// <returns>FindPasswordResponse，当前版本始终返回未实现状态。</returns>
-        public async Task<FindPasswordResponse> HandleFindPasswordRequestAsync(FindPasswordRequest request)
+        /// <param name="session">TCP 会话对象（未使用）。</param>
+        /// <param name="request">包含账号、旧密码和新密码的请求对象。</param>
+        public void HandleChangePasswordRequest(TcpSession session, ChangePasswordRequest request)
         {
-            string account = request.Account?.Trim() ?? string.Empty;
-            string email = request.Email?.Trim() ?? string.Empty;
-
-            if (string.IsNullOrWhiteSpace(account) || string.IsNullOrWhiteSpace(email))
-            {
-                return new FindPasswordResponse
-                {
-                    Success = false,
-                    Message = "账号和邮箱不能为空"
-                };
-            }
-
-            string cooldownKey = BuildActionKey("find-password", account);
-            if (findPasswordCooldowns.TryGetValue(cooldownKey, out var nextAllowed) && nextAllowed > DateTime.UtcNow)
-            {
-                int waitSeconds = Math.Max(1, (int)Math.Ceiling((nextAllowed - DateTime.UtcNow).TotalSeconds));
-                return new FindPasswordResponse
-                {
-                    Success = false,
-                    Message = $"找回密码请求过于频繁，请在 {waitSeconds} 秒后重试"
-                };
-            }
-
-            var user = await GetUserByAccountAsync(account);
-            if (user == null)
-            {
-                return new FindPasswordResponse
-                {
-                    Success = false,
-                    Message = "账户不存在"
-                };
-            }
-
-            if (!string.Equals(user.Email?.Trim(), email, StringComparison.OrdinalIgnoreCase))
-            {
-                return new FindPasswordResponse
-                {
-                    Success = false,
-                    Message = "邮箱与账号不匹配"
-                };
-            }
-
-            string verifyCode = GenerateTemporaryPassword();
-            string subject = "游戏账号密码重置验证码";
-            string body = $"您的账号 {account} 已申请密码重置。\n验证码: {verifyCode}\n有效期: 10 分钟\n请在时限内完成验证。";
-            if (!await SendEmailAsync(email, subject, body))
-            {
-                return new FindPasswordResponse
-                {
-                    Success = false,
-                    Message = "验证码发送失败，请稍后重试"
-                };
-            }
-
-            var resetReq = new Shared.Messages.Db.ResetPasswordByEmailRequest
-            {
-                Account = account,
-                Email = email,
-                TemporaryPassword = verifyCode
-            };
-
-            var resetResp = await CallDbAsync<Shared.Messages.Db.ResetPasswordByEmailResponse>(MessageIds.DbResetPasswordByEmailReq, resetReq);
-            if (resetResp?.Success != true)
-            {
-                return new FindPasswordResponse
-                {
-                    Success = false,
-                    Message = resetResp?.Message ?? "重置密码失败，请稍后重试"
-                };
-            }
-
-            findPasswordCooldowns[cooldownKey] = DateTime.UtcNow.Add(FindPasswordCooldown);
-
-            return new FindPasswordResponse
+            Log.Info($"收到帐户的ChangePasswordRequest: {request.Account}");
+            var response = new ChangePasswordResponse
             {
                 Success = true,
-                Message = "验证码已发送到您的邮箱"
+                Message = "更改密码成功"
             };
+        }
+
+        /// <summary>
+        /// 同步处理更改昵称请求的占位方法：当前仅记录日志并返回成功响应。
+        /// 备注：注释中提到可以使用 SMTP 发送通知邮件，此处未实现具体邮件逻辑。
+        /// </summary>
+        /// <param name="session">TCP 会话对象（未使用）。</param>
+        /// <param name="request">包含用户 Id 和新昵称的请求对象。</param>
+        public void HandleChangeNicknameRequest(TcpSession session, ChangeNicknameRequest request)
+        {
+            Log.Info($"收到用户的ChangeNicknameRequest: {request.UserId}");
+            var response = new ChangeNicknameResponse
+            {
+                Success = true,
+                Message = "更改昵称成功"
+            };
+        }
+
+        /// <summary>
+        /// 异步处理找回密码请求（示例实现）：通常应通过 SMTP 给用户发送包含重置链接或验证码的邮件。
+        /// 当前方法返回一个成功的占位响应，实际发送逻辑可通过 SendEmailAsync 实现并根据结果返回成功或失败状态。
+        /// </summary>
+        /// <param name="request">找回密码请求对象，包含用于定位用户的邮箱或账号信息。</param>
+        /// <returns>FindPasswordResponse，指示是否成功触发邮箱发送流程。</returns>
+        public async Task<FindPasswordResponse> HandleFindPasswordRequestAsync(FindPasswordRequest request)
+        {
+            var response = new FindPasswordResponse
+            {
+                Success = true,
+                Message = "找回密码验证发件请求完毕"
+            };
+            return await Task.FromResult(response);
         }
 
         /// <summary>
@@ -394,29 +337,9 @@ namespace Login.Handlers
         private async Task<ChangePasswordResponse> ChangePasswordCoreAsync(ChangePasswordRequest request, int userId)
         {
             string account = request.Account?.Trim() ?? string.Empty;
-            string oldPassword = request.OldPassword ?? string.Empty;
-            string newPassword = request.NewPassword ?? string.Empty;
             string throttleIdentity = !string.IsNullOrWhiteSpace(account)
                 ? account
                 : (userId > 0 ? $"uid:{userId}" : "unknown");
-
-            if (string.IsNullOrWhiteSpace(oldPassword))
-            {
-                return new ChangePasswordResponse
-                {
-                    Success = false,
-                    Message = "旧密码不能为空"
-                };
-            }
-
-            if (string.IsNullOrWhiteSpace(newPassword))
-            {
-                return new ChangePasswordResponse
-                {
-                    Success = false,
-                    Message = "新密码不能为空"
-                };
-            }
 
             if (TryGetThrottleRemaining("change-password", throttleIdentity, out var remaining))
             {
@@ -491,19 +414,13 @@ namespace Login.Handlers
             dbClient.Send(packet.AsSpan(0, totalLength).ToArray());
             System.Buffers.ArrayPool<byte>.Shared.Return(packet);
 
-            int timeoutMs = ConfigHelper.GetConfig<int>("DbRequestTimeoutMs");
-            if (timeoutMs <= 0)
-            {
-                timeoutMs = 5000;
-            }
-
             using var cts = new System.Threading.CancellationTokenSource();
-            var timeoutTask = Task.Delay(timeoutMs, cts.Token);
+            var timeoutTask = Task.Delay(5000, cts.Token);
             var completedTask = await Task.WhenAny(tcs.Task, timeoutTask);
             if (completedTask == timeoutTask)
             {
                 LoginServerApp.PendingRequests.TryRemove(requestId, out _);
-                Shared.Log.Warning($"向 DB 请求 MsgId:{msgId} 超时，TimeoutMs:{timeoutMs}");
+                Shared.Log.Warning($"向 DB 请求 MsgId:{msgId} 超时");
                 return null;
             }
 
@@ -585,38 +502,6 @@ namespace Login.Handlers
             actionAttemptTrackers.TryRemove(key, out _);
         }
 
-        private async Task<Shared.Data.User> GetUserByAccountAsync(string account)
-        {
-            var queryReq = new Shared.Messages.Db.AccountQueryRequest
-            {
-                Account = account
-            };
-
-            var queryResp = await CallDbAsync<Shared.Messages.Db.AccountQueryResponse>(MessageIds.DbAccountQueryReq, queryReq);
-            if (queryResp?.Exists != true)
-            {
-                return null;
-            }
-
-            return new Shared.Data.User
-            {
-                Account = account,
-                Email = queryResp.Email ?? string.Empty
-            };
-        }
-
-        private static string GenerateTemporaryPassword()
-        {
-            const string chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-            var random = new Random();
-            char[] result = new char[8];
-            for (int i = 0; i < result.Length; i++)
-            {
-                result[i] = chars[random.Next(chars.Length)];
-            }
-            return new string(result);
-        }
-
         private static string BuildActionKey(string action, string identity)
         {
             string normalizedIdentity = (identity ?? string.Empty).Trim();
@@ -664,6 +549,9 @@ namespace Login.Handlers
 
                 using (var client = new SmtpClient())
                 {
+                    // 出于演示目的，接受所有SSL证书（如果可能，在生产中删除）
+                    client.ServerCertificateValidationCallback = (s, c, h, e) => true;
+
                     await client.ConnectAsync(smtpHost, smtpPort, MailKit.Security.SecureSocketOptions.Auto);
                     await client.AuthenticateAsync(smtpUser, smtpPass);
                     await client.SendAsync(message);

@@ -24,6 +24,16 @@ namespace Game.Managers
         /// </summary>
         public void BindSession(long sessionId, int userId)
         {
+            if (sessionUsers.TryGetValue(sessionId, out int previousUserId) && previousUserId != userId)
+            {
+                userSessions.TryRemove(previousUserId, out _);
+            }
+
+            if (userSessions.TryGetValue(userId, out long previousSessionId) && previousSessionId != sessionId)
+            {
+                sessionUsers.TryRemove(previousSessionId, out _);
+            }
+
             sessionUsers[sessionId] = userId;
             userSessions[userId] = sessionId;
         }
@@ -35,7 +45,10 @@ namespace Game.Managers
         {
             if (sessionUsers.TryRemove(sessionId, out int userId))
             {
-                userSessions.TryRemove(userId, out _);
+                if (userSessions.TryGetValue(userId, out long mappedSessionId) && mappedSessionId == sessionId)
+                {
+                    userSessions.TryRemove(userId, out _);
+                }
             }
         }
 

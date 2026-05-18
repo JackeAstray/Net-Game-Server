@@ -38,21 +38,27 @@ public class MessageRouter
     /// <param name="payload">消息负载</param>
     public void RouteMessage(ISession session, int msgId, ReadOnlyMemory<byte> payload)
     {
+        _ = TryRouteMessage(session, msgId, payload);
+    }
+
+    public bool TryRouteMessage(ISession session, int msgId, ReadOnlyMemory<byte> payload)
+    {
         if (handlers.TryGetValue(msgId, out var handler))
         {
             try
             {
                 handler.Invoke(session, payload);
+                return true;
             }
             catch (Exception ex)
             {
                 Shared.Log.Error($"[MessageRouter] 处理消息 {msgId} 时抛出异常: {ex}");
+                return true;
             }
         }
-        else
-        {
-            Shared.Log.Warning($"[MessageRouter] 未找到消息类型的处理器: {msgId}");
-        }
+
+        Shared.Log.Warning($"[MessageRouter] 未找到消息类型的处理器: {msgId}");
+        return false;
     }
 
     /// <summary>
@@ -62,7 +68,7 @@ public class MessageRouter
     /// <param name="handler">处理逻辑</param>
     public void RegisterHandler(int msgId, MessageHandler handler)
     {
-        handlers.AddOrUpdate(msgId, handler, (_, existing) => existing + handler);
+        handlers[msgId] = handler;
     }
 
     /// <summary>
@@ -102,18 +108,7 @@ public class MessageRouter
         int msgId = BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
         var payload = data.Slice(4); // 零拷贝切片出数据体
 
-        if (handlers.TryGetValue(msgId, out var handler))
-        {
-            try
-            {
-                handler.Invoke(session, payload);
-            }
-            catch (Exception ex)
-            {
-                Shared.Log.Error($"[MessageRouter] MsgId {msgId} 处理发生异常: {ex}");
-            }
-        }
-        else
+        if (!TryRouteMessage(session, msgId, payload))
         {
             Shared.Log.Warning($"[MessageRouter] 收到未注册的 MsgId {msgId}，已丢弃");
         }

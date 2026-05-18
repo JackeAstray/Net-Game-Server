@@ -34,21 +34,31 @@ namespace Center.Handlers
 
             if (isWorldMap || pool.Count >= 2)
             {
+                var matchedPlayers = new List<long>();
+                while (pool.TryDequeue(out var pid)) 
+                { 
+                    matchedPlayers.Add(pid);
+                }
+
+                void RestoreMatchedPlayersToPool()
+                {
+                    var restorePool = matchPools.GetOrAdd(category, _ => new ConcurrentQueue<long>());
+                    foreach (var matchedPlayer in matchedPlayers)
+                    {
+                        restorePool.Enqueue(matchedPlayer);
+                    }
+                }
+
                 // 获取一个最空闲的 Battle 节点
                 string? assignedBattleNode = NodeManager.Instance.GetBestBattleNode();
                 if (string.IsNullOrEmpty(assignedBattleNode))
                 {
+                    RestoreMatchedPlayersToPool();
                     return new CenterMatchResponse
                     {
                         Success = false,
                         Message = "当前没有可用的战斗节点(BattleServer)"
                     };
-                }
-
-                var matchedPlayers = new List<long>();
-                while (pool.TryDequeue(out var pid)) 
-                { 
-                    matchedPlayers.Add(pid);
                 }
 
                 string roomId = isWorldMap ? "World_" + Guid.NewGuid().ToString("N") : "Room_" + Guid.NewGuid().ToString("N");
@@ -104,6 +114,7 @@ namespace Center.Handlers
                 }
 
                 pendingSceneCreations.TryRemove(roomId, out _);
+                RestoreMatchedPlayersToPool();
                 var failedResponse = new CenterMatchResponse
                 {
                     Success = false,

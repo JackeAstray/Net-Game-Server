@@ -16,17 +16,27 @@ namespace Shared.Messages
     {
         // === DB 服务器内部服务通信 (1000-1999) ===
         public const int DbGetMaxUidReq = 1000;
+        public const int DbGetMaxUidRes = 1100;
         public const int DbLoginVerifyReq = 1001;
+        public const int DbLoginVerifyRes = 1101;
         public const int DbRegisterVerifyReq = 1002;
+        public const int DbRegisterVerifyRes = 1102;
         public const int DbAccountQueryReq = 1003;
+        public const int DbAccountQueryRes = 1103;
         public const int DbOnlineStatsReq = 1004;
+        public const int DbOnlineStatsRes = 1104;
         public const int DbUpdateOnlineStateReq = 1005;
+        public const int DbUpdateOnlineStateRes = 1105;
 
         // DB Friend Messages
         public const int DbAddFriendReq = 1006;
         public const int DbRemoveFriendReq = 1007;
         public const int DbSetFriendRemarkReq = 1008;
         public const int DbGetFriendsReq = 1009;
+        public const int DbChangePasswordReq = 1010;
+        public const int DbChangePasswordRes = 1110;
+        public const int DbResetPasswordByEmailReq = 1011;
+        public const int DbResetPasswordByEmailRes = 1111;
 
         // === 登录服务器客户端通信 (10000-19999 网关转发过来) ===
         public const int PlayerDisconnectNotif = 10000;
@@ -45,6 +55,10 @@ namespace Shared.Messages
 
         public const int UpdateNicknameReq = 10009;
         public const int UpdateNicknameRes = 10010;
+
+        public const int KickedOffNotif = 10011;
+        public const int FindPasswordWithCodeReq = 10012;
+        public const int FindPasswordWithCodeRes = 10013;
 
         // === 游戏服务器客户端通信 (20000-29999 网关转发过来) ===
         // public const int PlayerMoveReq = 20001;
@@ -91,5 +105,11 @@ namespace Shared.Messages
         public const int InviteGameReq = 50009;
         public const int InviteGameRes = 50010;
         public const int InviteGameNotif = 50011;
+
+        // === DB 好友/聊天等响应消息 (1100-1199) ===
+        public const int DbAddFriendRes = 1106;
+        public const int DbRemoveFriendRes = 1107;
+        public const int DbSetFriendRemarkRes = 1108;
+        public const int DbGetFriendsRes = 1109;
     }
 }
