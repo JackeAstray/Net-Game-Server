@@ -143,10 +143,10 @@ namespace DB
                 catch (Exception ex)
                 {
                     // 捕获并记录初始化过程中出现的异常，便于运维与排查
-                    Shared.Log.Error($"数据库初始化失败: {ex.Message}");
+                    Shared.Log.Error($"数据库初始化失败: {ex}");
                     if (ex.InnerException != null)
                     {
-                        Shared.Log.Error($"Detailed Inner Exception: {ex.InnerException.Message}");
+                        Shared.Log.Error($"数据库初始化内部异常: {ex.InnerException}");
                     }
                 }
             }

@@ -98,6 +98,10 @@ namespace Center.Handlers
                 node.CurrentLoad = load;
                 node.LastHeartbeat = DateTime.UtcNow;
             }
+            else
+            {
+                Log.Warning($"更新节点负载失败，节点不存在: {nodeId} Load:{load}");
+            }
         }
 
         /// <summary>
@@ -110,6 +114,7 @@ namespace Center.Handlers
         {
             if (clientSessionId <= 0)
             {
+                Log.Warning("绑定客户端网关路由失败：clientSessionId 无效。");
                 return;
             }
 

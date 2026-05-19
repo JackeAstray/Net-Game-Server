@@ -51,6 +51,7 @@ namespace Login.Handlers
 
             if (string.IsNullOrWhiteSpace(account))
             {
+                Log.Warning("登录失败：账号不能为空。");
                 return new LoginResponse
                 {
                     Success = false,
@@ -62,6 +63,7 @@ namespace Login.Handlers
 
             if (string.IsNullOrWhiteSpace(request.Password))
             {
+                Log.Warning($"登录失败：密码不能为空，账号:{account}");
                 return new LoginResponse
                 {
                     Success = false,
@@ -91,6 +93,10 @@ namespace Login.Handlers
             };
 
             var verifyResp = await CallDbAsync<Shared.Messages.Db.LoginVerifyResponse>(MessageIds.DbLoginVerifyReq, verifyReq);
+            if (verifyResp == null)
+            {
+                Log.Error($"登录失败：DB 响应为空，账号:{account}, Session:{clientSessionId}");
+            }
 
             var response = new LoginResponse
             {
@@ -136,6 +142,7 @@ namespace Login.Handlers
 
             if (string.IsNullOrWhiteSpace(account))
             {
+                Log.Warning("注册失败：账号不能为空。");
                 return new RegisterResponse
                 {
                     Success = false,
@@ -145,6 +152,7 @@ namespace Login.Handlers
 
             if (string.IsNullOrWhiteSpace(request.Password))
             {
+                Log.Warning($"注册失败：密码不能为空，账号:{account}");
                 return new RegisterResponse
                 {
                     Success = false,
@@ -154,6 +162,7 @@ namespace Login.Handlers
 
             if (string.IsNullOrWhiteSpace(request.Nickname))
             {
+                Log.Warning($"注册失败：昵称不能为空，账号:{account}");
                 return new RegisterResponse
                 {
                     Success = false,
@@ -164,6 +173,7 @@ namespace Login.Handlers
             if (TryGetThrottleRemaining("register", account, out var remaining))
             {
                 int waitSeconds = Math.Max(1, (int)Math.Ceiling(remaining.TotalSeconds));
+                Log.Warning($"注册失败：操作过于频繁，账号:{account}，剩余 {waitSeconds} 秒");
                 return new RegisterResponse
                 {
                     Success = false,
@@ -173,6 +183,7 @@ namespace Login.Handlers
 
             if (!UIDGenerator.IsInitialized)
             {
+                Log.Warning($"注册失败：UID 生成器未初始化，账号:{account}");
                 return new RegisterResponse
                 {
                     Success = false,
@@ -188,8 +199,9 @@ namespace Login.Handlers
                 {
                     uniqueId = UIDGenerator.GenerateLongUID();
                 }
-                catch (InvalidOperationException)
+                catch (InvalidOperationException ex)
                 {
+                    Log.Warning($"注册失败：UID 生成异常，账号:{account}，异常:{ex.Message}");
                     return new RegisterResponse
                     {
                         Success = false,
@@ -206,8 +218,12 @@ namespace Login.Handlers
                 };
 
                 var verifyResp = await CallDbAsync<Shared.Messages.Db.RegisterVerifyResponse>(MessageIds.DbRegisterVerifyReq, verifyReq);
+                    if (verifyResp == null)
+                    {
+                        Log.Error($"注册失败：DB 响应为空，账号:{account}, Attempt:{attempt + 1}");
+                    }
 
-                if (verifyResp?.Success == true)
+                    if (verifyResp?.Success == true)
                 {
                     ClearFailedAttempts("register", account);
                     return new RegisterResponse
@@ -220,6 +236,7 @@ namespace Login.Handlers
                 string message = verifyResp?.Message ?? "注册失败";
                 if (!string.Equals(message, "UID已存在", StringComparison.Ordinal))
                 {
+                    Log.Warning($"注册失败：账号:{account}，原因:{message}");
                     RegisterFailedAttempt("register", account);
                     return new RegisterResponse
                     {
@@ -256,6 +273,7 @@ namespace Login.Handlers
 
             if (string.IsNullOrWhiteSpace(account) || string.IsNullOrWhiteSpace(email))
             {
+                Log.Warning($"找回密码失败：账号或邮箱为空，Account:{account}, Email:{email}");
                 return new FindPasswordResponse
                 {
                     Success = false,
@@ -298,6 +316,7 @@ namespace Login.Handlers
             string body = $"您的账号 {account} 已申请密码重置。\n验证码: {verifyCode}\n有效期: 10 分钟\n请在时限内完成验证。";
             if (!await SendEmailAsync(email, subject, body))
             {
+                Log.Error($"找回密码失败：邮件发送失败，Account:{account}, Email:{email}");
                 return new FindPasswordResponse
                 {
                     Success = false,
@@ -346,6 +365,10 @@ namespace Login.Handlers
             };
 
             var verifyResp = await CallDbAsync<Shared.Messages.Db.AccountQueryResponse>(MessageIds.DbAccountQueryReq, verifyReq);
+            if (verifyResp == null)
+            {
+                Log.Error($"查询账户失败：DB 响应为空，Account:{request.Account}");
+            }
 
             var response = new AccountQueryResponse
             {
@@ -370,6 +393,10 @@ namespace Login.Handlers
 
             var verifyReq = new Shared.Messages.Db.OnlineStatsRequest { };
             var verifyResp = await CallDbAsync<Shared.Messages.Db.OnlineStatsResponse>(MessageIds.DbOnlineStatsReq, verifyReq);
+            if (verifyResp == null)
+            {
+                Log.Error("查询在线统计失败：DB 响应为空。");
+            }
 
             var response = new OnlineStatsResponse
             {
@@ -441,6 +468,7 @@ namespace Login.Handlers
 
             if (string.IsNullOrWhiteSpace(oldPassword))
             {
+                Log.Warning($"修改密码失败：旧密码不能为空，Account:{account}, UserId:{userId}");
                 return new ChangePasswordResponse
                 {
                     Success = false,
@@ -450,6 +478,7 @@ namespace Login.Handlers
 
             if (string.IsNullOrWhiteSpace(newPassword))
             {
+                Log.Warning($"修改密码失败：新密码不能为空，Account:{account}, UserId:{userId}");
                 return new ChangePasswordResponse
                 {
                     Success = false,
@@ -460,6 +489,7 @@ namespace Login.Handlers
             if (TryGetThrottleRemaining("change-password", throttleIdentity, out var remaining))
             {
                 int waitSeconds = Math.Max(1, (int)Math.Ceiling(remaining.TotalSeconds));
+                Log.Warning($"修改密码失败：操作过于频繁，Identity:{throttleIdentity}，剩余 {waitSeconds} 秒");
                 return new ChangePasswordResponse
                 {
                     Success = false,
@@ -476,6 +506,10 @@ namespace Login.Handlers
             };
 
             var verifyResp = await CallDbAsync<Shared.Messages.Db.ChangePasswordVerifyResponse>(MessageIds.DbChangePasswordReq, verifyReq);
+            if (verifyResp == null)
+            {
+                Log.Error($"修改密码失败：DB 响应为空，Account:{account}, UserId:{userId}");
+            }
             bool success = verifyResp?.Success ?? false;
             if (success)
             {
@@ -556,13 +590,17 @@ namespace Login.Handlers
             if (completedTask == timeoutTask)
             {
                 LoginServerApp.PendingRequests.TryRemove(requestId, out _);
-                Shared.Log.Warning($"向 DB 请求 MsgId:{msgId} 超时，TimeoutMs:{timeoutMs}");
+                Shared.Log.Warning($"向 DB 请求 MsgId:{msgId} 超时，TimeoutMs:{timeoutMs}, RequestId:{requestId}");
                 return null;
             }
 
             cts.Cancel(); // 取消 Task.Delay 防止资源泄露
             var responseData = await tcs.Task;
-            if (responseData == null) return null;
+            if (responseData == null)
+            {
+                Shared.Log.Error($"DB 回包为空，MsgId:{msgId}, RequestId:{requestId}");
+                return null;
+            }
 
             try
             {
@@ -570,7 +608,7 @@ namespace Login.Handlers
             }
             catch (Exception ex)
             {
-                Shared.Log.Error($"反序列化响应异常: {ex}");
+                Shared.Log.Error($"反序列化响应异常，MsgId:{msgId}, RequestId:{requestId}, Exception:{ex}");
                 return null;
             }
         }
@@ -646,8 +684,14 @@ namespace Login.Handlers
             };
 
             var queryResp = await CallDbAsync<Shared.Messages.Db.AccountQueryResponse>(MessageIds.DbAccountQueryReq, queryReq);
+            if (queryResp == null)
+            {
+                Log.Error($"按账号获取用户失败：DB 响应为空，Account:{account}");
+                return null;
+            }
             if (queryResp?.Exists != true)
             {
+                Log.Warning($"按账号获取用户失败：用户不存在，Account:{account}");
                 return null;
             }
 
@@ -726,7 +770,7 @@ namespace Login.Handlers
             }
             catch (Exception ex)
             {
-                Log.Error($"发送邮件失败: {ex.Message}");
+                Log.Error($"发送邮件失败: {ex}");
                 return false;
             }
         }

@@ -20,20 +20,42 @@ namespace Battle.Handlers
 
             handlers[MessageIds.BattleJoinReq] = async (payload, session, clientSessionId) =>
             {
-                var req = Shared.Json.DeserializeFromUtf8Bytes<BattleJoinRequest>(payload.Span);
-                if (req != null)
+                try
                 {
-                    var res = await roomHandler.HandleJoinRequestAsync(clientSessionId, req, session);
-                    SendToGateway(session, clientSessionId, MessageIds.BattleJoinRes, res);
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<BattleJoinRequest>(payload.Span);
+                    if (req != null)
+                    {
+                        var res = await roomHandler.HandleJoinRequestAsync(clientSessionId, req, session);
+                        SendToGateway(session, clientSessionId, MessageIds.BattleJoinRes, res);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"BattleJoinReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"BattleJoinReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
                 }
             };
 
             handlers[MessageIds.EntitySyncReq] = async (payload, session, clientSessionId) =>
             {
-                var req = Shared.Json.DeserializeFromUtf8Bytes<EntitySyncRequest>(payload.Span);
-                if (req != null)
+                try
                 {
-                    await entitySyncHandler.HandleEntitySyncRequestAsync(clientSessionId, req, session);
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<EntitySyncRequest>(payload.Span);
+                    if (req != null)
+                    {
+                        await entitySyncHandler.HandleEntitySyncRequestAsync(clientSessionId, req, session);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"EntitySyncReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"EntitySyncReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
                 }
             };
 
@@ -45,20 +67,31 @@ namespace Battle.Handlers
 
             handlers[MessageIds.CenterCreateSceneReq] = async (payload, session, clientSessionId) =>
             {
-                var req = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Center.CenterCreateSceneRequest>(payload.Span);
-                if (req != null)
+                try
                 {
-                    var res = await battleMainHandler.HandleCreateSceneRequestAsync(req);
-                    byte[] resPayload = Shared.Json.SerializeToUtf8Bytes(res);
-                    byte[] packet = Network.Routing.PacketBuilder.BuildPacket(MessageIds.CenterCreateSceneRes, resPayload, out int totalLength);
-                    try
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Center.CenterCreateSceneRequest>(payload.Span);
+                    if (req != null)
                     {
-                        session.Send(packet.AsSpan(0, totalLength).ToArray());
+                        var res = await battleMainHandler.HandleCreateSceneRequestAsync(req);
+                        byte[] resPayload = Shared.Json.SerializeToUtf8Bytes(res);
+                        byte[] packet = Network.Routing.PacketBuilder.BuildPacket(MessageIds.CenterCreateSceneRes, resPayload, out int totalLength);
+                        try
+                        {
+                            session.Send(packet.AsSpan(0, totalLength).ToArray());
+                        }
+                        finally
+                        {
+                            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+                        }
                     }
-                    finally
+                    else
                     {
-                        System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+                        Shared.Log.Warning($"CenterCreateSceneReq 反序列化失败 ClientSessionId:{clientSessionId}");
                     }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"CenterCreateSceneReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
                 }
             };
 
@@ -76,6 +109,10 @@ namespace Battle.Handlers
             try
             {
                 gatewaySession.Send(packet.AsSpan(0, totalLength).ToArray());
+            }
+            catch (Exception ex)
+            {
+                Shared.Log.Error($"Battle 向网关发送响应失败 MsgId:{msgId} ClientSessionId:{clientSessionId} Exception:{ex}");
             }
             finally
             {

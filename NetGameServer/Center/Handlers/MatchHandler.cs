@@ -53,6 +53,7 @@ namespace Center.Handlers
                 string? assignedBattleNode = NodeManager.Instance.GetBestBattleNode();
                 if (string.IsNullOrEmpty(assignedBattleNode))
                 {
+                    Shared.Log.Warning($"匹配失败：没有可用的战斗节点 Category:{category} ClientSessionId:{clientSessionId}");
                     RestoreMatchedPlayersToPool();
                     return new CenterMatchResponse
                     {
@@ -65,6 +66,17 @@ namespace Center.Handlers
 
                 // 1. 发送 RPC 请求到 BattleNode 建房
                 var battleNodeInfo = NodeManager.Instance.GetNode(assignedBattleNode);
+                if (battleNodeInfo == null)
+                {
+                    Shared.Log.Warning($"匹配失败：Battle 节点信息不存在 NodeId:{assignedBattleNode} Category:{category}");
+                    RestoreMatchedPlayersToPool();
+                    return new CenterMatchResponse
+                    {
+                        Success = false,
+                        Message = "战斗节点不可用"
+                    };
+                }
+
                 var tcs = new TaskCompletionSource<CenterCreateSceneResponse>();
                 pendingSceneCreations[roomId] = tcs;
 
@@ -73,7 +85,18 @@ namespace Center.Handlers
                 byte[] packet = Network.Routing.PacketBuilder.BuildPacket(Shared.Messages.MessageIds.CenterCreateSceneReq, payload, out int totalLength); // 统一协议 [MsgId][Payload]
                 try
                 {
-                    battleNodeInfo?.Session.Send(packet.AsSpan(0, totalLength).ToArray());
+                    battleNodeInfo.Session.Send(packet.AsSpan(0, totalLength).ToArray());
+                }
+                catch (Exception ex)
+                {
+                    pendingSceneCreations.TryRemove(roomId, out _);
+                    RestoreMatchedPlayersToPool();
+                    Shared.Log.Error($"匹配创建场景请求发送失败 RoomId:{roomId} BattleNode:{assignedBattleNode} Exception:{ex}");
+                    return new CenterMatchResponse
+                    {
+                        Success = false,
+                        Message = "Battle 节点创建请求发送失败"
+                    };
                 }
                 finally
                 {
@@ -120,6 +143,7 @@ namespace Center.Handlers
                     Success = false,
                     Message = "Battle 节点创建房间失败或超时"
                 };
+                Shared.Log.Warning($"匹配创建场景失败或超时 RoomId:{roomId} Category:{category} ClientSessionId:{clientSessionId}");
 
                 foreach (var pid in matchedPlayers)
                 {
@@ -149,6 +173,7 @@ namespace Center.Handlers
             string assignedBattleNode = NodeManager.Instance.GetBestBattleNode() ?? string.Empty;
             if (string.IsNullOrEmpty(assignedBattleNode))
             {
+                Shared.Log.Warning($"创建房间失败：当前没有可用的战斗节点 SceneType:{request.SceneType}");
                 return new CenterCreateRoomResponse
                 {
                     Success = false,
@@ -159,6 +184,16 @@ namespace Center.Handlers
             string roomId = "Room_" + Guid.NewGuid().ToString("N");
 
             var battleNodeInfo = NodeManager.Instance.GetNode(assignedBattleNode);
+            if (battleNodeInfo == null)
+            {
+                Shared.Log.Warning($"创建房间失败：Battle 节点信息不存在 NodeId:{assignedBattleNode}");
+                return new CenterCreateRoomResponse
+                {
+                    Success = false,
+                    Message = "战斗节点不可用"
+                };
+            }
+
             var tcs = new TaskCompletionSource<CenterCreateSceneResponse>();
             pendingSceneCreations[roomId] = tcs;
 
@@ -167,7 +202,17 @@ namespace Center.Handlers
             byte[] packet = Network.Routing.PacketBuilder.BuildPacket(MessageIds.CenterCreateSceneReq, payload, out int totalLength);
             try
             {
-                battleNodeInfo?.Session.Send(packet.AsSpan(0, totalLength).ToArray());
+                battleNodeInfo.Session.Send(packet.AsSpan(0, totalLength).ToArray());
+            }
+            catch (Exception ex)
+            {
+                pendingSceneCreations.TryRemove(roomId, out _);
+                Shared.Log.Error($"创建房间请求发送失败 RoomId:{roomId} BattleNode:{assignedBattleNode} Exception:{ex}");
+                return new CenterCreateRoomResponse
+                {
+                    Success = false,
+                    Message = "Battle 节点创建请求发送失败"
+                };
             }
             finally
             {
@@ -210,6 +255,10 @@ namespace Center.Handlers
             if (pendingSceneCreations.TryGetValue(response.RoomId, out var tcs))
             {
                 tcs.TrySetResult(response);
+            }
+            else
+            {
+                Shared.Log.Warning($"收到未知的创建场景响应 RoomId:{response.RoomId} SceneId:{response.SceneId}");
             }
         }
     }

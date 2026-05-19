@@ -369,6 +369,7 @@ namespace Game.Handlers
             var dbClient = GameServerApp.DbClient;
             if (dbClient == null)
             {
+                Shared.Log.Error($"Game 向 DB 发送请求失败：DB 连接为空 MsgId:{dbMsgId} SessionId:{clientSessionId}");
                 return false;
             }
 
@@ -389,9 +390,10 @@ namespace Game.Handlers
                 dbClient.Send(packet.AsSpan(0, totalLength).ToArray());
                 return true;
             }
-            catch
+            catch (Exception ex)
             {
                 PendingFriendRequests.TryRemove(requestId, out _);
+                Shared.Log.Error($"Game 发送 DB 请求失败 MsgId:{dbMsgId} SessionId:{clientSessionId} RequestId:{requestId} Exception:{ex}");
                 return false;
             }
             finally
@@ -404,11 +406,13 @@ namespace Game.Handlers
         {
             if (!Shared.RouteMetadata.TryExtractRequestId(payload, out long requestId, out var cleanPayload))
             {
+                Shared.Log.Warning($"Game 收到缺少 RequestId 的 DB 回包 MsgId:{dbMsgId}");
                 return false;
             }
 
             if (!PendingFriendRequests.TryRemove(requestId, out var pending))
             {
+                Shared.Log.Warning($"Game 未找到匹配的待处理 DB 请求 RequestId:{requestId} MsgId:{dbMsgId}");
                 return false;
             }
 
@@ -419,6 +423,10 @@ namespace Game.Handlers
                 case MessageIds.DbAddFriendRes:
                 {
                     var dbRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbAddFriendResponse>(cleanPayload);
+                    if (dbRes == null)
+                    {
+                        Shared.Log.Warning($"Game 解析添加好友 DB 回包失败 RequestId:{requestId}");
+                    }
                     var res = new AddFriendResponse
                     {
                         Success = dbRes?.Success == true,
@@ -430,6 +438,10 @@ namespace Game.Handlers
                 case MessageIds.DbRemoveFriendRes:
                 {
                     var dbRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbRemoveFriendResponse>(cleanPayload);
+                    if (dbRes == null)
+                    {
+                        Shared.Log.Warning($"Game 解析删除好友 DB 回包失败 RequestId:{requestId}");
+                    }
                     var res = new RemoveFriendResponse
                     {
                         Success = dbRes?.Success == true,
@@ -441,6 +453,10 @@ namespace Game.Handlers
                 case MessageIds.DbSetFriendRemarkRes:
                 {
                     var dbRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbSetFriendRemarkResponse>(cleanPayload);
+                    if (dbRes == null)
+                    {
+                        Shared.Log.Warning($"Game 解析设置备注 DB 回包失败 RequestId:{requestId}");
+                    }
                     var res = new SetFriendRemarkResponse
                     {
                         Success = dbRes?.Success == true,
@@ -452,6 +468,10 @@ namespace Game.Handlers
                 case MessageIds.DbGetFriendsRes:
                 {
                     var dbRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbGetFriendsResponse>(cleanPayload);
+                    if (dbRes == null)
+                    {
+                        Shared.Log.Warning($"Game 解析获取好友列表 DB 回包失败 RequestId:{requestId}");
+                    }
                     var friends = dbRes?.Friends == null
                         ? Array.Empty<FriendInfo>()
                         : dbRes.Friends.ConvertAll(f => new FriendInfo
@@ -475,6 +495,10 @@ namespace Game.Handlers
                 case MessageIds.DbAddBlacklistRes:
                 {
                     var dbRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbAddBlacklistResponse>(cleanPayload);
+                    if (dbRes == null)
+                    {
+                        Shared.Log.Warning($"Game 解析添加黑名单 DB 回包失败 RequestId:{requestId}");
+                    }
                     if (dbRes?.Success == true && requesterUserId > 0 && dbRes.TargetUserId > 0)
                     {
                         AddBlacklistCache(requesterUserId, dbRes.TargetUserId);
@@ -491,6 +515,10 @@ namespace Game.Handlers
                 case MessageIds.DbRemoveBlacklistRes:
                 {
                     var dbRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbRemoveBlacklistResponse>(cleanPayload);
+                    if (dbRes == null)
+                    {
+                        Shared.Log.Warning($"Game 解析移除黑名单 DB 回包失败 RequestId:{requestId}");
+                    }
                     if (dbRes?.Success == true && requesterUserId > 0 && dbRes.TargetUserId > 0)
                     {
                         RemoveBlacklistCache(requesterUserId, dbRes.TargetUserId);
@@ -507,6 +535,10 @@ namespace Game.Handlers
                 case MessageIds.DbGetBlacklistRes:
                 {
                     var dbRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbGetBlacklistResponse>(cleanPayload);
+                    if (dbRes == null)
+                    {
+                        Shared.Log.Warning($"Game 解析获取黑名单 DB 回包失败 RequestId:{requestId}");
+                    }
                     var blacklists = dbRes?.Blacklists == null
                         ? Array.Empty<BlacklistInfo>()
                         : dbRes.Blacklists.ConvertAll(b => new BlacklistInfo
@@ -534,6 +566,10 @@ namespace Game.Handlers
                 case MessageIds.DbResolveUserByUniqueIdRes:
                 {
                     var dbRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbResolveUserByUniqueIdResponse>(cleanPayload);
+                    if (dbRes == null)
+                    {
+                        Shared.Log.Warning($"Game 解析按 UniqueId 解析用户 DB 回包失败 RequestId:{requestId}");
+                    }
                     if (!pending.IsInviteResolve)
                     {
                         return false;
@@ -592,6 +628,10 @@ namespace Game.Handlers
                 case MessageIds.DbResolveUserByUserIdRes:
                 {
                     var dbRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbResolveUserByUserIdResponse>(cleanPayload);
+                    if (dbRes == null)
+                    {
+                        Shared.Log.Warning($"Game 解析按 UserId 解析用户 DB 回包失败 RequestId:{requestId}");
+                    }
                     if (!pending.IsInviteSenderResolve)
                     {
                         return false;

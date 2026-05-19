@@ -53,63 +53,71 @@ namespace Battle
 
             tcpServer.OnDataReceived += async (session, data) =>
             {
-                if (data.Length < 4)
+                try
                 {
-                    return;
-                }
-
-                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
-                byte[] payload = data.Slice(4).ToArray();
-
-                long originalSessionId = 0;
-                if (Shared.RouteMetadata.TryExtractClientSessionId(payload, out long clientSessionId, out var cleanPayload))
-                {
-                    originalSessionId = clientSessionId;
-                    payload = cleanPayload;
-                }
-
-                if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
-                {
-                    try
+                    if (data.Length < 4)
                     {
-                        await handlerAction(payload, session, originalSessionId);
+                        Log.Warning($"Battle 收到无效数据包，长度不足 4，Session:{session.SessionId} Length:{data.Length}");
+                        return;
                     }
-                    catch (Exception ex)
+
+                    int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                    byte[] payload = data.Slice(4).ToArray();
+
+                    long originalSessionId = 0;
+                    if (Shared.RouteMetadata.TryExtractClientSessionId(payload, out long clientSessionId, out var cleanPayload))
                     {
-                        Log.Error($"Battle 处理消息 ({msgId}) 发生异常: " + ex);
+                        originalSessionId = clientSessionId;
+                        payload = cleanPayload;
                     }
-                }
-                else
-                {
-                    Log.Warning($"Battle 收到未知 MsgId: {msgId}");
 
-                    if (originalSessionId > 0 && msgId >= 40000 && msgId < 50000)
+                    if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
                     {
-                        int responseMsgId = msgId switch
+                        try
                         {
-                            MessageIds.BattleJoinReq => MessageIds.BattleJoinRes,
-                            _ => 0
-                        };
+                            await handlerAction(payload, session, originalSessionId);
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Error($"Battle 处理消息 ({msgId}) 发生异常: {ex}");
+                        }
+                    }
+                    else
+                    {
+                        Log.Warning($"Battle 收到未知 MsgId: {msgId}");
 
-                        if (responseMsgId > 0)
+                        if (originalSessionId > 0 && msgId >= 40000 && msgId < 50000)
                         {
-                            byte[] unknownPayload = Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Battle.BattleJoinResponse
+                            int responseMsgId = msgId switch
                             {
-                                Success = false,
-                                Message = $"未支持的战斗消息类型: {msgId}"
-                            });
-                            byte[] routedUnknownPayload = Shared.RouteMetadata.AttachTargetSessionId(unknownPayload, originalSessionId);
-                            byte[] unknownPacket = PacketBuilder.BuildPacket(responseMsgId, routedUnknownPayload, out int unknownLength);
-                            try
+                                MessageIds.BattleJoinReq => MessageIds.BattleJoinRes,
+                                _ => 0
+                            };
+
+                            if (responseMsgId > 0)
                             {
-                                session.Send(unknownPacket.AsSpan(0, unknownLength).ToArray());
-                            }
-                            finally
-                            {
-                                System.Buffers.ArrayPool<byte>.Shared.Return(unknownPacket);
+                                byte[] unknownPayload = Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Battle.BattleJoinResponse
+                                {
+                                    Success = false,
+                                    Message = $"未支持的战斗消息类型: {msgId}"
+                                });
+                                byte[] routedUnknownPayload = Shared.RouteMetadata.AttachTargetSessionId(unknownPayload, originalSessionId);
+                                byte[] unknownPacket = PacketBuilder.BuildPacket(responseMsgId, routedUnknownPayload, out int unknownLength);
+                                try
+                                {
+                                    session.Send(unknownPacket.AsSpan(0, unknownLength).ToArray());
+                                }
+                                finally
+                                {
+                                    System.Buffers.ArrayPool<byte>.Shared.Return(unknownPacket);
+                                }
                             }
                         }
                     }
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"Battle 处理客户端数据异常 Session:{session.SessionId} Remote:{session.RemoteEndPoint} Exception:{ex}");
                 }
             };
 
@@ -166,28 +174,36 @@ namespace Battle
             };
             centerClient.OnDataReceived += async (session, data) =>
             {
-                if (data.Length < 4)
+                try
                 {
-                    return;
-                }
-
-                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
-                byte[] payload = data.Slice(4).ToArray();
-
-                if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
-                {
-                    try
+                    if (data.Length < 4)
                     {
-                        await handlerAction(payload, session, 0);
+                        Log.Warning($"Battle 收到 Center 无效数据包，长度不足 4，Session:{session.SessionId} Length:{data.Length}");
+                        return;
                     }
-                    catch (Exception ex)
+
+                    int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                    byte[] payload = data.Slice(4).ToArray();
+
+                    if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
                     {
-                        Log.Error($"Battle 处理 Center 下发消息 ({msgId}) 发生异常: " + ex);
+                        try
+                        {
+                            await handlerAction(payload, session, 0);
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Error($"Battle 处理 Center 下发消息 ({msgId}) 发生异常: {ex}");
+                        }
+                    }
+                    else
+                    {
+                        Log.Warning($"Battle 收到未处理的 Center MsgId: {msgId}");
                     }
                 }
-                else
+                catch (Exception ex)
                 {
-                    Log.Warning($"Battle 收到未处理的 Center MsgId: {msgId}");
+                    Log.Error($"Battle 处理 Center 回包异常 Session:{session.SessionId} Remote:{session.RemoteEndPoint} Exception:{ex}");
                 }
             };
             _ = centerClient.ConnectAsync();
@@ -220,8 +236,18 @@ namespace Battle
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(registerRequest);
             byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterRegisterNodeReq, payload, out int totalLength);
-            centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
-            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            try
+            {
+                centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"Battle 向 Center 注册节点失败 NodeId:{nodeId} Exception:{ex}");
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            }
         }
 
         /// <summary>
@@ -245,8 +271,18 @@ namespace Battle
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(statusRequest);
             byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterNodeStatusReq, payload, out int totalLength);
-            centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
-            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            try
+            {
+                centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"Battle 向 Center 上报节点状态失败 NodeId:{nodeId} Exception:{ex}");
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            }
         }
 
         private static string ComputeCenterSignature(string source)

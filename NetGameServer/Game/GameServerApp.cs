@@ -57,121 +57,129 @@ namespace Game
             // 数据接收事件：统一协议 [MsgId][Payload]，路由元数据在 payload 内
             tcpServer.OnDataReceived += (session, data) =>
             {
-                Log.Info($"接收到数据，长度: {data.Length}");
-                if (data.Length < 4)
+                try
                 {
-                    return;
-                }
-
-                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
-                byte[] payload = data.Slice(4).ToArray();
-
-                if (!Shared.RouteMetadata.TryExtractClientSessionId(payload, out long originalSessionId, out var cleanPayload))
-                {
-                    Log.Warning($"Game 收到缺少路由元数据的消息 MsgId:{msgId}");
-                    return;
-                }
-
-                if (msgId == MessageIds.PlayerDisconnectNotif)
-                {
-                    Game.Managers.PlayerSessionManager.Instance.UnbindSession(originalSessionId);
-                }
-                else
-                {
-                    if (Shared.RouteMetadata.TryExtractUserId(cleanPayload, out int routedUserId, out var payloadWithoutUserId) && routedUserId > 0)
+                    Log.Info($"接收到数据，长度: {data.Length}");
+                    if (data.Length < 4)
                     {
-                        Game.Managers.PlayerSessionManager.Instance.BindSession(originalSessionId, routedUserId);
-                        cleanPayload = payloadWithoutUserId;
+                        Log.Warning($"Game 收到无效客户端数据包，长度不足 4，Session:{session.SessionId} Length:{data.Length}");
+                        return;
                     }
-                }
 
-                var clientSession = new Game.Network.ClientSessionWrapper(session, originalSessionId);
-                bool handled = router.TryRouteMessage(clientSession, msgId, cleanPayload);
-                if (!handled)
-                {
-                    int responseMsgId = msgId switch
-                    {
-                        MessageIds.ChatMessageReq => MessageIds.ChatMessageRes,
-                        MessageIds.AddFriendReq => MessageIds.AddFriendRes,
-                        MessageIds.RemoveFriendReq => MessageIds.RemoveFriendRes,
-                        MessageIds.SetFriendRemarkReq => MessageIds.SetFriendRemarkRes,
-                        MessageIds.GetFriendsReq => MessageIds.GetFriendsRes,
-                        MessageIds.InviteGameReq => MessageIds.InviteGameRes,
-                        MessageIds.AddBlacklistReq => MessageIds.AddBlacklistRes,
-                        MessageIds.RemoveBlacklistReq => MessageIds.RemoveBlacklistRes,
-                        MessageIds.GetBlacklistReq => MessageIds.GetBlacklistRes,
-                        _ => 0
-                    };
+                    int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                    byte[] payload = data.Slice(4).ToArray();
 
-                    if (responseMsgId > 0)
+                    if (!Shared.RouteMetadata.TryExtractClientSessionId(payload, out long originalSessionId, out var cleanPayload))
                     {
-                        string errorMessage = $"未支持的游戏消息类型: {msgId}";
-                        byte[] unknownPayload = responseMsgId switch
+                        Log.Warning($"Game 收到缺少路由元数据的消息 MsgId:{msgId}");
+                        return;
+                    }
+
+                    if (msgId == MessageIds.PlayerDisconnectNotif)
+                    {
+                        Game.Managers.PlayerSessionManager.Instance.UnbindSession(originalSessionId);
+                    }
+                    else
+                    {
+                        if (Shared.RouteMetadata.TryExtractUserId(cleanPayload, out int routedUserId, out var payloadWithoutUserId) && routedUserId > 0)
                         {
-                            MessageIds.ChatMessageRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Chat.SendChatResponse
-                            {
-                                Success = false,
-                                Message = errorMessage
-                            }),
-                            MessageIds.AddFriendRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.AddFriendResponse
-                            {
-                                Success = false,
-                                Message = errorMessage
-                            }),
-                            MessageIds.RemoveFriendRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.RemoveFriendResponse
-                            {
-                                Success = false,
-                                Message = errorMessage
-                            }),
-                            MessageIds.SetFriendRemarkRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.SetFriendRemarkResponse
-                            {
-                                Success = false,
-                                Message = errorMessage
-                            }),
-                            MessageIds.GetFriendsRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.GetFriendsResponse
-                            {
-                                Success = false,
-                                Message = errorMessage,
-                                Friends = Array.Empty<Shared.Messages.Social.FriendInfo>()
-                            }),
-                            MessageIds.InviteGameRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.InviteGameResponse
-                            {
-                                Success = false,
-                                Message = errorMessage
-                            }),
-                            MessageIds.AddBlacklistRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.AddBlacklistResponse
-                            {
-                                Success = false,
-                                Message = errorMessage
-                            }),
-                            MessageIds.RemoveBlacklistRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.RemoveBlacklistResponse
-                            {
-                                Success = false,
-                                Message = errorMessage
-                            }),
-                            MessageIds.GetBlacklistRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.GetBlacklistResponse
-                            {
-                                Success = false,
-                                Message = errorMessage,
-                                Blacklists = Array.Empty<Shared.Messages.Social.BlacklistInfo>()
-                            }),
-                            _ => Array.Empty<byte>()
+                            Game.Managers.PlayerSessionManager.Instance.BindSession(originalSessionId, routedUserId);
+                            cleanPayload = payloadWithoutUserId;
+                        }
+                    }
+
+                    var clientSession = new Game.Network.ClientSessionWrapper(session, originalSessionId);
+                    bool handled = router.TryRouteMessage(clientSession, msgId, cleanPayload);
+                    if (!handled)
+                    {
+                        int responseMsgId = msgId switch
+                        {
+                            MessageIds.ChatMessageReq => MessageIds.ChatMessageRes,
+                            MessageIds.AddFriendReq => MessageIds.AddFriendRes,
+                            MessageIds.RemoveFriendReq => MessageIds.RemoveFriendRes,
+                            MessageIds.SetFriendRemarkReq => MessageIds.SetFriendRemarkRes,
+                            MessageIds.GetFriendsReq => MessageIds.GetFriendsRes,
+                            MessageIds.InviteGameReq => MessageIds.InviteGameRes,
+                            MessageIds.AddBlacklistReq => MessageIds.AddBlacklistRes,
+                            MessageIds.RemoveBlacklistReq => MessageIds.RemoveBlacklistRes,
+                            MessageIds.GetBlacklistReq => MessageIds.GetBlacklistRes,
+                            _ => 0
                         };
 
-                        if (unknownPayload.Length > 0)
+                        if (responseMsgId > 0)
                         {
-                            byte[] routedUnknownPayload = Shared.RouteMetadata.AttachTargetSessionId(unknownPayload, originalSessionId);
-                            byte[] unknownPacket = PacketBuilder.BuildPacket(responseMsgId, routedUnknownPayload, out int unknownLength);
-                            try
+                            string errorMessage = $"未支持的游戏消息类型: {msgId}";
+                            byte[] unknownPayload = responseMsgId switch
                             {
-                                session.Send(unknownPacket.AsSpan(0, unknownLength).ToArray());
-                            }
-                            finally
+                                MessageIds.ChatMessageRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Chat.SendChatResponse
+                                {
+                                    Success = false,
+                                    Message = errorMessage
+                                }),
+                                MessageIds.AddFriendRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.AddFriendResponse
+                                {
+                                    Success = false,
+                                    Message = errorMessage
+                                }),
+                                MessageIds.RemoveFriendRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.RemoveFriendResponse
+                                {
+                                    Success = false,
+                                    Message = errorMessage
+                                }),
+                                MessageIds.SetFriendRemarkRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.SetFriendRemarkResponse
+                                {
+                                    Success = false,
+                                    Message = errorMessage
+                                }),
+                                MessageIds.GetFriendsRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.GetFriendsResponse
+                                {
+                                    Success = false,
+                                    Message = errorMessage,
+                                    Friends = Array.Empty<Shared.Messages.Social.FriendInfo>()
+                                }),
+                                MessageIds.InviteGameRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.InviteGameResponse
+                                {
+                                    Success = false,
+                                    Message = errorMessage
+                                }),
+                                MessageIds.AddBlacklistRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.AddBlacklistResponse
+                                {
+                                    Success = false,
+                                    Message = errorMessage
+                                }),
+                                MessageIds.RemoveBlacklistRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.RemoveBlacklistResponse
+                                {
+                                    Success = false,
+                                    Message = errorMessage
+                                }),
+                                MessageIds.GetBlacklistRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.GetBlacklistResponse
+                                {
+                                    Success = false,
+                                    Message = errorMessage,
+                                    Blacklists = Array.Empty<Shared.Messages.Social.BlacklistInfo>()
+                                }),
+                                _ => Array.Empty<byte>()
+                            };
+
+                            if (unknownPayload.Length > 0)
                             {
-                                System.Buffers.ArrayPool<byte>.Shared.Return(unknownPacket);
+                                byte[] routedUnknownPayload = Shared.RouteMetadata.AttachTargetSessionId(unknownPayload, originalSessionId);
+                                byte[] unknownPacket = PacketBuilder.BuildPacket(responseMsgId, routedUnknownPayload, out int unknownLength);
+                                try
+                                {
+                                    session.Send(unknownPacket.AsSpan(0, unknownLength).ToArray());
+                                }
+                                finally
+                                {
+                                    System.Buffers.ArrayPool<byte>.Shared.Return(unknownPacket);
+                                }
                             }
                         }
                     }
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"Game 处理客户端数据异常 Session:{session.SessionId} Remote:{session.RemoteEndPoint} Exception:{ex}");
                 }
             };
 
@@ -205,11 +213,13 @@ namespace Game
             dbClient.OnDisconnected += (session, reason) => Log.Warning($"与 DB 服务器断开连接: {reason}");
             dbClient.OnDataReceived += (session, data) =>
             {
-                if (data.Length < 4)
+                try
                 {
-                    Log.Warning($"Game 收到 DB 异常数据，长度不足 4，实际: {data.Length}");
-                    return;
-                }
+                    if (data.Length < 4)
+                    {
+                        Log.Warning($"Game 收到 DB 异常数据，长度不足 4，实际: {data.Length}");
+                        return;
+                    }
 
                 int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
                 var payload = data.Slice(4);
@@ -218,6 +228,11 @@ namespace Game
                 if (!handled)
                 {
                     Log.Warning($"Game 未处理的 DB 响应消息: {msgId}");
+                }
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"Game 处理 DB 回包异常 Exception:{ex}");
                 }
             };
 
@@ -263,7 +278,23 @@ namespace Game
                 centerHeartbeatCts?.Cancel();
                 Log.Warning($"与 Center 服务器断开连接: {reason}");
             };
-            centerClient.OnDataReceived += (session, data) => Log.Info($"Game 收到 Center 消息，长度: {data.Length}");
+            centerClient.OnDataReceived += (session, data) =>
+            {
+                try
+                {
+                    if (data.Length < 4)
+                    {
+                        Log.Warning($"Game 收到 Center 异常数据，长度不足 4，实际: {data.Length}");
+                        return;
+                    }
+
+                    Log.Info($"Game 收到 Center 消息，长度: {data.Length}");
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"Game 处理 Center 回包异常 Exception:{ex}");
+                }
+            };
             _ = centerClient.ConnectAsync();
         }
 
@@ -283,8 +314,18 @@ namespace Game
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(registerRequest);
             byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterRegisterNodeReq, payload, out int totalLength);
-            centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
-            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            try
+            {
+                centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"向 Center 注册节点失败 NodeId:{nodeId} Exception:{ex}");
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            }
         }
 
         private static void SendNodeStatus(TcpClientWrapper centerClient, string nodeId, int currentLoad)
@@ -300,8 +341,18 @@ namespace Game
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(statusRequest);
             byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterNodeStatusReq, payload, out int totalLength);
-            centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
-            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            try
+            {
+                centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"向 Center 上报节点状态失败 NodeId:{nodeId} Exception:{ex}");
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            }
         }
 
         private static string ComputeCenterSignature(string source)

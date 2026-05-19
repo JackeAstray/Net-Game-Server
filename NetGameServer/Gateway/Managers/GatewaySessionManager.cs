@@ -1,4 +1,5 @@
 using Network;
+using Shared;
 using System.Collections.Concurrent;
 
 namespace Gateway.Managers
@@ -45,6 +46,7 @@ namespace Gateway.Managers
         public void AddSession(Network.ISession session)
         {
             clientSessions[session.SessionId] = session;
+            Shared.Log.Info($"Gateway 会话已加入 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
         }
 
         /// <summary>
@@ -55,6 +57,7 @@ namespace Gateway.Managers
         {
             clientSessions.TryRemove(sessionId, out _);
             sessionUsers.TryRemove(sessionId, out _);
+            Shared.Log.Info($"Gateway 会话已移除 SessionId:{sessionId}");
         }
 
         /// <summary>
@@ -76,9 +79,22 @@ namespace Gateway.Managers
         /// <param name="data">要发送的字节数据</param>
         public void Broadcast(byte[] data)
         {
+            if (data == null || data.Length == 0)
+            {
+                Shared.Log.Warning("Gateway 广播数据为空，已丢弃。");
+                return;
+            }
+
             foreach (var session in clientSessions.Values)
             {
-                session.Send(data);
+                try
+                {
+                    session.Send(data);
+                }
+                catch (System.Exception ex)
+                {
+                    Shared.Log.Error($"Gateway 广播失败 SessionId:{session.SessionId} Exception:{ex}");
+                }
             }
         }
 

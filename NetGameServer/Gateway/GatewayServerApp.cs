@@ -150,47 +150,54 @@ namespace Gateway
             // 会话路由信息放入 JSON payload 元数据 __clientSessionId
             DataReceivedHandler onDataReceived = (session, data) =>
             {
-                if (data.Length >= 4)
+                try
                 {
-                    int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
-                    Shared.Log.Info($"Gateway 接收到数据 长度:{data.Length} MsgId:{msgId} 来自:{session.RemoteEndPoint}");
+                    if (data.Length >= 4)
+                    {
+                        int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                        Shared.Log.Info($"Gateway 接收到数据 长度:{data.Length} MsgId:{msgId} 来自:{session.RemoteEndPoint}");
 
-                    byte[] payload = data.Slice(4).ToArray();
-                    byte[] routedPayload = Shared.RouteMetadata.AttachClientSessionId(payload, session.SessionId);
-                    int boundUserId = Gateway.Managers.GatewaySessionManager.Instance.GetUserIdBySessionId(session.SessionId);
-                    if (boundUserId > 0)
-                    {
-                        routedPayload = Shared.RouteMetadata.AttachUserId(routedPayload, boundUserId);
-                    }
+                        byte[] payload = data.Slice(4).ToArray();
+                        byte[] routedPayload = Shared.RouteMetadata.AttachClientSessionId(payload, session.SessionId);
+                        int boundUserId = Gateway.Managers.GatewaySessionManager.Instance.GetUserIdBySessionId(session.SessionId);
+                        if (boundUserId > 0)
+                        {
+                            routedPayload = Shared.RouteMetadata.AttachUserId(routedPayload, boundUserId);
+                        }
 
-                    byte[] wrapperMsg = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int routedLength);
-                    byte[] outbound = wrapperMsg.AsSpan(0, routedLength).ToArray();
-                    System.Buffers.ArrayPool<byte>.Shared.Return(wrapperMsg);
+                        byte[] wrapperMsg = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int routedLength);
+                        byte[] outbound = wrapperMsg.AsSpan(0, routedLength).ToArray();
+                        System.Buffers.ArrayPool<byte>.Shared.Return(wrapperMsg);
 
-                    if (msgId >= 10000 && msgId < 20000)
-                    {
-                        loginSender.SendOrBuffer(outbound);
-                    }
-                    else if ((msgId >= 20000 && msgId < 30000) || (msgId >= 50000 && msgId < 70000))
-                    {
-                        gameSender.SendOrBuffer(outbound);
-                    }
-                    else if (msgId >= 30000 && msgId < 40000)
-                    {
-                        centerSender.SendOrBuffer(outbound);
-                    }
-                    else if (msgId >= 40000 && msgId < 50000)
-                    {
-                        battleSender.SendOrBuffer(outbound);
+                        if (msgId >= 10000 && msgId < 20000)
+                        {
+                            loginSender.SendOrBuffer(outbound);
+                        }
+                        else if ((msgId >= 20000 && msgId < 30000) || (msgId >= 50000 && msgId < 70000))
+                        {
+                            gameSender.SendOrBuffer(outbound);
+                        }
+                        else if (msgId >= 30000 && msgId < 40000)
+                        {
+                            centerSender.SendOrBuffer(outbound);
+                        }
+                        else if (msgId >= 40000 && msgId < 50000)
+                        {
+                            battleSender.SendOrBuffer(outbound);
+                        }
+                        else
+                        {
+                            Shared.Log.Warning($"Gateway: 未知的消息路由 MsgId=>{msgId}");
+                        }
                     }
                     else
                     {
-                        Shared.Log.Warning($"Gateway: 未知的消息路由 MsgId=>{msgId}");
+                        Shared.Log.Warning($"收到无效的数据包长度。SessionId:{session.SessionId} Length:{data.Length}");
                     }
                 }
-                else
+                catch (Exception ex)
                 {
-                    Shared.Log.Warning("收到无效的数据包长度。");
+                    Shared.Log.Error($"Gateway 处理客户端数据异常 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Exception:{ex}");
                 }
             };
 
@@ -235,53 +242,68 @@ namespace Gateway
             loginClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"与 Login 服务器断开连接: {reason}");
             loginClient.OnDataReceived += (session, data) =>
             {
-                if (data.Length < 4)
-                {
-                    Shared.Log.Warning("Login 回包长度不足，已丢弃。");
-                    return;
-                }
-
-                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
-                byte[] payload = data.Slice(4).ToArray();
-
-                if (!Shared.RouteMetadata.TryExtractClientSessionId(payload, out long clientSessionId, out var cleanPayload))
-                {
-                    Shared.Log.Warning($"Login 回包缺少目标会话元数据 MsgId:{msgId}");
-                    return;
-                }
-
-                if (msgId == MessageIds.LoginRes)
-                {
-                    var loginRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Login.LoginResponse>(cleanPayload);
-                    if (loginRes?.Success == true && loginRes.UserId > 0)
-                    {
-                        Gateway.Managers.GatewaySessionManager.Instance.BindUser(clientSessionId, loginRes.UserId);
-                    }
-                }
-                else if (msgId == MessageIds.LogoutRes)
-                {
-                    var logoutRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Login.LogoutResponse>(cleanPayload);
-                    if (logoutRes?.Success == true)
-                    {
-                        Gateway.Managers.GatewaySessionManager.Instance.UnbindUser(clientSessionId);
-                    }
-                }
-
-                var clientSession = Gateway.Managers.GatewaySessionManager.Instance.GetSession(clientSessionId);
-                if (clientSession == null)
-                {
-                    Shared.Log.Warning($"Login 回包目标会话不存在，已丢弃 MsgId:{msgId} ClientSessionId:{clientSessionId}");
-                    return;
-                }
-
-                byte[] clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, cleanPayload, out int totalLength);
                 try
                 {
-                    clientSession.Send(clientPacket.AsSpan(0, totalLength).ToArray());
+                    if (data.Length < 4)
+                    {
+                        Shared.Log.Warning("Login 回包长度不足，已丢弃。");
+                        return;
+                    }
+
+                    int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                    byte[] payload = data.Slice(4).ToArray();
+
+                    if (!Shared.RouteMetadata.TryExtractClientSessionId(payload, out long clientSessionId, out var cleanPayload))
+                    {
+                        Shared.Log.Warning($"Login 回包缺少目标会话元数据 MsgId:{msgId}");
+                        return;
+                    }
+
+                    if (msgId == MessageIds.LoginRes)
+                    {
+                        var loginRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Login.LoginResponse>(cleanPayload);
+                        if (loginRes?.Success == true && loginRes.UserId > 0)
+                        {
+                            Gateway.Managers.GatewaySessionManager.Instance.BindUser(clientSessionId, loginRes.UserId);
+                        }
+                        else if (loginRes != null && !loginRes.Success)
+                        {
+                            Shared.Log.Warning($"Login 登录失败回包 MsgId:{msgId} ClientSessionId:{clientSessionId} Message:{loginRes.Message}");
+                        }
+                    }
+                    else if (msgId == MessageIds.LogoutRes)
+                    {
+                        var logoutRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Login.LogoutResponse>(cleanPayload);
+                        if (logoutRes?.Success == true)
+                        {
+                            Gateway.Managers.GatewaySessionManager.Instance.UnbindUser(clientSessionId);
+                        }
+                        else if (logoutRes != null && !logoutRes.Success)
+                        {
+                            Shared.Log.Warning($"Logout 回包失败 MsgId:{msgId} ClientSessionId:{clientSessionId} Message:{logoutRes.Message}");
+                        }
+                    }
+
+                    var clientSession = Gateway.Managers.GatewaySessionManager.Instance.GetSession(clientSessionId);
+                    if (clientSession == null)
+                    {
+                        Shared.Log.Warning($"Login 回包目标会话不存在，已丢弃 MsgId:{msgId} ClientSessionId:{clientSessionId}");
+                        return;
+                    }
+
+                    byte[] clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, cleanPayload, out int totalLength);
+                    try
+                    {
+                        clientSession.Send(clientPacket.AsSpan(0, totalLength).ToArray());
+                    }
+                    finally
+                    {
+                        System.Buffers.ArrayPool<byte>.Shared.Return(clientPacket);
+                    }
                 }
-                finally
+                catch (Exception ex)
                 {
-                    System.Buffers.ArrayPool<byte>.Shared.Return(clientPacket);
+                    Shared.Log.Error($"Gateway 处理 Login 回包异常 Remote:{session.RemoteEndPoint} Exception:{ex}");
                 }
             };
             _ = loginClient.ConnectAsync();

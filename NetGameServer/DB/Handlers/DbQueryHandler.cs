@@ -371,6 +371,10 @@ namespace DB.Handlers
                     }
                     await dbContext.SaveChangesAsync();
                 }
+                else
+                {
+                    Log.Warning($"更新在线状态失败，用户不存在 UserId:{request.UserId} IsOnline:{request.IsOnline}");
+                }
 
                 var response = new UpdateOnlineStateResponse { Success = true };
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
@@ -411,11 +415,13 @@ namespace DB.Handlers
                 {
                     response.Success = false;
                     response.Message = "用户不存在";
+                    Log.Warning($"更改密码失败，用户不存在 UserId:{request.UserId} Account:{request.Account}");
                 }
                 else if (!string.Equals(user.Account, request.Account, StringComparison.Ordinal))
                 {
                     response.Success = false;
                     response.Message = "账号不匹配";
+                    Log.Warning($"更改密码失败，账号不匹配 UserId:{request.UserId} RequestAccount:{request.Account} StoredAccount:{user.Account}");
                 }
                 else
                 {
@@ -423,6 +429,7 @@ namespace DB.Handlers
                     {
                         response.Success = false;
                         response.Message = "当前账号密码格式不受支持，请先由管理员重置为PBKDF2密码";
+                        Log.Warning($"更改密码失败，密码格式不受支持 UserId:{request.UserId} Account:{request.Account}");
                     }
                     else
                     {
@@ -432,6 +439,7 @@ namespace DB.Handlers
                         {
                             response.Success = false;
                             response.Message = "旧密码错误";
+                            Log.Warning($"更改密码失败，旧密码错误 UserId:{request.UserId} Account:{request.Account}");
                         }
                         else
                         {
@@ -475,11 +483,13 @@ namespace DB.Handlers
                 {
                     response.Success = false;
                     response.Message = "用户不存在";
+                    Log.Warning($"邮箱重置密码失败，用户不存在 Account:{request.Account} Email:{request.Email}");
                 }
                 else if (!string.Equals(user.Email?.Trim(), request.Email?.Trim(), StringComparison.OrdinalIgnoreCase))
                 {
                     response.Success = false;
                     response.Message = "邮箱与账号不匹配";
+                    Log.Warning($"邮箱重置密码失败，邮箱与账号不匹配 Account:{request.Account} RequestEmail:{request.Email} StoredEmail:{user.Email}");
                 }
                 else
                 {
@@ -512,7 +522,11 @@ namespace DB.Handlers
         /// <returns></returns>
         public static async Task HandleAddFriendRequest(ISession session, DbAddFriendRequest? request, long? requestId = null)
         {
-            if (request == null) return;
+            if (request == null)
+            {
+                Log.Warning("收到无效的 AddFriendRequest，数据无法被反序列化。");
+                return;
+            }
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -583,7 +597,11 @@ namespace DB.Handlers
         /// <returns></returns>
         public static async Task HandleRemoveFriendRequest(ISession session, DbRemoveFriendRequest? request, long? requestId = null)
         {
-            if (request == null) return;
+            if (request == null)
+            {
+                Log.Warning("收到无效的 RemoveFriendRequest，数据无法被反序列化。");
+                return;
+            }
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -641,7 +659,11 @@ namespace DB.Handlers
         /// <returns></returns>
         public static async Task HandleSetFriendRemarkRequest(ISession session, DbSetFriendRemarkRequest? request, long? requestId = null)
         {
-            if (request == null) return;
+            if (request == null)
+            {
+                Log.Warning("收到无效的 SetFriendRemarkRequest，数据无法被反序列化。");
+                return;
+            }
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -803,7 +825,11 @@ namespace DB.Handlers
 
         public static async Task HandleRemoveBlacklistRequest(ISession session, DbRemoveBlacklistRequest? request, long? requestId = null)
         {
-            if (request == null) return;
+            if (request == null)
+            {
+                Log.Warning("收到无效的 RemoveBlacklistRequest，数据无法被反序列化。");
+                return;
+            }
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -855,7 +881,11 @@ namespace DB.Handlers
 
         public static async Task HandleGetBlacklistRequest(ISession session, DbGetBlacklistRequest? request, long? requestId = null)
         {
-            if (request == null) return;
+            if (request == null)
+            {
+                Log.Warning("收到无效的 GetBlacklistRequest，数据无法被反序列化。");
+                return;
+            }
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -896,7 +926,11 @@ namespace DB.Handlers
 
         public static async Task HandleResolveUserByUniqueIdRequest(ISession session, DbResolveUserByUniqueIdRequest? request, long? requestId = null)
         {
-            if (request == null) return;
+            if (request == null)
+            {
+                Log.Warning("收到无效的 ResolveUserByUniqueIdRequest，数据无法被反序列化。");
+                return;
+            }
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -939,7 +973,11 @@ namespace DB.Handlers
 
         public static async Task HandleResolveUserByUserIdRequest(ISession session, DbResolveUserByUserIdRequest? request, long? requestId = null)
         {
-            if (request == null) return;
+            if (request == null)
+            {
+                Log.Warning("收到无效的 ResolveUserByUserIdRequest，数据无法被反序列化。");
+                return;
+            }
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -981,16 +1019,33 @@ namespace DB.Handlers
 
         private static void SendDbResponse<T>(ISession session, int msgId, T response, long? requestId = null)
         {
-            byte[] payload = Shared.Json.SerializeToUtf8Bytes(response);
-            if (requestId.HasValue)
+            try
             {
-                payload = Shared.RouteMetadata.AttachRequestId(payload, requestId.Value);
-            }
+                if (response != null)
+                {
+                    var successProperty = typeof(T).GetProperty("Success");
+                    if (successProperty?.PropertyType == typeof(bool) && successProperty.GetValue(response) is bool success && !success)
+                    {
+                        string message = typeof(T).GetProperty("Message")?.GetValue(response)?.ToString() ?? string.Empty;
+                        Log.Warning($"DB 响应失败 MsgId:{msgId} RequestId:{requestId?.ToString() ?? "none"} Message:{message}");
+                    }
+                }
 
-            byte[] packet = new byte[payload.Length + 4];
-            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), msgId);
-            payload.CopyTo(packet.AsSpan(4));
-            session.Send(packet);
+                byte[] payload = Shared.Json.SerializeToUtf8Bytes(response);
+                if (requestId.HasValue)
+                {
+                    payload = Shared.RouteMetadata.AttachRequestId(payload, requestId.Value);
+                }
+
+                byte[] packet = new byte[payload.Length + 4];
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), msgId);
+                payload.CopyTo(packet.AsSpan(4));
+                session.Send(packet);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"发送 DB 响应失败 MsgId:{msgId} RequestId:{requestId?.ToString() ?? "none"} Exception:{ex}");
+            }
         }
     }
 }

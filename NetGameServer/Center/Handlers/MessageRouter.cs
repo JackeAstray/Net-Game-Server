@@ -36,53 +36,97 @@ namespace Center.Handlers
 
             handlers[MessageIds.CenterCreateRoomReq] = async (payload, session, clientSessionId) =>
             {
-                var req = Shared.Json.DeserializeFromUtf8Bytes<CenterCreateRoomRequest>(payload.Span);
-                if (req != null)
+                try
                 {
-                    var res = await matchHandler.HandleCreateRoomRequestAsync(req);
-                    SendToGateway(session, clientSessionId, MessageIds.CenterCreateRoomRes, res);
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<CenterCreateRoomRequest>(payload.Span);
+                    if (req != null)
+                    {
+                        var res = await matchHandler.HandleCreateRoomRequestAsync(req);
+                        SendToGateway(session, clientSessionId, MessageIds.CenterCreateRoomRes, res);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"CenterCreateRoomReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"CenterCreateRoomReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
                 }
             };
 
             handlers[MessageIds.CenterCreateSceneRes] = async (payload, session, clientSessionId) =>
             {
-                var res = Shared.Json.DeserializeFromUtf8Bytes<CenterCreateSceneResponse>(payload.Span);
-                if (res != null)
+                try
                 {
-                    matchHandler.HandleCreateSceneResponse(res);
+                    var res = Shared.Json.DeserializeFromUtf8Bytes<CenterCreateSceneResponse>(payload.Span);
+                    if (res != null)
+                    {
+                        matchHandler.HandleCreateSceneResponse(res);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"CenterCreateSceneRes 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                    await Task.CompletedTask;
                 }
-                await Task.CompletedTask;
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"CenterCreateSceneRes 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
+                }
             };
 
             handlers[MessageIds.CenterRegisterNodeReq] = (payload, session, clientSessionId) =>
             {
-                var req = Shared.Json.DeserializeFromUtf8Bytes<CenterRegisterNodeRequest>(payload.Span);
-                if (req != null)
+                try
                 {
-                    if (!VerifyRegisterSignature(req))
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<CenterRegisterNodeRequest>(payload.Span);
+                    if (req != null)
                     {
-                        Shared.Log.Warning($"CenterRegisterNodeReq 签名校验失败，NodeId:{req.NodeId}");
-                        return Task.CompletedTask;
-                    }
+                        if (!VerifyRegisterSignature(req))
+                        {
+                            Shared.Log.Warning($"CenterRegisterNodeReq 签名校验失败，NodeId:{req.NodeId}");
+                            return Task.CompletedTask;
+                        }
 
-                    NodeManager.Instance.RegisterNode(req.NodeId, req.NodeType, req.Host, req.Port, session);
-                    NodeManager.Instance.UpdateLoad(req.NodeId, req.CurrentLoad);
+                        NodeManager.Instance.RegisterNode(req.NodeId, req.NodeType, req.Host, req.Port, session);
+                        NodeManager.Instance.UpdateLoad(req.NodeId, req.CurrentLoad);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"CenterRegisterNodeReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"CenterRegisterNodeReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
                 }
                 return Task.CompletedTask;
             };
 
             handlers[MessageIds.CenterNodeStatusReq] = (payload, session, clientSessionId) =>
             {
-                var req = Shared.Json.DeserializeFromUtf8Bytes<CenterNodeStatusRequest>(payload.Span);
-                if (req != null && !string.IsNullOrWhiteSpace(req.NodeId))
+                try
                 {
-                    if (!VerifyStatusSignature(req))
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<CenterNodeStatusRequest>(payload.Span);
+                    if (req != null && !string.IsNullOrWhiteSpace(req.NodeId))
                     {
-                        Shared.Log.Warning($"CenterNodeStatusReq 签名校验失败，NodeId:{req.NodeId}");
-                        return Task.CompletedTask;
-                    }
+                        if (!VerifyStatusSignature(req))
+                        {
+                            Shared.Log.Warning($"CenterNodeStatusReq 签名校验失败，NodeId:{req.NodeId}");
+                            return Task.CompletedTask;
+                        }
 
-                    NodeManager.Instance.UpdateLoad(req.NodeId, req.CurrentLoad);
+                        NodeManager.Instance.UpdateLoad(req.NodeId, req.CurrentLoad);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"CenterNodeStatusReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"CenterNodeStatusReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
                 }
                 return Task.CompletedTask;
             };
@@ -165,6 +209,10 @@ namespace Center.Handlers
                 }
 
                 gatewaySession.Send(packet.AsSpan(0, totalLength).ToArray());
+            }
+            catch (Exception ex)
+            {
+                Shared.Log.Error($"SendToGateway 发送失败 MsgId:{msgId} ClientSessionId:{clientSessionId} Exception:{ex}");
             }
             finally
             {
