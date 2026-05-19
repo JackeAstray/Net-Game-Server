@@ -195,12 +195,53 @@ namespace DB
             router.RegisterHandler(MessageIds.DbAccountQueryReq, async (session, data) => await Handlers.DbQueryHandler.HandleAccountQueryRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.AccountQueryRequest>(data.Span)));
             router.RegisterHandler(MessageIds.DbOnlineStatsReq, async (session, data) => await Handlers.DbQueryHandler.HandleOnlineStatsRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.OnlineStatsRequest>(data.Span)));
             router.RegisterHandler(MessageIds.DbUpdateOnlineStateReq, async (session, data) => await Handlers.DbQueryHandler.HandleUpdateOnlineStateRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.UpdateOnlineStateRequest>(data.Span)));
-            router.RegisterHandler(MessageIds.DbAddFriendReq, async (session, data) => await Handlers.DbQueryHandler.HandleAddFriendRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbAddFriendRequest>(data.Span)));
-            router.RegisterHandler(MessageIds.DbRemoveFriendReq, async (session, data) => await Handlers.DbQueryHandler.HandleRemoveFriendRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbRemoveFriendRequest>(data.Span)));
-            router.RegisterHandler(MessageIds.DbSetFriendRemarkReq, async (session, data) => await Handlers.DbQueryHandler.HandleSetFriendRemarkRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbSetFriendRemarkRequest>(data.Span)));
-            router.RegisterHandler(MessageIds.DbGetFriendsReq, async (session, data) => await Handlers.DbQueryHandler.HandleGetFriendsRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbGetFriendsRequest>(data.Span)));
+            router.RegisterHandler(MessageIds.DbAddFriendReq, async (session, data) =>
+            {
+                long? requestId = Shared.RouteMetadata.TryExtractRequestId(data, out long extractedRequestId, out var cleanPayload) ? extractedRequestId : null;
+                await Handlers.DbQueryHandler.HandleAddFriendRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbAddFriendRequest>(cleanPayload), requestId);
+            });
+            router.RegisterHandler(MessageIds.DbRemoveFriendReq, async (session, data) =>
+            {
+                long? requestId = Shared.RouteMetadata.TryExtractRequestId(data, out long extractedRequestId, out var cleanPayload) ? extractedRequestId : null;
+                await Handlers.DbQueryHandler.HandleRemoveFriendRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbRemoveFriendRequest>(cleanPayload), requestId);
+            });
+            router.RegisterHandler(MessageIds.DbSetFriendRemarkReq, async (session, data) =>
+            {
+                long? requestId = Shared.RouteMetadata.TryExtractRequestId(data, out long extractedRequestId, out var cleanPayload) ? extractedRequestId : null;
+                await Handlers.DbQueryHandler.HandleSetFriendRemarkRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbSetFriendRemarkRequest>(cleanPayload), requestId);
+            });
+            router.RegisterHandler(MessageIds.DbGetFriendsReq, async (session, data) =>
+            {
+                long? requestId = Shared.RouteMetadata.TryExtractRequestId(data, out long extractedRequestId, out var cleanPayload) ? extractedRequestId : null;
+                await Handlers.DbQueryHandler.HandleGetFriendsRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbGetFriendsRequest>(cleanPayload), requestId);
+            });
             router.RegisterHandler(MessageIds.DbChangePasswordReq, async (session, data) => await Handlers.DbQueryHandler.HandleChangePasswordVerifyRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.ChangePasswordVerifyRequest>(data.Span)));
             router.RegisterHandler(MessageIds.DbResetPasswordByEmailReq, async (session, data) => await Handlers.DbQueryHandler.HandleResetPasswordByEmailRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.ResetPasswordByEmailRequest>(data.Span)));
+            router.RegisterHandler(MessageIds.DbAddBlacklistReq, async (session, data) =>
+            {
+                long? requestId = Shared.RouteMetadata.TryExtractRequestId(data, out long extractedRequestId, out var cleanPayload) ? extractedRequestId : null;
+                await Handlers.DbQueryHandler.HandleAddBlacklistRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbAddBlacklistRequest>(cleanPayload), requestId);
+            });
+            router.RegisterHandler(MessageIds.DbRemoveBlacklistReq, async (session, data) =>
+            {
+                long? requestId = Shared.RouteMetadata.TryExtractRequestId(data, out long extractedRequestId, out var cleanPayload) ? extractedRequestId : null;
+                await Handlers.DbQueryHandler.HandleRemoveBlacklistRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbRemoveBlacklistRequest>(cleanPayload), requestId);
+            });
+            router.RegisterHandler(MessageIds.DbGetBlacklistReq, async (session, data) =>
+            {
+                long? requestId = Shared.RouteMetadata.TryExtractRequestId(data, out long extractedRequestId, out var cleanPayload) ? extractedRequestId : null;
+                await Handlers.DbQueryHandler.HandleGetBlacklistRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbGetBlacklistRequest>(cleanPayload), requestId);
+            });
+            router.RegisterHandler(MessageIds.DbResolveUserByUniqueIdReq, async (session, data) =>
+            {
+                long? requestId = Shared.RouteMetadata.TryExtractRequestId(data, out long extractedRequestId, out var cleanPayload) ? extractedRequestId : null;
+                await Handlers.DbQueryHandler.HandleResolveUserByUniqueIdRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbResolveUserByUniqueIdRequest>(cleanPayload), requestId);
+            });
+            router.RegisterHandler(MessageIds.DbResolveUserByUserIdReq, async (session, data) =>
+            {
+                long? requestId = Shared.RouteMetadata.TryExtractRequestId(data, out long extractedRequestId, out var cleanPayload) ? extractedRequestId : null;
+                await Handlers.DbQueryHandler.HandleResolveUserByUserIdRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbResolveUserByUserIdRequest>(cleanPayload), requestId);
+            });
 
             // 简单的会话事件日志，用于监控连接与流量，实际部署时可扩展鉴权或限流逻辑
             tcpServer.OnSessionConnected += session => Shared.Log.Info($"客户端已连接: {session.RemoteEndPoint}");

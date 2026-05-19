@@ -493,7 +493,7 @@ namespace DB.Handlers
         /// <param name="session">当前网络会话，用于回复数据库处理结果。</param>
         /// <param name="request">包含发起者用户ID、目标好友ID及备注等信息的请求对象。</param>
         /// <returns></returns>
-        public static async Task HandleAddFriendRequest(ISession session, DbAddFriendRequest? request)
+        public static async Task HandleAddFriendRequest(ISession session, DbAddFriendRequest? request, long? requestId = null)
         {
             if (request == null) return;
             try
@@ -504,34 +504,52 @@ namespace DB.Handlers
 
                 var response = new DbAddFriendResponse();
 
-                // Check if already friends
-                bool exists = await dbContext.Friends.AnyAsync(f => f.UserId == request.UserId && f.FriendUserId == request.FriendUserId);
-                if (exists)
+                if (request.UserId <= 0 || string.IsNullOrWhiteSpace(request.FriendUniqueId))
                 {
                     response.Success = false;
-                    response.Message = "已经是好友了";
+                    response.Message = "用户ID或UniqueId无效";
                 }
                 else
                 {
-                    var newFriend = new Shared.Data.Social.Friend
+                    string uniqueId = request.FriendUniqueId.Trim();
+                    var targetUser = await dbContext.Users.FirstOrDefaultAsync(u => u.UniqueId == uniqueId);
+                    if (targetUser == null)
                     {
-                        UserId = request.UserId,
-                        FriendUserId = request.FriendUserId,
-                        Remark = request.Remark ?? string.Empty,
-                        AddTime = DateTime.UtcNow
-                    };
-                    dbContext.Friends.Add(newFriend);
-                    await dbContext.SaveChangesAsync();
+                        response.Success = false;
+                        response.Message = "目标用户不存在";
+                    }
+                    else if (targetUser.Id == request.UserId)
+                    {
+                        response.Success = false;
+                        response.Message = "不能添加自己为好友";
+                    }
+                    else
+                    {
+                        bool exists = await dbContext.Friends.AnyAsync(f => f.UserId == request.UserId && f.FriendUserId == targetUser.Id);
+                        if (exists)
+                        {
+                            response.Success = false;
+                            response.Message = "已经是好友了";
+                        }
+                        else
+                        {
+                            var newFriend = new Shared.Data.Social.Friend
+                            {
+                                UserId = request.UserId,
+                                FriendUserId = targetUser.Id,
+                                Remark = request.Remark ?? string.Empty,
+                                AddTime = DateTime.UtcNow
+                            };
+                            dbContext.Friends.Add(newFriend);
+                            await dbContext.SaveChangesAsync();
 
-                    response.Success = true;
-                    response.Message = "添加成功";
+                            response.Success = true;
+                            response.Message = "添加成功";
+                        }
+                    }
                 }
 
-                byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
-                byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbAddFriendRes);
-                data.CopyTo(packet.AsSpan(4));
-                session.Send(packet);
+                SendDbResponse(session, Shared.Messages.MessageIds.DbAddFriendRes, response, requestId);
             }
             catch (Exception ex)
             {
@@ -546,7 +564,7 @@ namespace DB.Handlers
         /// <param name="session">当前网络会话，用于发送响应数据。</param>
         /// <param name="request">包含发起者用户ID和要移除的好友用户ID的请求对象。</param>
         /// <returns></returns>
-        public static async Task HandleRemoveFriendRequest(ISession session, DbRemoveFriendRequest? request)
+        public static async Task HandleRemoveFriendRequest(ISession session, DbRemoveFriendRequest? request, long? requestId = null)
         {
             if (request == null) return;
             try
@@ -557,25 +575,39 @@ namespace DB.Handlers
 
                 var response = new DbRemoveFriendResponse();
 
-                var friend = await dbContext.Friends.FirstOrDefaultAsync(f => f.UserId == request.UserId && f.FriendUserId == request.FriendUserId);
-                if (friend != null)
+                if (string.IsNullOrWhiteSpace(request.FriendUniqueId))
                 {
-                    dbContext.Friends.Remove(friend);
-                    await dbContext.SaveChangesAsync();
-                    response.Success = true;
-                    response.Message = "删除成功";
+                    response.Success = false;
+                    response.Message = "好友UniqueId无效";
                 }
                 else
                 {
-                    response.Success = false;
-                    response.Message = "好友不存在";
+                    string uniqueId = request.FriendUniqueId.Trim();
+                    var targetUser = await dbContext.Users.FirstOrDefaultAsync(u => u.UniqueId == uniqueId);
+                    if (targetUser == null)
+                    {
+                        response.Success = false;
+                        response.Message = "好友不存在";
+                    }
+                    else
+                    {
+                        var friend = await dbContext.Friends.FirstOrDefaultAsync(f => f.UserId == request.UserId && f.FriendUserId == targetUser.Id);
+                        if (friend != null)
+                        {
+                            dbContext.Friends.Remove(friend);
+                            await dbContext.SaveChangesAsync();
+                            response.Success = true;
+                            response.Message = "删除成功";
+                        }
+                        else
+                        {
+                            response.Success = false;
+                            response.Message = "好友不存在";
+                        }
+                    }
                 }
 
-                byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
-                byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbRemoveFriendRes);
-                data.CopyTo(packet.AsSpan(4));
-                session.Send(packet);
+                SendDbResponse(session, Shared.Messages.MessageIds.DbRemoveFriendRes, response, requestId);
             }
             catch (Exception ex)
             {
@@ -590,7 +622,7 @@ namespace DB.Handlers
         /// <param name="session">当前网络会话，用于发送响应。</param>
         /// <param name="request">包含用户ID、好友ID以及新的备注内容的请求对象。</param>
         /// <returns></returns>
-        public static async Task HandleSetFriendRemarkRequest(ISession session, DbSetFriendRemarkRequest? request)
+        public static async Task HandleSetFriendRemarkRequest(ISession session, DbSetFriendRemarkRequest? request, long? requestId = null)
         {
             if (request == null) return;
             try
@@ -601,25 +633,39 @@ namespace DB.Handlers
 
                 var response = new DbSetFriendRemarkResponse();
 
-                var friend = await dbContext.Friends.FirstOrDefaultAsync(f => f.UserId == request.UserId && f.FriendUserId == request.FriendUserId);
-                if (friend != null)
+                if (string.IsNullOrWhiteSpace(request.FriendUniqueId))
                 {
-                    friend.Remark = request.Remark ?? string.Empty;
-                    await dbContext.SaveChangesAsync();
-                    response.Success = true;
-                    response.Message = "设置成功";
+                    response.Success = false;
+                    response.Message = "好友UniqueId无效";
                 }
                 else
                 {
-                    response.Success = false;
-                    response.Message = "好友不存在";
+                    string uniqueId = request.FriendUniqueId.Trim();
+                    var targetUser = await dbContext.Users.FirstOrDefaultAsync(u => u.UniqueId == uniqueId);
+                    if (targetUser == null)
+                    {
+                        response.Success = false;
+                        response.Message = "好友不存在";
+                    }
+                    else
+                    {
+                        var friend = await dbContext.Friends.FirstOrDefaultAsync(f => f.UserId == request.UserId && f.FriendUserId == targetUser.Id);
+                        if (friend != null)
+                        {
+                            friend.Remark = request.Remark ?? string.Empty;
+                            await dbContext.SaveChangesAsync();
+                            response.Success = true;
+                            response.Message = "设置成功";
+                        }
+                        else
+                        {
+                            response.Success = false;
+                            response.Message = "好友不存在";
+                        }
+                    }
                 }
 
-                byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
-                byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbSetFriendRemarkRes);
-                data.CopyTo(packet.AsSpan(4));
-                session.Send(packet);
+                SendDbResponse(session, Shared.Messages.MessageIds.DbSetFriendRemarkRes, response, requestId);
             }
             catch (Exception ex)
             {
@@ -634,7 +680,7 @@ namespace DB.Handlers
         /// <param name="session">当前网络会话，用于发送查询结果。</param>
         /// <param name="request">包含要查询好友列表的用户ID的请求对象。</param>
         /// <returns></returns>
-        public static async Task HandleGetFriendsRequest(ISession session, DbGetFriendsRequest? request)
+        public static async Task HandleGetFriendsRequest(ISession session, DbGetFriendsRequest? request, long? requestId = null)
         {
             if (request == null) return;
             try
@@ -646,21 +692,288 @@ namespace DB.Handlers
                 var response = new DbGetFriendsResponse();
 
                 var friendsList = await dbContext.Friends.Where(f => f.UserId == request.UserId).ToListAsync();
+                var friendUserIds = friendsList.Select(f => f.FriendUserId).Distinct().ToList();
+                var friendUsers = friendUserIds.Count == 0
+                    ? new System.Collections.Generic.Dictionary<int, Shared.Data.User>()
+                    : await dbContext.Users
+                        .Where(u => friendUserIds.Contains(u.Id))
+                        .ToDictionaryAsync(u => u.Id, u => u);
 
                 response.Success = true;
                 response.Message = "获取成功";
-                response.Friends = friendsList;
+                response.Friends = friendsList.Select(f =>
+                {
+                    friendUsers.TryGetValue(f.FriendUserId, out var user);
+                    return new DbFriendItem
+                    {
+                        FriendUserId = f.FriendUserId,
+                        FriendUniqueId = user?.UniqueId ?? string.Empty,
+                        FriendNickname = user?.Nickname ?? string.Empty,
+                        Remark = f.Remark,
+                        AddTime = f.AddTime
+                    };
+                }).ToList();
 
-                byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
-                byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbGetFriendsRes);
-                data.CopyTo(packet.AsSpan(4));
-                session.Send(packet);
+                SendDbResponse(session, Shared.Messages.MessageIds.DbGetFriendsRes, response, requestId);
             }
             catch (Exception ex)
             {
                 Log.Error($"获取好友列表异常: {ex}");
             }
+        }
+
+        public static async Task HandleAddBlacklistRequest(ISession session, DbAddBlacklistRequest? request, long? requestId = null)
+        {
+            if (request == null) return;
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+
+                var response = new DbAddBlacklistResponse();
+
+                if (request.UserId <= 0 || string.IsNullOrWhiteSpace(request.TargetUniqueId))
+                {
+                    response.Success = false;
+                    response.Message = "用户ID或UniqueId无效";
+                }
+                else
+                {
+                    string targetUniqueId = request.TargetUniqueId.Trim();
+                    var targetUser = await dbContext.Users.FirstOrDefaultAsync(u => u.UniqueId == targetUniqueId);
+                    if (targetUser == null)
+                    {
+                        response.Success = false;
+                        response.Message = "目标用户不存在";
+                    }
+                    else if (targetUser.Id == request.UserId)
+                    {
+                        response.Success = false;
+                        response.Message = "不能拉黑自己";
+                    }
+                    else
+                    {
+                        response.TargetUserId = targetUser.Id;
+                        bool exists = await dbContext.Blacklists.AnyAsync(b => b.UserId == request.UserId && b.BlockedUserId == targetUser.Id);
+                        if (exists)
+                        {
+                            response.Success = false;
+                            response.Message = "目标已在黑名单中";
+                        }
+                        else
+                        {
+                            dbContext.Blacklists.Add(new Blacklist
+                            {
+                                UserId = request.UserId,
+                                BlockedUserId = targetUser.Id,
+                                AddTime = DateTime.UtcNow
+                            });
+                            await dbContext.SaveChangesAsync();
+                            response.Success = true;
+                            response.Message = "拉黑成功";
+                        }
+                    }
+                }
+
+                SendDbResponse(session, Shared.Messages.MessageIds.DbAddBlacklistRes, response, requestId);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"添加黑名单异常: {ex}");
+            }
+        }
+
+        public static async Task HandleRemoveBlacklistRequest(ISession session, DbRemoveBlacklistRequest? request, long? requestId = null)
+        {
+            if (request == null) return;
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+
+                var response = new DbRemoveBlacklistResponse();
+
+                if (request.UserId <= 0 || string.IsNullOrWhiteSpace(request.TargetUniqueId))
+                {
+                    response.Success = false;
+                    response.Message = "用户ID或UniqueId无效";
+                }
+                else
+                {
+                    string targetUniqueId = request.TargetUniqueId.Trim();
+                    var targetUser = await dbContext.Users.FirstOrDefaultAsync(u => u.UniqueId == targetUniqueId);
+                    if (targetUser == null)
+                    {
+                        response.Success = false;
+                        response.Message = "目标用户不存在";
+                    }
+                    else
+                    {
+                        response.TargetUserId = targetUser.Id;
+                        var blacklist = await dbContext.Blacklists.FirstOrDefaultAsync(b => b.UserId == request.UserId && b.BlockedUserId == targetUser.Id);
+                        if (blacklist == null)
+                        {
+                            response.Success = false;
+                            response.Message = "目标不在黑名单中";
+                        }
+                        else
+                        {
+                            dbContext.Blacklists.Remove(blacklist);
+                            await dbContext.SaveChangesAsync();
+                            response.Success = true;
+                            response.Message = "移除成功";
+                        }
+                    }
+                }
+
+                SendDbResponse(session, Shared.Messages.MessageIds.DbRemoveBlacklistRes, response, requestId);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"移除黑名单异常: {ex}");
+            }
+        }
+
+        public static async Task HandleGetBlacklistRequest(ISession session, DbGetBlacklistRequest? request, long? requestId = null)
+        {
+            if (request == null) return;
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+
+                var response = new DbGetBlacklistResponse();
+
+                var blacklistRows = await dbContext.Blacklists.Where(b => b.UserId == request.UserId).ToListAsync();
+                var blockedUserIds = blacklistRows.Select(b => b.BlockedUserId).Distinct().ToList();
+                var blockedUsers = blockedUserIds.Count == 0
+                    ? new System.Collections.Generic.Dictionary<int, Shared.Data.User>()
+                    : await dbContext.Users
+                        .Where(u => blockedUserIds.Contains(u.Id))
+                        .ToDictionaryAsync(u => u.Id, u => u);
+
+                response.Success = true;
+                response.Message = "获取成功";
+                response.Blacklists = blacklistRows.Select(b =>
+                {
+                    blockedUsers.TryGetValue(b.BlockedUserId, out var user);
+                    return new DbBlacklistItem
+                    {
+                        BlockedUserId = b.BlockedUserId,
+                        BlockedUniqueId = user?.UniqueId ?? string.Empty,
+                        BlockedNickname = user?.Nickname ?? string.Empty,
+                        AddTime = b.AddTime
+                    };
+                }).ToList();
+
+                SendDbResponse(session, Shared.Messages.MessageIds.DbGetBlacklistRes, response, requestId);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"获取黑名单异常: {ex}");
+            }
+        }
+
+        public static async Task HandleResolveUserByUniqueIdRequest(ISession session, DbResolveUserByUniqueIdRequest? request, long? requestId = null)
+        {
+            if (request == null) return;
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+
+                var response = new DbResolveUserByUniqueIdResponse();
+
+                if (string.IsNullOrWhiteSpace(request.UniqueId))
+                {
+                    response.Success = false;
+                    response.Message = "UniqueId不能为空";
+                }
+                else
+                {
+                    string uniqueId = request.UniqueId.Trim();
+                    var user = await dbContext.Users.FirstOrDefaultAsync(u => u.UniqueId == uniqueId);
+                    if (user == null)
+                    {
+                        response.Success = false;
+                        response.Message = "目标用户不存在";
+                    }
+                    else
+                    {
+                        response.Success = true;
+                        response.Message = "解析成功";
+                        response.UserId = user.Id;
+                        response.UniqueId = user.UniqueId ?? string.Empty;
+                        response.Nickname = user.Nickname ?? string.Empty;
+                    }
+                }
+
+                SendDbResponse(session, Shared.Messages.MessageIds.DbResolveUserByUniqueIdRes, response, requestId);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"按UniqueId解析用户异常: {ex}");
+            }
+        }
+
+        public static async Task HandleResolveUserByUserIdRequest(ISession session, DbResolveUserByUserIdRequest? request, long? requestId = null)
+        {
+            if (request == null) return;
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+
+                var response = new DbResolveUserByUserIdResponse();
+
+                if (request.UserId <= 0)
+                {
+                    response.Success = false;
+                    response.Message = "UserId无效";
+                }
+                else
+                {
+                    var user = await dbContext.Users.FirstOrDefaultAsync(u => u.Id == request.UserId);
+                    if (user == null)
+                    {
+                        response.Success = false;
+                        response.Message = "目标用户不存在";
+                    }
+                    else
+                    {
+                        response.Success = true;
+                        response.Message = "解析成功";
+                        response.UserId = user.Id;
+                        response.UniqueId = user.UniqueId ?? string.Empty;
+                        response.Nickname = user.Nickname ?? string.Empty;
+                    }
+                }
+
+                SendDbResponse(session, Shared.Messages.MessageIds.DbResolveUserByUserIdRes, response, requestId);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"按UserId解析用户异常: {ex}");
+            }
+        }
+
+        private static void SendDbResponse<T>(ISession session, int msgId, T response, long? requestId = null)
+        {
+            byte[] payload = Shared.Json.SerializeToUtf8Bytes(response);
+            if (requestId.HasValue)
+            {
+                payload = Shared.RouteMetadata.AttachRequestId(payload, requestId.Value);
+            }
+
+            byte[] packet = new byte[payload.Length + 4];
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), msgId);
+            payload.CopyTo(packet.AsSpan(4));
+            session.Send(packet);
         }
     }
 }

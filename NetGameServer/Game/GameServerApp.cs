@@ -97,6 +97,9 @@ namespace Game
                         MessageIds.SetFriendRemarkReq => MessageIds.SetFriendRemarkRes,
                         MessageIds.GetFriendsReq => MessageIds.GetFriendsRes,
                         MessageIds.InviteGameReq => MessageIds.InviteGameRes,
+                        MessageIds.AddBlacklistReq => MessageIds.AddBlacklistRes,
+                        MessageIds.RemoveBlacklistReq => MessageIds.RemoveBlacklistRes,
+                        MessageIds.GetBlacklistReq => MessageIds.GetBlacklistRes,
                         _ => 0
                     };
 
@@ -135,6 +138,22 @@ namespace Game
                             {
                                 Success = false,
                                 Message = errorMessage
+                            }),
+                            MessageIds.AddBlacklistRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.AddBlacklistResponse
+                            {
+                                Success = false,
+                                Message = errorMessage
+                            }),
+                            MessageIds.RemoveBlacklistRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.RemoveBlacklistResponse
+                            {
+                                Success = false,
+                                Message = errorMessage
+                            }),
+                            MessageIds.GetBlacklistRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.GetBlacklistResponse
+                            {
+                                Success = false,
+                                Message = errorMessage,
+                                Blacklists = Array.Empty<Shared.Messages.Social.BlacklistInfo>()
                             }),
                             _ => Array.Empty<byte>()
                         };
@@ -184,6 +203,23 @@ namespace Game
             dbClient.OnConnected += session => Log.Info($"已连接到 DB 服务器 (Host:{dbHost} Port:{dbPort})");
             // 与 DB 断开时记录警告（可触发重试或告警机制）
             dbClient.OnDisconnected += (session, reason) => Log.Warning($"与 DB 服务器断开连接: {reason}");
+            dbClient.OnDataReceived += (session, data) =>
+            {
+                if (data.Length < 4)
+                {
+                    Log.Warning($"Game 收到 DB 异常数据，长度不足 4，实际: {data.Length}");
+                    return;
+                }
+
+                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                var payload = data.Slice(4);
+
+                bool handled = Handlers.FriendHandler.TryHandleDbResponse(session, msgId, payload);
+                if (!handled)
+                {
+                    Log.Warning($"Game 未处理的 DB 响应消息: {msgId}");
+                }
+            };
 
             // 开始异步连接（不等待结果），如需重试策略请在 TcpClientWrapper 外层实现
             _ = dbClient.ConnectAsync();

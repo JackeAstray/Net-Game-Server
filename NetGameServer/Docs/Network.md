@@ -1,17 +1,19 @@
 ﻿# Network 网络模块
 
-`Network` 是底层网络通信模块，提供了适用于游戏服务端的基础网络能力封装，解耦了业务逻辑和底层通信，旨在为系统内的各个微服务之间以及与外部客户端之间提供高效、可靠的网络连接。
+`Network` 是全项目的底层通信基础设施，负责统一连接抽象、收发处理和网络事件分发。
 
-## 核心特性
-- **支持多种协议**: 包含对 TCP、UDP、KCP 等不同传输协议的基础封装。
-- **自定义 Session 抽象**: 提供 `ISession` 抽象用以包裹长连接（包含连接标识、接收与发送接口）。
-- **统一的网络事件处理**: `OnSessionConnected`、`OnDataReceived`、`OnSessionDisconnected` 三个事件构成了核心处理管线，使用者只需将其与业务代码进行事件绑定即可轻松实现网络报文流的劫持和处理。
+## 核心能力
+- **多协议支持**：支持 TCP、UDP/KCP、WebSocket 等传输方式。
+- **统一会话抽象**：通过 `ISession` 抽象连接标识、发送与接收行为。
+- **统一事件管线**：标准化 `OnSessionConnected`、`OnDataReceived`、`OnSessionDisconnected` 生命周期。
+- **服务化管理**：由 `NetworkManager` 负责多实例服务的启动、绑定和停止。
 
-## 主要组件
-- `TcpServer` / `TcpClientWrapper`：实现基于 TCP 协议的服务端和客户端链接维持。
-- `NetworkManager`: 管理不同网络类型的 Server 实化，以及控制它们的独立端口绑定和启动。
+## 关键组件
+- `TcpServer` / `TcpClientWrapper`：TCP 服务端与客户端封装。
+- `UdpServer`（KCP/UDP 场景）：承载低延迟报文输入输出。
+- `WebSocketServer`：浏览器或跨平台客户端接入支持。
+- `NetworkManager`：统一管理各协议服务实例与端口监听。
 
-## 应用场景
-被 `Gateway`、`Login` 以及 `Game` 等其它节点所引用。一般情况下：
-- 内部节点通信主要依赖于 TCP 进行长久稳定的短长链对接。
-- 外部客户端连接将会在 `Gateway` 使用到更多的网络协议封装，像 KCP 以承载不同类型的业务流量。
+## 接入建议
+- 在网关中聚合多协议服务器实例，并将连接/收包/断开事件绑定到统一路由逻辑。
+- 业务服务尽量只关心消息协议与处理结果，不直接耦合底层传输实现。

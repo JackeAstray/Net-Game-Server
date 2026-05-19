@@ -86,6 +86,26 @@ namespace Game.Handlers
 
             int actualSenderId = realSenderId;
 
+            if (request.Channel == ChatChannel.Friend && request.ReceiverId.HasValue)
+            {
+                if (Game.Handlers.FriendHandler.IsBlockedByTarget(request.ReceiverId.Value, actualSenderId))
+                {
+                    var blockedResponse = new SendChatResponse { Success = false, Message = "对方已将你拉黑。" };
+                    var blockedPayload = Json.SerializeToUtf8Bytes(blockedResponse);
+                    var routedBlockedPayload = Shared.RouteMetadata.AttachTargetSessionId(blockedPayload, session.SessionId);
+                    var blockedData = PacketBuilder.BuildPacket(MessageIds.ChatMessageRes, routedBlockedPayload, out int blockedLength);
+                    try
+                    {
+                        session.Send(blockedData.AsSpan(0, blockedLength).ToArray());
+                    }
+                    finally
+                    {
+                        System.Buffers.ArrayPool<byte>.Shared.Return(blockedData);
+                    }
+                    return;
+                }
+            }
+
             // 创建聊天通知
             var notification = new ReceiveChatNotification
             {
@@ -93,7 +113,7 @@ namespace Game.Handlers
                 {
                     Id = new Random().Next(), // 生成一个随机的新Id
                     SenderId = actualSenderId,
-                    SenderName = request.SenderName, // 可更从 PlayerManager 里取真名
+                    SenderName = $"Player_{actualSenderId}",
                     ReceiverId = request.ReceiverId,
                     Channel = request.Channel,
                     Content = request.Content,

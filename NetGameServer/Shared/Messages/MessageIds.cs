@@ -37,6 +37,11 @@ namespace Shared.Messages
         public const int DbChangePasswordRes = 1110;
         public const int DbResetPasswordByEmailReq = 1011;
         public const int DbResetPasswordByEmailRes = 1111;
+        public const int DbAddBlacklistReq = 1012;
+        public const int DbRemoveBlacklistReq = 1013;
+        public const int DbGetBlacklistReq = 1014;
+        public const int DbResolveUserByUniqueIdReq = 1015;
+        public const int DbResolveUserByUserIdReq = 1016;
 
         // === 登录服务器客户端通信 (10000-19999 网关转发过来) ===
         public const int PlayerDisconnectNotif = 10000;
@@ -105,11 +110,22 @@ namespace Shared.Messages
         public const int InviteGameReq = 50009;
         public const int InviteGameRes = 50010;
         public const int InviteGameNotif = 50011;
+        public const int AddBlacklistReq = 50012;
+        public const int AddBlacklistRes = 50013;
+        public const int RemoveBlacklistReq = 50014;
+        public const int RemoveBlacklistRes = 50015;
+        public const int GetBlacklistReq = 50016;
+        public const int GetBlacklistRes = 50017;
 
         // === DB 好友/聊天等响应消息 (1100-1199) ===
         public const int DbAddFriendRes = 1106;
         public const int DbRemoveFriendRes = 1107;
         public const int DbSetFriendRemarkRes = 1108;
         public const int DbGetFriendsRes = 1109;
+        public const int DbAddBlacklistRes = 1112;
+        public const int DbRemoveBlacklistRes = 1113;
+        public const int DbGetBlacklistRes = 1114;
+        public const int DbResolveUserByUniqueIdRes = 1115;
+        public const int DbResolveUserByUserIdRes = 1116;
     }
 }

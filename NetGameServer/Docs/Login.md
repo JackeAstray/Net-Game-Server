@@ -1,20 +1,24 @@
 ﻿# Login 登录服务器
 
-`Login` 节点主要负责处理用户系统级别的操作。它既能够通过 HTTP 提供无状态的注册和状态校验能力，也能通过接受来自 `Gateway` 建立的 TCP 长连接从而支持 Socket 包驱动登录体系。
+`Login` 服务负责账号体系相关业务，包括登录、注册、密码管理与基础账号资料处理。
 
-## 核心特性
-- **双协议支持**:
-  - **Socket 路由 (长连接)**: 它通过监听 `TCP` 对应端口接受由于客户端过完 `Gateway` 转发而来的原始认证字节流。根据附带的 `MsgId` 与分发的处理函数对应，比如 `MsgId=10001` 等登录相关封包。
-  - **HTTP API**: 采用 ASP.NET Core Web API 实现提供给客户端及 Web 周边工具调用接口。
-- **与全局数据库交互**: 包含 UID 生成器的逻辑，在启动向 `DB` 节点发起请求同步最大全局用户 ID，保持分布式主键的正确增量。
+## 能力范围
+- **HTTP API**：对外提供无状态接口（如账号注册、查询、管理）。
+- **Socket 路由处理**：接收 `Gateway` 转发的长连接消息并按 `MsgId` 分发。
+- **账号数据协作**：通过 `DB` 服务完成账号校验、写入与状态更新。
 
-## 工作流 (Socket登录举例)
-1. 客户端通过长连接向 `Gateway` 发出 `[MsgId][Payload]` 格式的登录请求。
-2. `Gateway` 转发给 `Login` 服务器，并在前面加上 `[ClientSessionId(8)]` 变成 `[ClientSessionId(8)][MsgId(4)][Payload]`。
-3. `Login` 解析头部的 `ClientSessionId` 与 `MsgId`。
-4. 在 `MessageRouter` 或者 `LoginHandler` 根据特定 `MsgId` 进入响应逻辑。
-5. `Login` 请求 `DB` 时统一使用 `[MsgId(4)][RequestId(8)][Payload]` 协议，响应同样为 `[MsgId(4)][RequestId(8)][Payload]`。
-6. `Login` 返回给 `Gateway` 的业务响应使用 `[ClientSessionId(8)][MsgId(4)][Payload]`，由网关转发给客户端。
+## Socket 路由约束
+`Login` 从网关接收的数据格式为：
+- `[ClientSessionId(8)][MsgId(4)][Payload]`
 
-## 启动注意
-`Login` 会依赖于 `DB` 系统的先决存在用以申请 `MaxUid` 初始化分发器。请务必优先启动 `DB` 进程。
+推荐流程：
+1. 解析 `ClientSessionId` 与 `MsgId`。
+2. 基于 `MessageIds` 进行显式映射（如 `10001` 登录、`10003` 注册）。
+3. 反序列化请求体并交由登录业务处理器执行。
+4. 将响应打包为 `[ClientSessionId(8)][ResponseMsgId(4)][Payload]` 回传网关。
+
+## 与 DB 通信协议
+- 请求/响应统一：`[MsgId(4)][RequestId(8)][Payload]`
+
+## 启动依赖
+`Login` 在启动阶段通常需要与 `DB` 建立可用连接（例如同步 UID 相关初始状态），建议先启动 `DB` 再启动 `Login`。
