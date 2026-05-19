@@ -24,6 +24,12 @@ namespace DB
         /// </summary>
         public static ServiceProvider ServiceProvider { get; private set; }
 
+        /// <summary>
+        /// 使用 PBKDF2 (HMACSHA256) 对明文密码进行加盐哈希，并以包含算法、迭代次数、盐和哈希值的可存储字符串返回。
+        /// </summary>
+        /// <remarks>返回值包含验证所需的所有组件；验证时应使用相同的算法、迭代次数和盐。为保持长期安全性，可能需要根据当前最佳实践调整迭代次数或算法。</remarks>
+        /// <param name="rawPassword">要哈希的明文密码。</param>
+        /// <returns>格式为 'PBKDF2$<iterations>$<saltBase64>$<hashBase64>' 的字符串；使用 100000 次迭代、16 字节盐和 32 字节输出（SHA-256）。</returns>
         public static string HashPassword(string rawPassword)
         {
             const int iterations = 100_000;
@@ -32,11 +38,24 @@ namespace DB
             return $"PBKDF2${iterations}${Convert.ToBase64String(salt)}${Convert.ToBase64String(hash)}";
         }
 
+        /// <summary>
+        /// 判断字符串是否为以 "PBKDF2$" 前缀标识且非空白的 PBKDF2 哈希。
+        /// </summary>
+        /// <remarks>使用 Ordinal 比较前缀（区分大小写）。</remarks>
+        /// <param name="storedPassword">要验证的保存密码字符串。</param>
+        /// <returns>如果 storedPassword 非空白且以 "PBKDF2$" 开头则为 true，否则为 false。</returns>
         public static bool IsPbkdf2Hash(string storedPassword)
         {
             return !string.IsNullOrWhiteSpace(storedPassword) && storedPassword.StartsWith("PBKDF2$", StringComparison.Ordinal);
         }
 
+        /// <summary>
+        /// 验证原始密码是否与使用 PBKDF2（SHA-256）派生并以固定时间比较的存储哈希匹配。
+        /// </summary>
+        /// <remarks>在存储字符串不是 PBKDF2 格式、解析失败或迭代次数无效时返回 false。使用固定时间比较以减轻时序攻击风险。</remarks>
+        /// <param name="rawPassword">要验证的明文密码。</param>
+        /// <param name="storedPassword">以 PBKDF2 格式存储的密码，格式为：pbkdf2$iterations$base64Salt$base64Hash。</param>
+        /// <returns>若密码匹配则返回 true，否则返回 false。</returns>
         public static bool VerifyPbkdf2Password(string rawPassword, string storedPassword)
         {
             if (!IsPbkdf2Hash(storedPassword))

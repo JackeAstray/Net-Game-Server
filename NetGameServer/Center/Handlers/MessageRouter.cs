@@ -134,6 +134,13 @@ namespace Center.Handlers
             return handlers;
         }
 
+        /// <summary>
+        /// 验证注册请求的签名并校验时间戳有效性。
+        /// </summary>
+        /// <remarks>先通过 IsTimestampValid 验证时间戳，再将 NodeId、NodeType、Host、Port、CurrentLoad 和 Timestamp
+        /// 以管道分隔组合为源字符串，调用 ComputeSignature 生成期望签名，最后使用 FixedTimeEquals 进行常量时间比较以抵抗定时攻击。</remarks>
+        /// <param name="req">要验证签名的 CenterRegisterNodeRequest 实例，包含节点标识、类型、主机、端口、当前负载、时间戳和签名。</param>
+        /// <returns>如果时间戳有效且签名与按 NodeId|NodeType|Host|Port|CurrentLoad|Timestamp 计算的期望签名在固定时间比较下相等，则返回 true；否则返回 false。</returns>
         private static bool VerifyRegisterSignature(CenterRegisterNodeRequest req)
         {
             if (!IsTimestampValid(req.Timestamp) || string.IsNullOrWhiteSpace(req.Signature))
@@ -146,6 +153,13 @@ namespace Center.Handlers
             return FixedTimeEquals(expected, req.Signature);
         }
 
+        /// <summary>
+        /// 验证中心节点状态请求的签名并检查时间戳是否有效。
+        /// </summary>
+        /// <remarks>使用 ComputeSignature 计算预期签名，并通过 FixedTimeEquals 以固定时间比较防止时序攻击。请求时间戳必须通过
+        /// IsTimestampValid 验证。</remarks>
+        /// <param name="req">包含 NodeId、CurrentLoad、Timestamp 和 Signature 的状态请求。</param>
+        /// <returns>若时间戳有效且签名与根据 NodeId、CurrentLoad 和 Timestamp 计算的值匹配则返回 true，否则返回 false。</returns>
         private static bool VerifyStatusSignature(CenterNodeStatusRequest req)
         {
             if (!IsTimestampValid(req.Timestamp) || string.IsNullOrWhiteSpace(req.Signature))
@@ -158,6 +172,12 @@ namespace Center.Handlers
             return FixedTimeEquals(expected, req.Signature);
         }
 
+        /// <summary>
+        /// 验证给定的 Unix 时间戳（秒）是否为正且与当前 UTC Unix 时间的绝对差值不超过 120 秒。
+        /// </summary>
+        /// <remarks>通过 DateTimeOffset.UtcNow.ToUnixTimeSeconds 获取当前 UTC 时间，并比较绝对差值是否小于等于 120 秒。</remarks>
+        /// <param name="timestamp">Unix 时间戳，单位为秒。</param>
+        /// <returns>若时间戳为正且与当前 UTC Unix 时间的差值不超过 120 秒，则返回 true；否则返回 false。</returns>
         private static bool IsTimestampValid(long timestamp)
         {
             if (timestamp <= 0)
@@ -170,6 +190,13 @@ namespace Center.Handlers
             return delta <= 120;
         }
 
+        /// <summary>
+        /// 计算输入字符串的 HMAC-SHA256 签名并以 Base64 编码返回。
+        /// </summary>
+        /// <remarks>从配置键 CenterNodeSharedSecret 获取共享密钥（默认 change-this-secret）；对输入使用 UTF-8 编码并用 HMACSHA256
+        /// 计算哈希，使用完毕后释放 HMAC 实例。</remarks>
+        /// <param name="source">要签名的输入字符串。</param>
+        /// <returns>签名的 Base64 编码字符串。</returns>
         private static string ComputeSignature(string source)
         {
             string secret = Shared.ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
@@ -181,6 +208,14 @@ namespace Center.Handlers
             return Convert.ToBase64String(hash);
         }
 
+        /// <summary>
+        /// 以固定时间比较两个字符串以防止时序侧信道攻击。
+        /// </summary>
+        /// <remarks>先将字符串编码为 UTF-8 字节数组，先比较长度以避免不必要的固定时间调用，然后使用 CryptographicOperations.FixedTimeEquals
+        /// 进行固定时间比较。</remarks>
+        /// <param name="expected">预期字符串，使用 UTF-8 编码为字节后参与固定时间比较。</param>
+        /// <param name="actual">要比较的字符串，使用 UTF-8 编码为字节后参与固定时间比较。</param>
+        /// <returns>当两者长度相等且内容在固定时间比较中相同时返回 true；否则返回 false。</returns>
         private static bool FixedTimeEquals(string expected, string actual)
         {
             byte[] expectedBytes = Encoding.UTF8.GetBytes(expected);
@@ -190,8 +225,14 @@ namespace Center.Handlers
         }
 
         /// <summary>
-        /// 将响应发送回网关服务器，统一协议 [MsgId][Payload]，路由信息通过 payload 元数据传递。
+        /// 将响应序列化为 UTF-8、附加客户端会话 ID 的路由元数据并发送到网关会话，优先使用与指定客户端会话关联的网关会话。
         /// </summary>
+        /// <remarks>发送失败的异常将被捕获并记录。构建的字节数组在完成后会归还至 ArrayPool<byte>.Shared。</remarks>
+        /// <typeparam name="T">响应对象的类型。</typeparam>
+        /// <param name="gatewaySession">在未找到与客户端关联的网关会话或该会话不可用时用于发送数据的网关会话。</param>
+        /// <param name="clientSessionId">目标客户端的会话 ID；若大于 0 则尝试路由到与该客户端关联的网关会话。</param>
+        /// <param name="msgId">要发送的数据包的消息标识符。</param>
+        /// <param name="response">要序列化为 UTF-8 并发送的响应对象。</param>
         private static void SendToGateway<T>(Network.ISession gatewaySession, long clientSessionId, int msgId, T response)
         {
             byte[] responsePayload = Shared.Json.SerializeToUtf8Bytes(response);

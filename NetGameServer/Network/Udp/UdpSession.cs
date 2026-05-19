@@ -37,10 +37,16 @@ public class UdpSession : ISession
         catch (Exception ex)
         {
             // 对于UDP发送异常只做日志记录，不用断开
-             Shared.Log.Warning($"UdpSession Send Error: {ex.Message}");
+            Shared.Log.Warning($"UdpSession Send Error: {ex.Message}");
         }
     }
 
+    /// <summary>
+    /// 确保返回的字节数组以 4 字节小端整数作为长度前缀来表示其有效载荷长度。
+    /// </summary>
+    /// <remarks>长度以 32 位小端整数表示，值为随后字节的长度。不会修改输入的 ReadOnlySpan，结果为独立的字节数组副本。</remarks>
+    /// <param name="data">要检查或封装的只读字节序列；若前四字节作为小端 32 位整数等于剩余字节数，则视为已包含前缀。</param>
+    /// <returns>包含 4 字节小端长度前缀的字节数组；若输入已包含正确前缀则返回其副本，否则返回带前缀的新数组。</returns>
     private static byte[] EnsureLengthPrefixed(ReadOnlySpan<byte> data)
     {
         if (data.Length >= 4)

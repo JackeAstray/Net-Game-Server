@@ -229,6 +229,14 @@ public static class RouteMetadata
         return payload.ToArray();
     }
 
+    /// <summary>
+    /// 为二进制元数据附加或更新名为 fieldName 的 64 位整数字段，并返回包含该字段的新二进制负载。
+    /// </summary>
+    /// <remarks>如果原始负载已包含二进制元数据，现有字段将与新字段合并；同名字段由新值覆盖。</remarks>
+    /// <param name="payload">原始负载（可能包含已有的二进制元数据）；如果包含元数据，将分离出正文并保留已有字段。</param>
+    /// <param name="fieldName">要附加或更新的字段名；使用 Ordinal（区分大小写）比较。</param>
+    /// <param name="value">要设置的 64 位整数字段值。</param>
+    /// <returns>包含指定字段的新二进制负载，其中正文与字段集合按元数据格式编码。</returns>
     private static byte[] AttachLongFieldToBinaryMetadata(ReadOnlyMemory<byte> payload, string fieldName, long value)
     {
         var fields = new System.Collections.Generic.Dictionary<string, long>(StringComparer.Ordinal);
@@ -244,6 +252,16 @@ public static class RouteMetadata
         return BuildBinaryMetadataPayload(body, fields);
     }
 
+    /// <summary>
+    /// 尝试从二进制元数据中提取指定字段的 long 值。
+    /// </summary>
+    /// <remarks>内部先使用 TryParseBinaryMetadata 解析元数据，再在成功时移除字段并通过 BuildBinaryMetadataPayload
+    /// 或原始正文重建返回的有效载荷副本；返回的 cleanPayload 为副本。</remarks>
+    /// <param name="payload">包含带元数据的原始二进制有效载荷。</param>
+    /// <param name="fieldName">要提取的元数据字段名称。</param>
+    /// <param name="value">当找到并成功解析字段时，设置为提取的 long 值；否则为 0。</param>
+    /// <param name="cleanPayload">返回已移除指定字段后的有效载荷副本；在解析失败或字段不存在时返回原始有效载荷的副本。</param>
+    /// <returns>如果成功提取并移除指定字段则为 true；否则为 false。</returns>
     private static bool TryExtractLongFieldFromBinaryMetadata(ReadOnlyMemory<byte> payload, string fieldName, out long value, out byte[] cleanPayload)
     {
         if (!TryParseBinaryMetadata(payload, out var body, out var fields))
@@ -264,6 +282,15 @@ public static class RouteMetadata
         return true;
     }
 
+    /// <summary>
+    /// 尝试从 payload 尾部解析嵌入的二进制元数据，并提取主体与数值字段。
+    /// </summary>
+    /// <remarks>元数据格式为：尾部包含 4 字节魔数（小端）、4 字节 metadata 长度（小端），前面为 UTF-8 编码的 JSON 元数据。方法验证魔数与长度、解析 UTF‑8
+    /// JSON，并将属性中类型为 Integer 或 Float 的值以 long 提取到 fields 中。任何编码、格式或解析错误均导致返回 false。</remarks>
+    /// <param name="payload">包含可能附加元数据的只读字节序列。</param>
+    /// <param name="body">输出去除元数据后的主体；解析失败时保持为原始 payload。</param>
+    /// <param name="fields">输出只包含数值类型字段名及其 long 值的字典；解析失败时为空字典。</param>
+    /// <returns>成功解析并提取元数据则返回 true，否则返回 false。</returns>
     private static bool TryParseBinaryMetadata(ReadOnlyMemory<byte> payload, out ReadOnlyMemory<byte> body, out System.Collections.Generic.Dictionary<string, long> fields)
     {
         body = payload;
@@ -321,6 +348,14 @@ public static class RouteMetadata
         return true;
     }
 
+    /// <summary>
+    /// 构建包含原始主体、UTF-8 编码 JSON 元数据和固定大小尾部的二进制有效载荷。
+    /// </summary>
+    /// <remarks>使用 Newtonsoft.Json.Linq.JObject 生成无格式化 JSON 并以 UTF-8 编码；尾部大小由常量 BinaryMetadataFooterSize
+    /// 指定，且在尾部按小端写入魔数与元数据长度。</remarks>
+    /// <param name="body">作为有效载荷前段复制的原始二进制主体。</param>
+    /// <param name="fields">要序列化为紧凑 JSON（无格式化）的元数据字段集合，键为名称，值为数字。</param>
+    /// <returns>包含 [body][metadata UTF-8 JSON][footer] 的字节数组；footer 包含 4 字节魔数（UInt32，小端）和 4 字节元数据长度（Int32，小端）。</returns>
     private static byte[] BuildBinaryMetadataPayload(ReadOnlyMemory<byte> body, System.Collections.Generic.Dictionary<string, long> fields)
     {
         string metadataJson = new JObject(fields).ToString(Newtonsoft.Json.Formatting.None);

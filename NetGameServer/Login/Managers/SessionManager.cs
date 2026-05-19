@@ -162,6 +162,11 @@ namespace Login.Managers
             return sessionId;
         }
 
+        /// <summary>
+        /// 检索与指定客户端会话标识关联的用户标识。
+        /// </summary>
+        /// <param name="clientSessionId">客户端会话标识，用于查找关联的用户标识。</param>
+        /// <returns>与指定会话关联的用户标识；若未找到则返回默认的 int 值（0）。</returns>
         public int GetUserIdBySessionId(long clientSessionId)
         {
             sessionUsers.TryGetValue(clientSessionId, out var userId);

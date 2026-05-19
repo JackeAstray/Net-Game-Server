@@ -34,6 +34,12 @@ public class UdpServer : INetworkServer
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// 循环接收来自 UDP 客户端的数据报，按远程端点维护逻辑会话，组装长度前缀分包并触发会话连接、数据接收及会话断开事件。
+    /// </summary>
+    /// <remarks>为每个远程端点维护 UdpSession 和 LengthPrefixedPacketReader；定期（每 30 秒）清理超过 5 分钟未活动的会话。遇到
+    /// ObjectDisposedException 退出循环，其它异常记录后继续；服务器停止时触发所有存活会话的断开事件。</remarks>
+    /// <returns>表示接收循环结束时完成的任务。</returns>
     private async Task ReceiveLoopAsync()
     {
         // UDP中我们往往需要通过远程地址来标识某一个会话，这里简单使用字典存储当前存在的逻辑会话。

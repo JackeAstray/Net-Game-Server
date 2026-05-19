@@ -221,14 +221,14 @@ namespace Game
                         return;
                     }
 
-                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
-                var payload = data.Slice(4);
+                    int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                    var payload = data.Slice(4);
 
-                bool handled = Handlers.FriendHandler.TryHandleDbResponse(session, msgId, payload);
-                if (!handled)
-                {
-                    Log.Warning($"Game 未处理的 DB 响应消息: {msgId}");
-                }
+                    bool handled = Handlers.FriendHandler.TryHandleDbResponse(session, msgId, payload);
+                    if (!handled)
+                    {
+                        Log.Warning($"Game 未处理的 DB 响应消息: {msgId}");
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -298,6 +298,16 @@ namespace Game
             _ = centerClient.ConnectAsync();
         }
 
+        /// <summary>
+        /// 向中心服务发送节点注册请求，包含节点标识、类型、主机、端口、当前负载、时间戳和签名。
+        /// </summary>
+        /// <remarks>请求对象序列化为 JSON 并封装为二进制数据包发送；发送异常会记录错误；发送完成后归还 ArrayPool 缓冲区。</remarks>
+        /// <param name="centerClient">与中心服务器的 TCP 连接封装，用于发送注册数据。</param>
+        /// <param name="nodeId">节点唯一标识。</param>
+        /// <param name="nodeType">节点类型。</param>
+        /// <param name="host">节点主机或 IP。</param>
+        /// <param name="port">节点监听端口。</param>
+        /// <param name="currentLoad">节点当前负载值（例如并发连接数或任务数）。</param>
         private static void SendRegisterNode(TcpClientWrapper centerClient, string nodeId, string nodeType, string host, int port, int currentLoad)
         {
             long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -328,6 +338,13 @@ namespace Game
             }
         }
 
+        /// <summary>
+        /// 向中心服务器上报节点状态，包括节点标识、当前负载、时间戳与签名。
+        /// </summary>
+        /// <remarks>发送失败时记录错误日志；使用 ArrayPool 返回临时字节缓冲区以减少分配。</remarks>
+        /// <param name="centerClient">用于向中心服务器发送数据的 TCP 客户端包装器。</param>
+        /// <param name="nodeId">节点的唯一标识符。</param>
+        /// <param name="currentLoad">节点的当前负载值。</param>
         private static void SendNodeStatus(TcpClientWrapper centerClient, string nodeId, int currentLoad)
         {
             long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -355,6 +372,13 @@ namespace Game
             }
         }
 
+        /// <summary>
+        /// 使用配置中的共享密钥对输入字符串计算 HMAC-SHA256 并返回 Base64 编码的签名。
+        /// </summary>
+        /// <remarks>共享密钥从配置键 CenterNodeSharedSecret 获取，若未设置则回退到默认值 "change-this-secret"。使用 UTF-8
+        /// 编码；请妥善保护并更改默认密钥以保证安全。</remarks>
+        /// <param name="source">要签名的输入字符串。</param>
+        /// <returns>Base64 编码的 HMAC-SHA256 签名。</returns>
         private static string ComputeCenterSignature(string source)
         {
             string secret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
@@ -364,6 +388,11 @@ namespace Game
             return Convert.ToBase64String(hmac.ComputeHash(data));
         }
 
+        /// <summary>
+        /// 获取当前在线玩家数。
+        /// </summary>
+        /// <remarks>从 Game.Managers.PlayerSessionManager.Instance 查询在线玩家数。</remarks>
+        /// <returns>当前在线玩家的数量。</returns>
         private static int GetCurrentLoad()
         {
             return Game.Managers.PlayerSessionManager.Instance.GetOnlinePlayerCount();

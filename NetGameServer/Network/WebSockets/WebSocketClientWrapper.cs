@@ -24,6 +24,12 @@ public class WebSocketClientWrapper : INetworkClient
         this.url = url;
     }
 
+    /// <summary>
+    /// 异步连接到指定的 WebSocket，并在断开或失败时按 3 秒间隔自动重试，直到停止。
+    /// </summary>
+    /// <remarks>连接成功后创建 WebSocketSession 并触发 OnConnected，然后调用 HandleConnectionAsync。连接失败或断开时记录警告并在 3
+    /// 秒后重试。连接循环由 isRunning 控制，连接请求使用 CancellationToken.None。</remarks>
+    /// <returns>表示连接及会话处理生命周期的异步操作；操作完成表示连接循环已终止。</returns>
     public async Task ConnectAsync()
     {
         isRunning = true;
@@ -53,6 +59,12 @@ public class WebSocketClientWrapper : INetworkClient
         }
     }
 
+    /// <summary>
+    /// 处理 WebSocket 连接的接收循环，读取消息、更新会话活动时间并触发数据接收与断开事件。
+    /// </summary>
+    /// <remarks>当连接处于 Open 且 isRunning 为 true 时循环接收。遇到 Close 帧则以 NormalClosure 关闭并退出；接收数据时复制缓冲区到新数组、更新
+    /// session.LastActivityTime 并触发 OnDataReceived。发生异常且仍在运行时通过 OnDisconnected 报告错误。方法不接受外部取消令牌。</remarks>
+    /// <returns>表示异步操作的任务，完成时表示接收循环已终止。</returns>
     private async Task HandleConnectionAsync()
     {
         if (webSocket == null || session == null)

@@ -41,6 +41,14 @@ public class MessageRouter
         _ = TryRouteMessage(session, msgId, payload);
     }
 
+    /// <summary>
+    /// 根据 msgId 将消息路由到已注册的处理器并执行。
+    /// </summary>
+    /// <remarks>调用处理器期间发生的异常会被捕获并通过 Shared.Log 记录，不会向上抛出；未找到处理器时记录警告。</remarks>
+    /// <param name="session">处理器执行时使用的会话上下文。</param>
+    /// <param name="msgId">消息类型的整数标识，用于查找对应的处理器。</param>
+    /// <param name="payload">消息负载的只读字节序列。</param>
+    /// <returns>如果找到并调用了处理器则返回 true（即使处理器内部抛出异常也视为已处理并返回 true）；若未找到处理器则返回 false。</returns>
     public bool TryRouteMessage(ISession session, int msgId, ReadOnlyMemory<byte> payload)
     {
         if (handlers.TryGetValue(msgId, out var handler))

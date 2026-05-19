@@ -45,10 +45,13 @@ public class AspNetServer : INetworkServer
     }
 
     /// <summary>
-    /// 启动 HTTP 服务，监听指定端口。
+    /// 启动并运行配置为在指定端口监听的 ASP.NET Core HTTP 主机。
     /// </summary>
-    /// <param name="port"></param>
-    /// <returns></returns>
+    /// <remarks>使用 Host.CreateDefaultBuilder 和 ConfigureWebHostDefaults 配置主机；默认注册控制器并映射路由与根路径的 GET 端点。会调用
+    /// configureServices 和 configureApp 委托（若提供）以允许外部添加服务和中间件。异常时记录错误并重新抛出。主机通过 UseUrls 在所有地址上监听
+    /// http://*:{port}。</remarks>
+    /// <param name="port">要监听的 TCP 端口号。</param>
+    /// <returns>表示异步启动操作的可等待任务。</returns>
     public async Task StartAsync(int port)
     {
         try

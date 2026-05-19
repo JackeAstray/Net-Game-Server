@@ -20,18 +20,19 @@ namespace Game.Network
         public object? UserData { get => null; set { } }
 
         /// <summary>
-        /// 将数据发送到客户端。数据格式应符合协议要求，通常包含消息 ID 和消息体。
+        /// 将指定的只读字节序列发送到网关会话。
         /// </summary>
-        /// <param name="data"></param>
+        /// <param name="data">要发送的只读字节序列。</param>
         public void Send(ReadOnlyMemory<byte> data)
         {
             gatewaySession.Send(data);
         }
 
         /// <summary>
-        /// 将数据异步发送到客户端。数据格式应符合协议要求，通常包含消息 ID 和消息体。
+        /// 向网关会话发送指定的数据。
         /// </summary>
-        /// <param name="data"></param>
+        /// <remarks>同步委托给 gatewaySession.Send；方法名不表示异步行为。</remarks>
+        /// <param name="data">要发送到网关的只读字节内存。</param>
         public void SendAsync(ReadOnlyMemory<byte> data)
         {
             gatewaySession.Send(data);

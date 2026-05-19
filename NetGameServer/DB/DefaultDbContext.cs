@@ -10,6 +10,11 @@ namespace DB
         {
         }
 
+        /// <summary>
+        /// 配置实体模型，为 User 实体添加唯一索引并保留基类的配置。
+        /// </summary>
+        /// <remarks>为 User.UniqueId 和 User.Account 添加唯一索引；调用 base.OnModelCreating 以保留基类的模型配置。</remarks>
+        /// <param name="modelBuilder">用于构建和配置实体模型的 ModelBuilder 实例。</param>
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);

@@ -148,9 +148,15 @@ namespace Login.Handlers
         }
 
         /// <summary>
-        /// 将处理结果发送回 Gateway。
-        /// 统一协议为 [MsgId][Payload]，客户端路由信息通过 payload 元数据 __clientSessionId 传递。
+        /// 将响应序列化为 UTF-8 JSON、附加客户端会话标识并通过指定的网关会话发送。
         /// </summary>
+        /// <remarks>响应先序列化为 UTF-8 字节数组，随后将客户端会话 ID 附加到路由元数据并构建数据包；发送时使用实际总长度的缓冲片段，发送完成后将临时字节数组归还到
+        /// ArrayPool<byte>。</remarks>
+        /// <typeparam name="T">响应的类型，用于序列化为 JSON 的泛型类型。</typeparam>
+        /// <param name="gatewaySession">用于发送构建后数据包的网关会话。</param>
+        /// <param name="clientSessionId">目标客户端的会话标识（作为路由元数据附加）。</param>
+        /// <param name="msgId">要发送的数据包的消息标识符。</param>
+        /// <param name="response">要序列化为负载并发送的响应实例。</param>
         private static void SendToGateway<T>(Network.ISession gatewaySession, long clientSessionId, int msgId, T response)
         {
             byte[] responsePayload = Shared.Json.SerializeToUtf8Bytes(response);

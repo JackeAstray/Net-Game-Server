@@ -389,6 +389,14 @@ namespace DB.Handlers
             }
         }
 
+        /// <summary>
+        /// 验证并处理更改密码请求：校验请求与用户信息、验证旧密码的 PBKDF2 哈希，成功时更新并持久化新密码，然后向会话发送结果响应。
+        /// </summary>
+        /// <remarks>方法访问数据库查找用户、验证账号匹配与密码格式，使用 PBKDF2
+        /// 验证旧密码并在通过时哈希并保存新密码；在任何失败或异常情况下记录相应日志并发送失败响应。</remarks>
+        /// <param name="session">用于发送响应的会话连接。</param>
+        /// <param name="request">包含要验证的用户标识、账号、旧密码与新密码；为 null 时记录警告并返回。</param>
+        /// <returns>表示异步操作的任务。</returns>
         public static async Task HandleChangePasswordVerifyRequest(ISession session, ChangePasswordVerifyRequest? request)
         {
             if (request == null)
@@ -463,6 +471,13 @@ namespace DB.Handlers
             }
         }
 
+        /// <summary>
+        /// 处理通过邮箱的重置密码请求：校验请求和用户邮箱，匹配后将临时密码哈希写入数据库，发送响应并记录日志。
+        /// </summary>
+        /// <remarks>通过依赖注入获取 DbContext；在请求无效或验证失败时记录警告，发生异常时记录错误。</remarks>
+        /// <param name="session">用于与客户端通信的会话实例，用以发送响应包。</param>
+        /// <param name="request">包含账号、邮箱与临时密码的重置请求，可能为 null。</param>
+        /// <returns>表示异步操作的任务。</returns>
         public static async Task HandleResetPasswordByEmailRequest(ISession session, ResetPasswordByEmailRequest? request)
         {
             if (request == null)
@@ -761,6 +776,15 @@ namespace DB.Handlers
             }
         }
 
+        /// <summary>
+        /// 将指定目标用户添加到发起用户的黑名单并发送数据库响应。
+        /// </summary>
+        /// <remarks>执行输入验证（用户ID 和 TargetUniqueId）；查找目标用户并防止将自己加入黑名单；检测并避免重复黑名单项；将新黑名单记录持久化并发送
+        /// DbAddBlacklistResponse；发生异常时记录错误日志。</remarks>
+        /// <param name="session">会话对象，用于与客户端通信并发送数据库响应。</param>
+        /// <param name="request">包含发起用户ID和目标用户 UniqueId 的添加黑名单请求；为 null 时不执行任何操作。</param>
+        /// <param name="requestId">可选的请求标识，用于在响应中关联请求。</param>
+        /// <returns>表示异步操作完成的任务。</returns>
         public static async Task HandleAddBlacklistRequest(ISession session, DbAddBlacklistRequest? request, long? requestId = null)
         {
             if (request == null) return;
@@ -823,6 +847,15 @@ namespace DB.Handlers
             }
         }
 
+        /// <summary>
+        /// 处理移除黑名单的异步请求：验证输入、查找目标用户、从数据库移除对应黑名单条目并发送结果响应。
+        /// </summary>
+        /// <remarks>对请求进行校验、查询并修改数据库中的黑名单记录，最后通过 SendDbResponse 发送
+        /// DbRemoveBlacklistResponse；发生异常时记录错误。</remarks>
+        /// <param name="session">用于与客户端通信的会话实例，用于发送数据库响应。</param>
+        /// <param name="request">包含移除黑名单所需的数据；可能为 null，表示请求无效或无法反序列化。</param>
+        /// <param name="requestId">可选请求标识，用于在发送响应时关联原始请求。</param>
+        /// <returns>表示异步操作的任务。</returns>
         public static async Task HandleRemoveBlacklistRequest(ISession session, DbRemoveBlacklistRequest? request, long? requestId = null)
         {
             if (request == null)
@@ -879,6 +912,14 @@ namespace DB.Handlers
             }
         }
 
+        /// <summary>
+        /// 处理获取黑名单的异步请求：验证请求、查询数据库并返回黑名单列表。
+        /// </summary>
+        /// <remarks>对请求进行校验，查询数据库中的黑名单记录，并通过 SendDbResponse 发送 DbGetBlacklistResponse；发生异常时记录错误。</remarks>
+        /// <param name="session">用于与客户端通信的会话实例，用于发送数据库响应。</param>
+        /// <param name="request">包含获取黑名单所需的数据；可能为 null，表示请求无效或无法反序列化。</param>
+        /// <param name="requestId">可选请求标识，用于在发送响应时关联原始请求。</param>
+        /// <returns>表示异步操作的任务。</returns>
         public static async Task HandleGetBlacklistRequest(ISession session, DbGetBlacklistRequest? request, long? requestId = null)
         {
             if (request == null)
@@ -924,6 +965,14 @@ namespace DB.Handlers
             }
         }
 
+        /// <summary>
+        /// 按 UniqueId 查找用户并将解析结果以 DbResolveUserByUniqueIdResponse 发回请求方。
+        /// </summary>
+        /// <remarks>request 为 null 或 UniqueId 无效时记录警告并返回；成功时填充响应并发送。发生异常时记录错误日志。</remarks>
+        /// <param name="session">当前会话，用于向请求方发送数据库响应。</param>
+        /// <param name="request">包含待解析 UniqueId 的请求对象；可为 null。</param>
+        /// <param name="requestId">可选请求标识，用于将响应关联到原始请求。</param>
+        /// <returns>表示异步操作的任务。</returns>
         public static async Task HandleResolveUserByUniqueIdRequest(ISession session, DbResolveUserByUniqueIdRequest? request, long? requestId = null)
         {
             if (request == null)
@@ -971,6 +1020,15 @@ namespace DB.Handlers
             }
         }
 
+        /// <summary>
+        /// 根据用户 ID 从数据库解析用户并通过会话发送数据库响应。
+        /// </summary>
+        /// <remarks>在独立的服务作用域中使用 DefaultDbContext 查询用户；对无效的 UserId 或不存在的用户返回带有错误信息的响应，成功时返回包含
+        /// UserId、UniqueId 和 Nickname 的响应；发生异常时记录错误日志。</remarks>
+        /// <param name="session">会话对象，用于发送数据库响应。</param>
+        /// <param name="request">包含要解析的目标用户 ID 的请求对象；为 null 时记录警告并忽略。</param>
+        /// <param name="requestId">可选的请求标识，用于将响应关联到原始请求。</param>
+        /// <returns>表示异步操作的任务。</returns>
         public static async Task HandleResolveUserByUserIdRequest(ISession session, DbResolveUserByUserIdRequest? request, long? requestId = null)
         {
             if (request == null)
@@ -1017,6 +1075,16 @@ namespace DB.Handlers
             }
         }
 
+        /// <summary>
+        /// 将响应对象序列化为 UTF-8 JSON，按 msgId 前缀封包并通过会话发送；异常被捕获并记录。
+        /// </summary>
+        /// <remarks>包格式：4 字节小端 msgId 后跟 JSON 负载（若提供则包含附加的请求 ID 元数据）。使用 Shared.Json.SerializeToUtf8Bytes
+        /// 进行序列化并通过会话发送；内部捕获并记录异常。</remarks>
+        /// <typeparam name="T">响应类型，可序列化为 JSON；若包含 bool Success 与 Message 属性，在 Success 为 false 时记录警告。</typeparam>
+        /// <param name="session">用于发送封装后数据包的会话。</param>
+        /// <param name="msgId">消息标识，以 4 字节小端格式写入包头。</param>
+        /// <param name="response">要发送的响应对象，序列化为 UTF-8 JSON；可包含 Success (bool) 和 Message 属性用于日志。</param>
+        /// <param name="requestId">可选请求标识，会附加到负载元数据用于路由/关联。</param>
         private static void SendDbResponse<T>(ISession session, int msgId, T response, long? requestId = null)
         {
             try

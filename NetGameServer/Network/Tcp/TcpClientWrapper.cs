@@ -28,6 +28,12 @@ public class TcpClientWrapper : INetworkClient
         this.port = port;
     }
 
+    /// <summary>
+    /// 异步连接到指定主机和端口；成功时创建 TcpSession 并触发 OnConnected，然后处理连接；失败或断开时每 3 秒重试，直到停止运行。
+    /// </summary>
+    /// <remarks>设置 isRunning 为 true；在连接过程中记录日志并捕获异常（仅记录警告）；在每次失败后等待 3 秒重试；调用 HandleConnectionAsync
+    /// 以处理已建立的会话。</remarks>
+    /// <returns>表示异步操作完成的任务；在停止运行后（isRunning 为 false）完成。</returns>
     public async Task ConnectAsync()
     {
         isRunning = true;
@@ -57,6 +63,13 @@ public class TcpClientWrapper : INetworkClient
         }
     }
 
+    /// <summary>
+    /// 处理 TCP 连接的异步循环：读取长度前缀包，更新会话最后活动时间，并为每个接收的数据包触发 OnDataReceived；在错误或连接关闭时触发 OnDisconnected。
+    /// </summary>
+    /// <remarks>在 tcpClient 为 null、未连接或 session 为 null 时立即返回。使用 LengthPrefixedPacketReader
+    /// 聚合接收缓冲区并解析完整包；每次读取更新 session.LastActivityTime。捕获异常并在异常或连接关闭时触发 OnDisconnected；在退出前释放 tcpClient。缓冲区大小为 4096
+    /// 字节。</remarks>
+    /// <returns>表示异步操作的任务。</returns>
     private async Task HandleConnectionAsync()
     {
         if (tcpClient == null || !tcpClient.Connected || session == null)

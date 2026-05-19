@@ -53,6 +53,14 @@ public class WebSocketServer : INetworkServer
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// 在循环中接受传入的 HttpListenerContext，接受 WebSocket 请求并将 WebSocket 交由 HandleWebSocketAsync 处理；对于非 WebSocket 请求返回 400
+    /// 并关闭响应，直到取消或 listener 为空。
+    /// </summary>
+    /// <remarks>在 listener 停止时可能抛出 HttpListenerException，该异常被忽略；其他异常会记录到日志。对 WebSocket 请求以非等待方式启动
+    /// HandleWebSocketAsync（fire-and-forget），对非 WebSocket 请求设置 400 并关闭响应。</remarks>
+    /// <param name="cancellationToken">用于在外部请求取消时终止接受循环。</param>
+    /// <returns>表示接受循环的异步操作，当循环停止或发生未恢复的异常时任务完成。</returns>
     private async Task AcceptLoopAsync(CancellationToken cancellationToken)
     {
         try
@@ -82,6 +90,14 @@ public class WebSocketServer : INetworkServer
         }
     }
 
+    /// <summary>
+    /// 以异步方式处理单个 WebSocket 会话，接收按长度前缀分包的数据并触发会话生命周期与数据事件。
+    /// </summary>
+    /// <remarks>接收循环使用固定缓冲区并通过 LengthPrefixedPacketReader 拼接与解析数据包。方法在会话创建时触发 OnSessionConnected，解析到完整数据包时触发
+    /// OnDataReceived，在发生异常或连接关闭时触发 OnSessionDisconnected（异常时传递异常消息，正常关闭时传递“客户端主动关闭了连接。”）。</remarks>
+    /// <param name="webSocket">用于与客户端通信的已接受 WebSocket 实例。</param>
+    /// <param name="remoteEndPoint">可选的远程终结点，表示客户端来源；可能为 null。</param>
+    /// <returns>表示操作完成的异步任务；在会话终止或发生异常时完成。</returns>
     private async Task HandleWebSocketAsync(WebSocket webSocket, EndPoint? remoteEndPoint)
     {
         var session = new WebSocketSession(webSocket, remoteEndPoint);

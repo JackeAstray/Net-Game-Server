@@ -218,12 +218,12 @@ namespace Login.Handlers
                 };
 
                 var verifyResp = await CallDbAsync<Shared.Messages.Db.RegisterVerifyResponse>(MessageIds.DbRegisterVerifyReq, verifyReq);
-                    if (verifyResp == null)
-                    {
-                        Log.Error($"注册失败：DB 响应为空，账号:{account}, Attempt:{attempt + 1}");
-                    }
+                if (verifyResp == null)
+                {
+                    Log.Error($"注册失败：DB 响应为空，账号:{account}, Attempt:{attempt + 1}");
+                }
 
-                    if (verifyResp?.Success == true)
+                if (verifyResp?.Success == true)
                 {
                     ClearFailedAttempts("register", account);
                     return new RegisterResponse
@@ -256,9 +256,6 @@ namespace Login.Handlers
                 Message = "UID生成冲突，请重试"
             };
         }
-
-
-
 
         /// <summary>
         /// 异步处理找回密码请求。
@@ -409,8 +406,13 @@ namespace Login.Handlers
         }
 
         /// <summary>
-        /// 异步处理玩家主动登出请求
+        /// 处理注销请求，验证会话并强制登出与该会话关联的用户。
         /// </summary>
+        /// <remarks>当 clientSessionId 无效或未绑定用户时返回失败；若请求中的 UserId
+        /// 与会话绑定的用户不一致则记录警告并拒绝；成功时调用会话管理器执行强制登出。</remarks>
+        /// <param name="request">注销请求对象，可能包含可选的 UserId 用于指明要登出的用户。</param>
+        /// <param name="clientSessionId">客户端会话标识；必须为正数，用于查找与会话绑定的用户。</param>
+        /// <returns>表示操作结果的 LogoutResponse，Success 表示是否成功，Message 提供说明。</returns>
         public async Task<LogoutResponse> HandleLogoutRequestAsync(LogoutRequest request, long clientSessionId)
         {
             if (clientSessionId <= 0)
@@ -436,6 +438,13 @@ namespace Login.Handlers
             return new LogoutResponse { Success = true, Message = "登出成功" };
         }
 
+        /// <summary>
+        /// 处理客户端的修改密码请求：验证会话有效性和登录状态，然后将请求转交给核心更改逻辑。
+        /// </summary>
+        /// <remarks>会话无效或未登录时立即返回失败响应；在验证通过后调用 ChangePasswordCoreAsync 并传入绑定的用户 ID。</remarks>
+        /// <param name="request">包含修改密码所需的信息（如当前密码与新密码等）的请求对象。</param>
+        /// <param name="clientSessionId">客户端会话 ID，用于验证会话并查找绑定的用户；小于等于 0 视为无效。</param>
+        /// <returns>表示操作结果的 ChangePasswordResponse；Success 为 true 表示修改成功，失败时 Message 提供原因。</returns>
         public async Task<ChangePasswordResponse> HandleChangePasswordRequestAsync(ChangePasswordRequest request, long clientSessionId)
         {
             if (clientSessionId <= 0)
@@ -452,11 +461,24 @@ namespace Login.Handlers
             return await ChangePasswordCoreAsync(request, boundUserId);
         }
 
+        /// <summary>
+        /// 处理更改密码的请求并返回操作结果。
+        /// </summary>
+        /// <remarks>封装 ChangePasswordCoreAsync 并以重试计数 0 发起请求。</remarks>
+        /// <param name="request">包含更改密码所需的凭据和参数。</param>
+        /// <returns>表示更改密码操作结果的异步任务，返回 ChangePasswordResponse。</returns>
         public async Task<ChangePasswordResponse> HandleChangePasswordRequestAsync(ChangePasswordRequest request)
         {
             return await ChangePasswordCoreAsync(request, 0);
         }
 
+        /// <summary>
+        /// 异步更改用户密码：验证输入、处理频率限制与失败计数，并通过数据库服务验证并执行密码更改。
+        /// </summary>
+        /// <remarks>记录警告与错误；对过于频繁的操作进行限流并返回等待秒数；根据数据库验证响应清除或登记失败尝试。</remarks>
+        /// <param name="request">包含账户、旧密码和新密码的更改密码请求。</param>
+        /// <param name="userId">目标用户的标识符；若为 0 则使用 Account 识别用户。</param>
+        /// <returns>表示操作结果的 ChangePasswordResponse，包括 Success 标志和消息。</returns>
         private async Task<ChangePasswordResponse> ChangePasswordCoreAsync(ChangePasswordRequest request, int userId)
         {
             string account = request.Account?.Trim() ?? string.Empty;
@@ -528,8 +550,11 @@ namespace Login.Handlers
         }
 
         /// <summary>
-        /// 异步通知 DB 服玩家已下线
+        /// 通知 DB 服务将指定用户标记为已下线。
         /// </summary>
+        /// <remarks>在日志中记录信息并异步向 DB 服务发送在线状态更新请求（IsOnline = false）。</remarks>
+        /// <param name="userId">要标记为已下线的用户标识符。</param>
+        /// <returns>表示异步操作的任务。</returns>
         public async Task HandleOfflineAsync(int userId)
         {
             Log.Info($"通知 DB 服务用户 {userId} 已下线");
@@ -541,6 +566,12 @@ namespace Login.Handlers
             await CallDbAsync<Shared.Messages.Db.UpdateOnlineStateResponse>(MessageIds.DbUpdateOnlineStateReq, req);
         }
 
+        /// <summary>
+        /// 从数据库异步获取最大 UID 并使用该值与区域 ID 初始化 UIDGenerator。
+        /// </summary>
+        /// <remarks>如果从数据库获取的响应为 null，则记录警告并不进行初始化。区域 ID 从配置读取，若为 0 则使用 1 作为默认值；成功初始化后记录信息日志。可能会传播由
+        /// CallDbAsync 抛出的异常。</remarks>
+        /// <returns>表示异步操作的任务。</returns>
         private async Task SyncUidGeneratorFromDbAsync()
         {
             var maxUidResp = await CallDbAsync<Shared.Messages.Db.GetMaxUidResponse>(MessageIds.DbGetMaxUidReq, new Shared.Messages.Db.GetMaxUidRequest());
@@ -613,6 +644,14 @@ namespace Login.Handlers
             }
         }
 
+        /// <summary>
+        /// 尝试获取指定操作与标识的剩余节流（锁定）时间。
+        /// </summary>
+        /// <remarks>若跟踪器存在但未锁定且 FailedCount <= 0，则会尝试从缓存中移除该跟踪器。时间基于 UTC 计算。</remarks>
+        /// <param name="action">要检查节流状态的操作名称。</param>
+        /// <param name="identity">与操作关联的标识（例如用户 ID 或 IP）。</param>
+        /// <param name="remaining">当返回 true 时输出锁定剩余时间；否则为 TimeSpan.Zero。</param>
+        /// <returns>若存在跟踪器且当前处于锁定期，返回 true 并通过 remaining 返回剩余时间；否则返回 false。</returns>
         private static bool TryGetThrottleRemaining(string action, string identity, out TimeSpan remaining)
         {
             remaining = TimeSpan.Zero;
@@ -637,6 +676,14 @@ namespace Login.Handlers
             return false;
         }
 
+        /// <summary>
+        /// 记录指定操作与身份的失败尝试，递增失败计数并在达到阈值时按 UTC 将该项锁定一段时间。
+        /// </summary>
+        /// <remarks>使用并发字典的 AddOrUpdate 原子操作；若条目处于锁定期（LockedUntilUtc > 当前 UTC 时间）则不修改；当失败次数达到
+        /// MaxFailedAttempts 时记录警告、将 LockedUntilUtc 设置为当前 UTC 时间加上 ThrottleLockDuration 并将 FailedCount 重置为 0；时间基于
+        /// DateTime.UtcNow。</remarks>
+        /// <param name="action">要跟踪的操作名称或标识符。</param>
+        /// <param name="identity">与失败尝试相关的身份标识（例如用户名、用户 ID 或 IP 地址）。</param>
         private static void RegisterFailedAttempt(string action, string identity)
         {
             DateTime now = DateTime.UtcNow;
@@ -670,12 +717,23 @@ namespace Login.Handlers
                 });
         }
 
+        /// <summary>
+        /// 移除与指定操作和标识关联的失败尝试跟踪项。
+        /// </summary>
+        /// <param name="action">要清除其失败尝试记录的操作名称。</param>
+        /// <param name="identity">与操作关联的标识（例如用户或实体）。</param>
         private static void ClearFailedAttempts(string action, string identity)
         {
             string key = BuildActionKey(action, identity);
             actionAttemptTrackers.TryRemove(key, out _);
         }
 
+        /// <summary>
+        /// 按账号异步查询用户；若存在则返回包含 Account 和 Email 的 Shared.Data.User，否则返回 null。
+        /// </summary>
+        /// <remarks>在 DB 响应为空或用户不存在时会记录错误或警告日志；返回的 Email 在未知时为空字符串。</remarks>
+        /// <param name="account">要查询的用户账号。</param>
+        /// <returns>找到用户时返回包含账号和邮箱的 Shared.Data.User；未找到或 DB 无响应时返回 null。</returns>
         private async Task<Shared.Data.User> GetUserByAccountAsync(string account)
         {
             var queryReq = new Shared.Messages.Db.AccountQueryRequest
@@ -702,6 +760,12 @@ namespace Login.Handlers
             };
         }
 
+        /// <summary>
+        /// 生成一个由不含模糊字符的字符集构成的 8 字符临时密码。
+        /// </summary>
+        /// <remarks>使用 System.Random 生成伪随机字符，非加密安全且可能具有可预测性。用于安全敏感场景时，应改用
+        /// System.Security.Cryptography.RandomNumberGenerator 或等效的加密强随机数生成器；注意并发与种子相关的问题。</remarks>
+        /// <returns>长度为 8 的密码字符串，字符取自集合 ABCDEFGHJKLMNPQRSTUVWXYZ23456789。</returns>
         private static string GenerateTemporaryPassword()
         {
             const string chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -714,6 +778,13 @@ namespace Login.Handlers
             return new string(result);
         }
 
+        /// <summary>
+        /// 构建用于标识操作的键，格式为 "{action}:{identity}"；当 identity 为 null、空或只包含空白字符时使用 "unknown"。
+        /// </summary>
+        /// <remarks>对 identity 调用 Trim，并将 null 视为空字符串；若结果为空或仅空白，则使用 "unknown" 作为默认值。</remarks>
+        /// <param name="action">操作名称，作为键的前缀。</param>
+        /// <param name="identity">主体标识，经过 Trim 规范化；若为空或仅有空白，则替换为 "unknown"，作为键的后缀。</param>
+        /// <returns>由 action 和规范化后的 identity 以冒号连接组成的字符串键（例如 "save:alice" 或 "delete:unknown"）。</returns>
         private static string BuildActionKey(string action, string identity)
         {
             string normalizedIdentity = (identity ?? string.Empty).Trim();

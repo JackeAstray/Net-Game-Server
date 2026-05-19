@@ -285,6 +285,12 @@ namespace Battle
             }
         }
 
+        /// <summary>
+        /// 使用共享密钥和 HMAC-SHA256 计算输入字符串的签名，并以 Base64 编码返回。
+        /// </summary>
+        /// <remarks>从配置键 'CenterNodeSharedSecret' 读取共享密钥；如果未配置，则回退到默认值 'change-this-secret'。</remarks>
+        /// <param name="source">要计算签名的输入字符串。</param>
+        /// <returns>签名的 Base64 编码字符串，使用 UTF-8 编码的输入和 HMAC-SHA256 生成。</returns>
         private static string ComputeCenterSignature(string source)
         {
             string secret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";

@@ -35,8 +35,8 @@ namespace Center.Handlers
             if (isWorldMap || pool.Count >= 2)
             {
                 var matchedPlayers = new List<long>();
-                while (pool.TryDequeue(out var pid)) 
-                { 
+                while (pool.TryDequeue(out var pid))
+                {
                     matchedPlayers.Add(pid);
                 }
 
@@ -249,7 +249,7 @@ namespace Center.Handlers
         /// <summary>
         /// 处理来自 BattleNode 的创建场景响应。当 BattleNode 完成房间创建后，会调用这个方法来通知结果。
         /// </summary>
-        /// <param name="response"></param>
+        /// <param name="response">来自 BattleNode 的创建场景响应对象。</param>
         public void HandleCreateSceneResponse(CenterCreateSceneResponse response)
         {
             if (pendingSceneCreations.TryGetValue(response.RoomId, out var tcs))

@@ -37,6 +37,12 @@ public class TcpServer : INetworkServer
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// 异步接受传入的 TCP 客户端连接，并为每个连接启动独立的处理任务。
+    /// </summary>
+    /// <remarks>对每个接入的 TcpClient 调用 HandleClientAsync 且不等待其完成（以后台方式运行）。当 tcpListener 被释放时捕获
+    /// ObjectDisposedException 并退出循环；确保 tcpListener 在使用期间已正确初始化并在停止时释放。</remarks>
+    /// <returns>表示接受循环完成的异步任务；当底层侦听器被释放或停止时完成。</returns>
     private async Task AcceptClientsAsync()
     {
         while (tcpListener != null)
@@ -54,6 +60,13 @@ public class TcpServer : INetworkServer
         }
     }
 
+    /// <summary>
+    /// 异步处理已连接的 TcpClient，按长度前缀解析数据包并在接收数据或会话状态变化时触发相应事件。
+    /// </summary>
+    /// <remarks>在处理期间会触发 OnSessionConnected、OnDataReceived 和 OnSessionDisconnected。使用
+    /// LengthPrefixedPacketReader 解析数据包；在发生异常或对端关闭连接时会触发断开事件并释放 TcpClient。</remarks>
+    /// <param name="client">要处理的已连接 TcpClient 实例。</param>
+    /// <returns>表示会话处理完成的异步任务。</returns>
     private async Task HandleClientAsync(TcpClient client)
     {
         var session = new TcpSession(client);

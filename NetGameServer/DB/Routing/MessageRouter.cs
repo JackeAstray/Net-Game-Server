@@ -30,9 +30,12 @@ namespace DB.Routing
         }
 
         /// <summary>
-        /// 处理原始数据：统一协议 [MsgId(4)][Payload(N)]。
-        /// 若 payload 中含 __requestId 元数据，则在响应时原样回传该元数据。
+        /// 异步解析原始数据库协议数据，读取小端序的消息 ID（前 4 字节）与可选请求 ID，并将剩余负载转发给已注册的消息处理器。
         /// </summary>
+        /// <remarks>当数据长度不足 4 字节或消息 ID 未注册时记录错误。会尝试从负载中提取请求 ID；若提取成功，会用带有该请求 ID 的 RequestContextSession
+        /// 调用处理器。内部捕获并记录处理器或解析过程中的异常，不会将异常抛出给调用者。</remarks>
+        /// <param name="session">用于创建请求上下文的会话对象，作为消息处理器的目标会话。</param>
+        /// <param name="data">包含消息 ID（前 4 字节，小端序）后接有效负载的原始字节序列。</param>
         private async void HandleRawData(ISession session, ReadOnlyMemory<byte> data)
         {
             try
@@ -97,6 +100,13 @@ namespace DB.Routing
                 set => inner.UserData = value;
             }
 
+            /// <summary>
+            /// 发送指定字节数据：若 requestId<=0 或 数据长度小于 4 字节则透传原始数据；否则将前 4 字节按小端解析为消息 ID，向负载附加请求 ID，构建路由数据包并发送。
+            /// </summary>
+            /// <remarks>使用 Shared.RouteMetadata.AttachRequestId 向负载附加请求 ID，并通过
+            /// Network.Routing.PacketBuilder.BuildPacket 构建数据包。仅发送 BuildPacket 返回的 totalLength 字节，并在 finally 中将租用的数组归还到
+            /// ArrayPool<byte>.Shared。对于 requestId<=0 或短包直接调用内部发送器。</remarks>
+            /// <param name="data">要发送的只读字节缓冲区；前 4 字节（小端）为消息 ID，其余为负载；长度小于 4 字节时按原样透传。</param>
             public void Send(ReadOnlyMemory<byte> data)
             {
                 if (requestId <= 0)

@@ -99,8 +99,14 @@ namespace Battle.Handlers
         }
 
         /// <summary>
-        /// 发送响应消息到网关服务器，统一协议 [MsgId][Payload]，路由信息通过 payload 元数据传递。
+        /// 将 response 序列化为 UTF-8 JSON，附加目标客户端会话 ID，构建路由包并通过 gatewaySession 发送。
         /// </summary>
+        /// <remarks>发送失败时记录错误并吞掉异常；完成后将临时缓冲区归还给 ArrayPool。</remarks>
+        /// <typeparam name="T">响应对象的类型。</typeparam>
+        /// <param name="gatewaySession">用于向网关发送已构建数据包的会话接口。</param>
+        /// <param name="clientSessionId">目标客户端的会话标识符。</param>
+        /// <param name="msgId">消息或路由标识符。</param>
+        /// <param name="response">要序列化并发送的响应对象。</param>
         private static void SendToGateway<T>(Network.ISession gatewaySession, long clientSessionId, int msgId, T response)
         {
             byte[] responsePayload = Shared.Json.SerializeToUtf8Bytes(response);

@@ -36,6 +36,12 @@ public class WebSocketSession : ISession
         _ = SendAsyncInternal(payload);
     }
 
+    /// <summary>
+    /// 异步将二进制有效负载发送到 WebSocket，并在成功时更新最后活动时间。
+    /// </summary>
+    /// <remarks>在发送失败时记录警告并关闭会话。</remarks>
+    /// <param name="payload">要发送的二进制有效负载。</param>
+    /// <returns>表示异步操作的任务。</returns>
     private async Task SendAsyncInternal(byte[] payload)
     {
         try
@@ -58,6 +64,13 @@ public class WebSocketSession : ISession
         }
     }
 
+    /// <summary>
+    /// 返回以 4 字节小端序长度前缀的字节数组。
+    /// </summary>
+    /// <remarks>当 data.Length >= 4 且前四字节按小端序解析的整数等于 data.Length - 4
+    /// 时，视为已帧化。长度前缀表示有效载荷的长度（不包含前缀本身）。返回值始终为新数组。</remarks>
+    /// <param name="data">要处理的有效载荷；如果已包含与实际长度匹配的 4 字节小端长度前缀，将被视为已帧化。</param>
+    /// <returns>返回一个新分配的字节数组，保证以 4 字节小端序表示的长度前缀开头；如果输入已正确帧化则返回其副本，否则在前面添加长度前缀。</returns>
     private static byte[] EnsureLengthPrefixed(ReadOnlySpan<byte> data)
     {
         if (data.Length >= 4)

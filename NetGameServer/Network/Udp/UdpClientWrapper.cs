@@ -26,6 +26,12 @@ public class UdpClientWrapper : INetworkClient
         this.port = port;
     }
 
+    /// <summary>
+    /// 异步建立到指定主机和端口的 UDP 连接：解析主机名为 IP 地址、创建并连接 UdpClient、初始化 UdpSession，并在连接或断开时触发相应事件。
+    /// </summary>
+    /// <remarks>若主机名非直接 IP，则使用 Dns.GetHostEntryAsync 解析地址；创建并 Connect UdpClient、构造 IPEndPoint 后创建 UdpSession
+    /// 并调用 HandleConnectionAsync。发生异常时记录警告并通过 OnDisconnected 报告错误。</remarks>
+    /// <returns>表示异步连接操作的 Task。</returns>
     public async Task ConnectAsync()
     {
         isRunning = true;
@@ -62,6 +68,12 @@ public class UdpClientWrapper : INetworkClient
         }
     }
 
+    /// <summary>
+    /// 异步循环接收 UDP 数据报，更新会话的最后活动时间并在接收到数据或发生异常时分别触发相应事件。
+    /// </summary>
+    /// <remarks>若 udpClient 或 session 为 null 会立即返回。每次成功接收后更新 session.LastActivityTime，并通过 OnDataReceived
+    /// 传递接收到的字节缓冲区；在运行中发生异常且仍处于运行状态时，通过 OnDisconnected 报告异常消息。</remarks>
+    /// <returns>表示操作完成的异步任务。</returns>
     private async Task HandleConnectionAsync()
     {
         if (udpClient == null || session == null)

@@ -98,6 +98,12 @@ namespace Gateway.Managers
             }
         }
 
+        /// <summary>
+        /// 将指定会话绑定到指定用户。
+        /// </summary>
+        /// <remarks>如果 sessionId 或 userId 非正，则不执行任何操作。若会话已存在绑定，则用新的 userId 覆盖。</remarks>
+        /// <param name="sessionId">要绑定的会话标识，必须大于 0。</param>
+        /// <param name="userId">要绑定的用户标识，必须大于 0。</param>
         public void BindUser(long sessionId, int userId)
         {
             if (sessionId <= 0 || userId <= 0)
@@ -108,16 +114,31 @@ namespace Gateway.Managers
             sessionUsers[sessionId] = userId;
         }
 
+        /// <summary>
+        /// 从内部会话-用户映射中移除与指定会话标识符关联的用户绑定。
+        /// </summary>
+        /// <remarks>在并发环境中安全；若未找到对应条目则静默返回。</remarks>
+        /// <param name="sessionId">要从映射中移除其关联用户的会话标识符。</param>
         public void UnbindUser(long sessionId)
         {
             sessionUsers.TryRemove(sessionId, out _);
         }
 
+        /// <summary>
+        /// 检索与指定会话标识关联的用户标识。
+        /// </summary>
+        /// <remarks>返回 0 表示未找到关联的用户。</remarks>
+        /// <param name="sessionId">要查找的会话标识符。</param>
+        /// <returns>匹配的用户标识；若未找到则返回 0。</returns>
         public int GetUserIdBySessionId(long sessionId)
         {
             return sessionUsers.TryGetValue(sessionId, out var userId) ? userId : 0;
         }
 
+        /// <summary>
+        /// 获取当前在线客户端会话数。
+        /// </summary>
+        /// <returns>当前在线客户端会话的数量。</returns>
         public int GetOnlineCount()
         {
             return clientSessions.Count;

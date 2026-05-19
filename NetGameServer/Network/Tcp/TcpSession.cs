@@ -48,6 +48,12 @@ public class TcpSession : ISession
         tcpClient.Close();
     }
 
+    /// <summary>
+    /// 返回以 4 字节小端整数表示长度前缀的 ReadOnlySpan<byte>。如果输入已有与数据长度匹配的前缀则返回原切片，否则返回包含前缀的新分配缓冲区的切片。
+    /// </summary>
+    /// <remarks>前缀的判定为前 4 字节按小端解析为 Int32，并与 data.Length - 4 比较。仅在前缀缺失或不匹配时分配新的字节数组。</remarks>
+    /// <param name="data">要检查并确保带有 4 字节小端长度前缀的字节切片。</param>
+    /// <returns>包含 4 字节小端长度前缀的 ReadOnlySpan<byte>；可能为原始切片或新分配的字节数组的切片。</returns>
     private static ReadOnlySpan<byte> EnsureLengthPrefixed(ReadOnlySpan<byte> data)
     {
         if (data.Length >= 4)

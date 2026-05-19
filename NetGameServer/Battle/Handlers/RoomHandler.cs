@@ -89,9 +89,11 @@ namespace Battle.Handlers
         }
 
         /// <summary>
-        /// 处理玩家断线清理
+        /// 处理客户端断开连接：根据会话 ID 从场景解绑玩家并执行离开或清理逻辑。
         /// </summary>
-        /// <param name="clientSessionId">玩家客户端会话 ID</param>
+        /// <remarks>如果玩家仍在场景内，调用 OnPlayerLeave 触发离开同步；否则解除玩家与场景的绑定并记录信息日志。</remarks>
+        /// <param name="clientSessionId">断开连接的玩家会话 ID。</param>
+        /// <param name="gatewaySession">对应的网关会话（实现 Network.ISession），用于执行离场通知和清理操作。</param>
         public void HandleDisconnect(long clientSessionId, Network.ISession gatewaySession)
         {
             var scene = sceneManager.GetSceneByPlayer(clientSessionId);
