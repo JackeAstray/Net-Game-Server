@@ -23,7 +23,7 @@ namespace Shared.Data
         public string Password { get; set; }
 
         [Display(Name = "邮箱")]
-        public string Email { get; set; }
+        public string Email { get; set; } = string.Empty;
 
         [Display(Name = "昵称")]
         public string Nickname { get; set; }

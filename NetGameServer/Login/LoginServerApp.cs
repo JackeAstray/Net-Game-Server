@@ -237,6 +237,12 @@ namespace Login
             ConnectToCenter(port, activeGatewaySessions);
         }
 
+        /// <summary>
+        /// 返回用于处理登录的单例 LoginHandler；若尚未创建，则线程安全地初始化并建立数据库连接。
+        /// </summary>
+        /// <remarks>采用双重检查锁定保证延迟初始化的线程安全。在首次创建时调用 ConnectToDatabase 并将结果赋予
+        /// sharedDbClient；数据库连接失败时可能抛出异常。</remarks>
+        /// <returns>已初始化且可用于处理登录请求的 Login.Handlers.LoginHandler 实例。</returns>
         private static Login.Handlers.LoginHandler GetOrCreateLoginHandler()
         {
             if (sharedLoginHandler != null)
@@ -326,6 +332,13 @@ namespace Login
             return dbClient;
         }
 
+        /// <summary>
+        /// 连接到 Center 服务器，注册当前登录节点并在后台定期上报节点状态（心跳）。
+        /// </summary>
+        /// <remarks>从配置读取 CenterHost/CenterPort/LoginHost，使用 TcpClientWrapper 异步连接中心服务器；连接成功时注册节点并启动每 10
+        /// 秒上报一次状态的后台心跳任务；断开连接时取消心跳。</remarks>
+        /// <param name="port">用于生成节点标识和向 Center 注册的本地端口号。</param>
+        /// <param name="activeGatewaySessions">当前活动的网关会话集合，用于上报会话数量作为节点状态。</param>
         private static void ConnectToCenter(int port, System.Collections.Concurrent.ConcurrentDictionary<long, Network.ISession> activeGatewaySessions)
         {
             int centerPort = ConfigHelper.GetConfig<int>("CenterPort") == 0 ? 31306 : ConfigHelper.GetConfig<int>("CenterPort");
@@ -368,6 +381,17 @@ namespace Login
             _ = centerClient.ConnectAsync();
         }
 
+        /// <summary>
+        /// 构造包含节点信息与签名的注册请求，序列化为 JSON 并发送到中心服务。
+        /// </summary>
+        /// <remarks>计算基于节点信息与时间戳的签名，使用 UTF-8 将请求序列化为 JSON，构建 MessageIds.CenterRegisterNodeReq
+        /// 协议包并发送；发送后将临时缓冲区返回共享数组池。时间戳以 Unix 秒为单位。</remarks>
+        /// <param name="centerClient">与中心服务通信的 TCP 客户端包装器，用于发送注册请求。</param>
+        /// <param name="nodeId">节点唯一标识。</param>
+        /// <param name="nodeType">节点类型或角色。</param>
+        /// <param name="host">节点主机名或 IP 地址。</param>
+        /// <param name="port">节点监听端口号。</param>
+        /// <param name="currentLoad">节点当前负载值，上报给中心用于负载衡量。</param>
         private static void SendRegisterNode(TcpClientWrapper centerClient, string nodeId, string nodeType, string host, int port, int currentLoad)
         {
             long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -388,6 +412,14 @@ namespace Login
             System.Buffers.ArrayPool<byte>.Shared.Return(packet);
         }
 
+        /// <summary>
+        /// 序列化并发送节点状态（节点 ID、当前负载与 UTC Unix 时间戳）到中心服务器。
+        /// </summary>
+        /// <remarks>生成 UTC Unix 时间戳，并基于 nodeId|currentLoad|timestamp 计算签名；将 CenterNodeStatusRequest 序列化为
+        /// UTF-8，使用 MessageIds.CenterNodeStatusReq 构建并发送消息包，仅发送实际字节长度，并将缓冲区归还至 ArrayPool。</remarks>
+        /// <param name="centerClient">用于与中心服务器通信的 TCP 客户端包装器。</param>
+        /// <param name="nodeId">节点的唯一标识符。</param>
+        /// <param name="currentLoad">节点当前的负载值。</param>
         private static void SendNodeStatus(TcpClientWrapper centerClient, string nodeId, int currentLoad)
         {
             long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -405,6 +437,13 @@ namespace Login
             System.Buffers.ArrayPool<byte>.Shared.Return(packet);
         }
 
+        /// <summary>
+        /// 使用配置密钥对输入字符串计算 HMAC-SHA256 并返回 Base64 编码的签名。
+        /// </summary>
+        /// <remarks>使用配置键 "CenterNodeSharedSecret" 获取共享密钥；若未配置则回退为
+        /// "change-this-secret"。密钥应妥善保护并定期更换。</remarks>
+        /// <param name="source">要计算签名的输入字符串（使用 UTF-8 编码）。</param>
+        /// <returns>输入字符串的 HMAC-SHA256 签名，经过 UTF-8 编码并以 Base64 字符串形式返回。</returns>
         private static string ComputeCenterSignature(string source)
         {
             string secret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";

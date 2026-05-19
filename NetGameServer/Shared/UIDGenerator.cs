@@ -14,6 +14,11 @@ namespace Shared
         // 当前大区的前缀。例如：1代表1区，那么最终生成的就是 100000000 + 序号
         private static long regionPrefix = 100000000;
 
+        // 是否已完成初始化（从 DB 同步最大序号）
+        private static int initialized = 0;
+
+        public static bool IsInitialized => Volatile.Read(ref initialized) == 1;
+
         /// <summary>
         /// 服务器启动时，从数据库获取当前最大 UID 以初始化发号器。
         /// 如果数据库为空，则传入 0。
@@ -33,6 +38,7 @@ namespace Shared
             regionPrefix = regionId * 100000000L;
 
             currentCounter = currentMaxSequenceID;
+            Volatile.Write(ref initialized, 1);
         }
 
         /// <summary>
@@ -41,6 +47,11 @@ namespace Shared
         /// <returns>例如: 100000001</returns>
         public static long GenerateLongUID()
         {
+            if (!IsInitialized)
+            {
+                throw new InvalidOperationException("UID 生成器尚未初始化完成");
+            }
+
             // Interlocked 保证在多线程/高并发下的原子自增，绝对不会重复
             long sequence = Interlocked.Increment(ref currentCounter);
             return regionPrefix + sequence;

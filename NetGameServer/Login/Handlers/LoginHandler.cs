@@ -171,33 +171,72 @@ namespace Login.Handlers
                 };
             }
 
-            long uniqueId = UIDGenerator.GenerateLongUID();
-
-            var verifyReq = new Shared.Messages.Db.RegisterVerifyRequest
+            if (!UIDGenerator.IsInitialized)
             {
-                Account = account,
-                Password = request.Password,
-                Nickname = request.Nickname,
-                Uid = uniqueId
-            };
-
-            var verifyResp = await CallDbAsync<Shared.Messages.Db.RegisterVerifyResponse>(MessageIds.DbRegisterVerifyReq, verifyReq);
-
-            if (verifyResp?.Success != true)
-            {
-                RegisterFailedAttempt("register", account);
                 return new RegisterResponse
                 {
                     Success = false,
-                    Message = verifyResp?.Message ?? "注册失败"
+                    Message = "服务器正在初始化UID，请稍后重试"
                 };
             }
 
-            ClearFailedAttempts("register", account);
+            const int maxUidRetry = 3;
+            for (int attempt = 0; attempt < maxUidRetry; attempt++)
+            {
+                long uniqueId;
+                try
+                {
+                    uniqueId = UIDGenerator.GenerateLongUID();
+                }
+                catch (InvalidOperationException)
+                {
+                    return new RegisterResponse
+                    {
+                        Success = false,
+                        Message = "服务器正在初始化UID，请稍后重试"
+                    };
+                }
+
+                var verifyReq = new Shared.Messages.Db.RegisterVerifyRequest
+                {
+                    Account = account,
+                    Password = request.Password,
+                    Nickname = request.Nickname,
+                    Uid = uniqueId
+                };
+
+                var verifyResp = await CallDbAsync<Shared.Messages.Db.RegisterVerifyResponse>(MessageIds.DbRegisterVerifyReq, verifyReq);
+
+                if (verifyResp?.Success == true)
+                {
+                    ClearFailedAttempts("register", account);
+                    return new RegisterResponse
+                    {
+                        Success = true,
+                        Message = "注册成功"
+                    };
+                }
+
+                string message = verifyResp?.Message ?? "注册失败";
+                if (!string.Equals(message, "UID已存在", StringComparison.Ordinal))
+                {
+                    RegisterFailedAttempt("register", account);
+                    return new RegisterResponse
+                    {
+                        Success = false,
+                        Message = message
+                    };
+                }
+
+                Log.Warning($"注册遇到 UID 冲突，账号:{account}，第 {attempt + 1} 次重试。");
+                await SyncUidGeneratorFromDbAsync();
+            }
+
+            RegisterFailedAttempt("register", account);
             return new RegisterResponse
             {
-                Success = true,
-                Message = "注册成功"
+                Success = false,
+                Message = "UID生成冲突，请重试"
             };
         }
 
@@ -466,6 +505,20 @@ namespace Login.Handlers
                 IsOnline = false
             };
             await CallDbAsync<Shared.Messages.Db.UpdateOnlineStateResponse>(MessageIds.DbUpdateOnlineStateReq, req);
+        }
+
+        private async Task SyncUidGeneratorFromDbAsync()
+        {
+            var maxUidResp = await CallDbAsync<Shared.Messages.Db.GetMaxUidResponse>(MessageIds.DbGetMaxUidReq, new Shared.Messages.Db.GetMaxUidRequest());
+            if (maxUidResp == null)
+            {
+                Log.Warning("UID 冲突后重新同步失败：获取最大 UID 响应为空。");
+                return;
+            }
+
+            int currentRegionId = ConfigHelper.GetConfig<int>("RegionId") == 0 ? 1 : ConfigHelper.GetConfig<int>("RegionId");
+            UIDGenerator.Initialize(currentRegionId, maxUidResp.MaxUid);
+            Log.Info($"UID 冲突后已重新同步，区服ID:{currentRegionId}，最大序列:{maxUidResp.MaxUid}");
         }
 
         /// <summary>

@@ -201,6 +201,7 @@ namespace DB.Handlers
                         Account = request.Account,
                         Password = DB.DbServerApp.HashPassword(request.Password),
                         Nickname = request.Nickname,
+                        Email = string.Empty,
                         UniqueId = request.Uid.ToString(),
                         RegistrationTime = DateTime.UtcNow,
                         LastLoginTime = DateTime.UtcNow
@@ -213,10 +214,26 @@ namespace DB.Handlers
                         response.Success = true;
                         response.Message = "注册成功";
                     }
-                    catch (DbUpdateException)
+                    catch (DbUpdateException ex)
                     {
                         response.Success = false;
-                        response.Message = "账号或UID已存在";
+                        string errorText = ex.InnerException?.Message ?? ex.Message;
+                        Log.Error(ex, $"注册账号保存失败: {errorText}");
+
+                        if (errorText.IndexOf("UniqueId", StringComparison.OrdinalIgnoreCase) >= 0
+                            || errorText.IndexOf("uid", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            response.Message = "UID已存在";
+                        }
+                        else if (errorText.IndexOf("Account", StringComparison.OrdinalIgnoreCase) >= 0
+                                 || errorText.IndexOf("account", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            response.Message = "账号已存在";
+                        }
+                        else
+                        {
+                            response.Message = "账号或UID已存在";
+                        }
                     }
                 }
 
