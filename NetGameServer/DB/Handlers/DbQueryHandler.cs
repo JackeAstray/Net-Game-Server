@@ -204,7 +204,8 @@ namespace DB.Handlers
                         Email = string.Empty,
                         UniqueId = request.Uid.ToString(),
                         RegistrationTime = DateTime.UtcNow,
-                        LastLoginTime = DateTime.UtcNow
+                        LastLoginTime = DateTime.UtcNow,
+                        IsEnabled = true
                     };
                     dbContext.Users.Add(user);
 
