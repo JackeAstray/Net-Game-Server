@@ -29,10 +29,12 @@ public class WebSocketSession : ISession
     {
         if (!IsConnected)
         {
+            Shared.Log.Warning($"[WebSocketSession] 发送失败，连接未建立 SessionId:{SessionId} Remote:{RemoteEndPoint} DataLength:{data.Length}");
             return;
         }
 
         byte[] payload = EnsureLengthPrefixed(data.Span);
+        Shared.Log.Debug($"[WebSocketSession] 发送数据 SessionId:{SessionId} Remote:{RemoteEndPoint} InputLength:{data.Length} FramedLength:{payload.Length}");
         _ = SendAsyncInternal(payload);
     }
 
@@ -51,7 +53,7 @@ public class WebSocketSession : ISession
         }
         catch (Exception ex)
         {
-            Shared.Log.Warning($"WebSocketSession Send Error: {ex.Message}");
+            Shared.Log.Warning($"[WebSocketSession] 发送异常 SessionId:{SessionId} Remote:{RemoteEndPoint} PayloadLength:{payload.Length} Exception:{ex}");
             Close();
         }
     }

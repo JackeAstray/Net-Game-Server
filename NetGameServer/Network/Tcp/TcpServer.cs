@@ -24,13 +24,14 @@ public class TcpServer : INetworkServer
         {
             tcpListener = new TcpListener(IPAddress.Any, port);
             tcpListener.Start();
+            Shared.Log.Info($"[TcpServer] 启动成功，监听端口:{port}");
 
             // 启动接受客户端连接的后台循环（不等待）
             _ = AcceptClientsAsync();
         }
         catch (Exception ex)
         {
-            Shared.Log.Error($"[TcpServer] 启动失败: {ex.Message}");
+            Shared.Log.Error($"[TcpServer] 启动失败 Port:{port} Exception:{ex}");
             throw;
         }
 
@@ -50,12 +51,17 @@ public class TcpServer : INetworkServer
             try
             {
                 var client = await tcpListener.AcceptTcpClientAsync();
+                Shared.Log.Info($"[TcpServer] 接收到新连接 Remote:{client.Client.RemoteEndPoint}");
                 // 接受到新的客户端后，启动异步处理任务
                 _ = HandleClientAsync(client);
             }
             catch (ObjectDisposedException)
             {
                 break;
+            }
+            catch (Exception ex)
+            {
+                Shared.Log.Warning($"[TcpServer] 接受客户端连接异常 Exception:{ex}");
             }
         }
     }
@@ -76,6 +82,7 @@ public class TcpServer : INetworkServer
         {
             var stream = client.GetStream();
             var buffer = new byte[4096];
+            Shared.Log.Info($"[TcpServer] 会话建立 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
             OnSessionConnected?.Invoke(session);
 
             try
@@ -85,25 +92,37 @@ public class TcpServer : INetworkServer
                     int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
                     if (bytesRead == 0) break;
 
+                    Shared.Log.Debug($"[TcpServer] 接收原始字节 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Bytes:{bytesRead}");
                     packetReader.Append(buffer.AsSpan(0, bytesRead));
+                    int packetCount = 0;
                     while (packetReader.TryReadPacket(out var packet))
                     {
+                        packetCount++;
+                        Shared.Log.Debug($"[TcpServer] 完整分包 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} PacketLength:{packet.Length}");
                         OnDataReceived?.Invoke(session, packet);
+                    }
+
+                    if (packetCount == 0)
+                    {
+                        Shared.Log.Debug($"[TcpServer] 当前读取未形成完整包 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
                     }
                 }
             }
             catch (Exception ex)
             {
+                Shared.Log.Warning($"[TcpServer] 会话异常断开 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Exception:{ex}");
                 OnSessionDisconnected?.Invoke(session, ex.Message);
                 return;
             }
 
+            Shared.Log.Info($"[TcpServer] 会话正常关闭 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
             OnSessionDisconnected?.Invoke(session, "客户端主动关闭了连接。");
         }
     }
 
     public Task StopAsync()
     {
+        Shared.Log.Info("[TcpServer] 停止监听。");
         tcpListener?.Stop();
         tcpListener = null;
         return Task.CompletedTask;

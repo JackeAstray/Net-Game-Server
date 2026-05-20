@@ -62,6 +62,8 @@ namespace Battle
                     }
 
                     int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                    int payloadLength = data.Length - 4;
+                    Log.Info($"Battle <- Gateway/Node 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{payloadLength}");
                     byte[] payload = data.Slice(4).ToArray();
 
                     long originalSessionId = 0;
@@ -69,13 +71,16 @@ namespace Battle
                     {
                         originalSessionId = clientSessionId;
                         payload = cleanPayload;
+                        Log.Debug($"Battle 路由元数据解析成功 ClientSessionId:{originalSessionId} MsgId:{msgId}");
                     }
 
                     if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
                     {
                         try
                         {
+                            Log.Info($"Battle 开始处理消息 MsgId:{msgId} SessionId:{session.SessionId} OriginalSessionId:{originalSessionId} PayloadLength:{payload.Length}");
                             await handlerAction(payload, session, originalSessionId);
+                            Log.Info($"Battle 完成处理消息 MsgId:{msgId} SessionId:{session.SessionId} OriginalSessionId:{originalSessionId}");
                         }
                         catch (Exception ex)
                         {
@@ -183,13 +188,17 @@ namespace Battle
                     }
 
                     int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                    int payloadLength = data.Length - 4;
+                    Log.Info($"Battle <- Center 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{payloadLength}");
                     byte[] payload = data.Slice(4).ToArray();
 
                     if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
                     {
                         try
                         {
+                            Log.Info($"Battle 开始处理 Center 消息 MsgId:{msgId} SessionId:{session.SessionId} PayloadLength:{payload.Length}");
                             await handlerAction(payload, session, 0);
+                            Log.Info($"Battle 完成处理 Center 消息 MsgId:{msgId} SessionId:{session.SessionId}");
                         }
                         catch (Exception ex)
                         {

@@ -42,18 +42,19 @@ public class TcpClientWrapper : INetworkClient
         {
             try
             {
-                Shared.Log.Info($"正在连接到 {host}:{port} ...");
+                Shared.Log.Info($"[TcpClientWrapper] 正在连接 Host:{host} Port:{port}");
                 tcpClient = new TcpClient();
                 await tcpClient.ConnectAsync(host, port);
 
                 session = new TcpSession(tcpClient);
+                Shared.Log.Info($"[TcpClientWrapper] 连接成功 Host:{host} Port:{port} LocalSessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
                 OnConnected?.Invoke(session);
 
                 await HandleConnectionAsync();
             }
             catch (Exception ex)
             {
-                Shared.Log.Warning($"连接 {host}:{port} 失败或断开: {ex.Message}。3秒后准备重连...");
+                Shared.Log.Warning($"[TcpClientWrapper] 连接失败或断开 Host:{host} Port:{port} Exception:{ex}。3秒后准备重连...");
             }
 
             if (isRunning)
@@ -90,31 +91,50 @@ public class TcpClientWrapper : INetworkClient
                     if (bytesRead == 0) break;
 
                     session.LastActivityTime = DateTime.UtcNow;
+                    Shared.Log.Debug($"[TcpClientWrapper] 接收原始字节 Host:{host} Port:{port} SessionId:{session.SessionId} Bytes:{bytesRead}");
                     packetReader.Append(buffer.AsSpan(0, bytesRead));
 
+                    int packetCount = 0;
                     while (packetReader.TryReadPacket(out var packet))
                     {
+                        packetCount++;
+                        Shared.Log.Debug($"[TcpClientWrapper] 完整分包 Host:{host} Port:{port} SessionId:{session.SessionId} PacketLength:{packet.Length}");
                         OnDataReceived?.Invoke(session, packet);
+                    }
+
+                    if (packetCount == 0)
+                    {
+                        Shared.Log.Debug($"[TcpClientWrapper] 当前读取未形成完整包 Host:{host} Port:{port} SessionId:{session.SessionId}");
                     }
                 }
             }
             catch (Exception ex)
             {
+                Shared.Log.Warning($"[TcpClientWrapper] 连接异常断开 Host:{host} Port:{port} SessionId:{session.SessionId} Exception:{ex}");
                 OnDisconnected?.Invoke(session, ex.Message);
                 return;
             }
 
+            Shared.Log.Info($"[TcpClientWrapper] 连接关闭 Host:{host} Port:{port} SessionId:{session.SessionId}");
             OnDisconnected?.Invoke(session, "连接关闭");
         }
     }
 
     public void Send(ReadOnlyMemory<byte> data)
     {
-        session?.Send(data);
+        if (session == null)
+        {
+            Shared.Log.Warning($"[TcpClientWrapper] 发送失败，当前无可用会话 Host:{host} Port:{port} DataLength:{data.Length}");
+            return;
+        }
+
+        Shared.Log.Debug($"[TcpClientWrapper] 发送数据 Host:{host} Port:{port} SessionId:{session.SessionId} DataLength:{data.Length}");
+        session.Send(data);
     }
 
     public void Stop()
     {
+        Shared.Log.Info($"[TcpClientWrapper] 停止客户端 Host:{host} Port:{port}");
         isRunning = false;
         session?.Close();
         tcpClient?.Close();

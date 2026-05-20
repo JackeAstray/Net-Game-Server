@@ -23,12 +23,13 @@ public class UdpServer : INetworkServer
         try
         {
             udpClient = new UdpClient(port);
+            Shared.Log.Info($"[UdpServer] 启动成功，监听端口:{port}");
             // 启动后台接收循环（不等待），用于持续接收传入的数据报
             _ = ReceiveLoopAsync();
         }
         catch (Exception ex)
         {
-            Shared.Log.Error($"[UdpServer] 启动失败: {ex.Message}");
+            Shared.Log.Error($"[UdpServer] 启动失败 Port:{port} Exception:{ex}");
             throw;
         }
         return Task.CompletedTask;
@@ -60,16 +61,26 @@ public class UdpServer : INetworkServer
                     session = new UdpSession(udpClient, result.RemoteEndPoint);
                     sessions[result.RemoteEndPoint] = session;
                     packetReaders[result.RemoteEndPoint] = new LengthPrefixedPacketReader();
+                    Shared.Log.Info($"[UdpServer] 新会话建立 SessionId:{session.SessionId} Remote:{result.RemoteEndPoint}");
                     OnSessionConnected?.Invoke(session);
                 }
 
                 session.LastActivityTime = DateTime.UtcNow;
+                Shared.Log.Debug($"[UdpServer] 接收数据报 SessionId:{session.SessionId} Remote:{result.RemoteEndPoint} DatagramLength:{result.Buffer.Length}");
 
                 var packetReader = packetReaders[result.RemoteEndPoint];
                 packetReader.Append(result.Buffer);
+                int packetCount = 0;
                 while (packetReader.TryReadPacket(out var packet))
                 {
+                    packetCount++;
+                    Shared.Log.Debug($"[UdpServer] 完整分包 SessionId:{session.SessionId} Remote:{result.RemoteEndPoint} PacketLength:{packet.Length}");
                     OnDataReceived?.Invoke(session, packet);
+                }
+
+                if (packetCount == 0)
+                {
+                    Shared.Log.Debug($"[UdpServer] 当前数据报未形成完整包 SessionId:{session.SessionId} Remote:{result.RemoteEndPoint}");
                 }
 
                 if (DateTime.UtcNow >= nextCleanupAt)
@@ -84,6 +95,7 @@ public class UdpServer : INetworkServer
 
                         sessions.Remove(pair.Key);
                         packetReaders.Remove(pair.Key);
+                        Shared.Log.Warning($"[UdpServer] 会话超时断开 SessionId:{pair.Value.SessionId} Remote:{pair.Value.RemoteEndPoint} TimeoutSeconds:{sessionTimeout.TotalSeconds}");
                         OnSessionDisconnected?.Invoke(pair.Value, "UDP session timeout.");
                     }
 
@@ -96,19 +108,21 @@ public class UdpServer : INetworkServer
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error receiving UDP data: {ex.Message}");
+                Shared.Log.Warning($"[UdpServer] 接收循环异常 Exception:{ex}");
             }
         }
 
         // 服务器停止时触发所有存活 UDP 逻辑会话断开。
         foreach (var session in sessions.Values)
         {
+            Shared.Log.Info($"[UdpServer] 服务停止触发会话断开 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
             OnSessionDisconnected?.Invoke(session, "Server stopped.");
         }
     }
 
     public Task StopAsync()
     {
+        Shared.Log.Info("[UdpServer] 停止监听。");
         // 关闭并释放 UdpClient，停止接收循环
         udpClient?.Close();
         udpClient?.Dispose();

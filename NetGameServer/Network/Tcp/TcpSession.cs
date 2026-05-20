@@ -26,20 +26,24 @@ public class TcpSession : ISession
 
     public void Send(ReadOnlyMemory<byte> data)
     {
-        if (IsConnected)
+        if (!IsConnected)
         {
-            try
-            {
-                var payload = EnsureLengthPrefixed(data.Span);
-                tcpClient.GetStream().Write(payload);
-                LastActivityTime = DateTime.UtcNow;
-            }
-            catch (Exception ex)
-            {
-                // 日志记录发送异常
-                Shared.Log.Warning($"TcpSession Send Error: {ex.Message}");
-                Close();
-            }
+            Shared.Log.Warning($"[TcpSession] 发送失败，连接未建立 SessionId:{SessionId} Remote:{RemoteEndPoint} DataLength:{data.Length}");
+            return;
+        }
+
+        try
+        {
+            var payload = EnsureLengthPrefixed(data.Span);
+            Shared.Log.Debug($"[TcpSession] 发送数据 SessionId:{SessionId} Remote:{RemoteEndPoint} InputLength:{data.Length} FramedLength:{payload.Length}");
+            tcpClient.GetStream().Write(payload);
+            LastActivityTime = DateTime.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            // 日志记录发送异常
+            Shared.Log.Warning($"[TcpSession] 发送异常 SessionId:{SessionId} Remote:{RemoteEndPoint} DataLength:{data.Length} Exception:{ex}");
+            Close();
         }
     }
 

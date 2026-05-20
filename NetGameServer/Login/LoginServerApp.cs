@@ -75,14 +75,16 @@ namespace Login
 
             tcpServer.OnSessionConnected += session =>
             {
-                Shared.Log.Info($"网关已连接: {session.RemoteEndPoint}");
+                Shared.Log.Info($"Login <- Gateway 已连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
                 activeGatewaySessions[session.SessionId] = session;
+                Shared.Log.Info($"Login 当前活跃网关连接数:{activeGatewaySessions.Count}");
             };
             tcpServer.OnSessionDisconnected += (session, reason) =>
             {
-                Shared.Log.Info($"网关断开连接，原因: {reason}");
+                Shared.Log.Info($"Login <- Gateway 断开连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Reason:{reason}");
                 activeGatewaySessions.TryRemove(session.SessionId, out _);
                 RemoveBindingsByGatewaySession(session.SessionId);
+                Shared.Log.Info($"Login 当前活跃网关连接数:{activeGatewaySessions.Count}");
             };
 
             Login.Managers.SessionManager.Instance.SendToGatewayAction = (clientSessionId, packetData) =>
@@ -94,6 +96,8 @@ namespace Login
                 }
 
                 int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(packetData.AsSpan(0, 4));
+                int payloadLength = packetData.Length - 4;
+                Shared.Log.Info($"Login -> Gateway 准备回包 MsgId:{msgId} ClientSessionId:{clientSessionId} PacketLength:{packetData.Length} PayloadLength:{payloadLength}");
                 byte[] payload = packetData.AsSpan(4).ToArray();
                 byte[] routedPayload = Shared.RouteMetadata.AttachClientSessionId(payload, clientSessionId);
                 byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
@@ -104,10 +108,12 @@ namespace Login
                 {
                     if (activeGatewaySessions.TryGetValue(gatewaySessionId, out var targetGatewaySession))
                     {
+                        Shared.Log.Info($"Login -> Gateway 定向发送成功 MsgId:{msgId} ClientSessionId:{clientSessionId} GatewaySessionId:{gatewaySessionId} OutboundLength:{outbound.Length}");
                         targetGatewaySession.Send(outbound);
                         return;
                     }
 
+                    Shared.Log.Warning($"Login -> Gateway 绑定失效，准备移除 ClientSessionId:{clientSessionId} GatewaySessionId:{gatewaySessionId}");
                     RemoveClientGatewayBinding(clientSessionId);
                 }
 
@@ -116,6 +122,7 @@ namespace Login
                 {
                     foreach (var session in activeGatewaySessions.Values)
                     {
+                        Shared.Log.Warning($"Login -> Gateway 启用单网关兜底发送 MsgId:{msgId} ClientSessionId:{clientSessionId} GatewaySessionId:{session.SessionId} OutboundLength:{outbound.Length}");
                         session.Send(outbound);
                         clientGatewayBindings[clientSessionId] = session.SessionId;
                         return;
@@ -134,9 +141,15 @@ namespace Login
             // 处理收到的数据: 统一协议 [MsgId][Payload]，路由元数据在 payload 内
             tcpServer.OnDataReceived += async (session, data) =>
             {
-                if (data.Length < 4) return;
+                if (data.Length < 4)
+                {
+                    Shared.Log.Warning($"Login <- Gateway 收到无效数据，长度不足4 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Length:{data.Length}");
+                    return;
+                }
 
                 int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                int payloadLength = data.Length - 4;
+                Shared.Log.Info($"Login <- Gateway 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{payloadLength}");
                 byte[] payload = data.Slice(4).ToArray();
 
                 if (!Shared.RouteMetadata.TryExtractClientSessionId(payload, out long clientSessionId, out var cleanPayload))
@@ -146,15 +159,19 @@ namespace Login
                 }
 
                 clientGatewayBindings[clientSessionId] = session.SessionId;
+                Shared.Log.Debug($"Login 路由绑定更新 ClientSessionId:{clientSessionId} -> GatewaySessionId:{session.SessionId}");
 
                 try
                 {
                     if (messageHandlers.TryGetValue(msgId, out var handler))
                     {
+                        Shared.Log.Info($"Login 开始处理消息 MsgId:{msgId} ClientSessionId:{clientSessionId} PayloadLength:{cleanPayload.Length}");
                         await handler(cleanPayload, session, clientSessionId);
+                        Shared.Log.Info($"Login 完成处理消息 MsgId:{msgId} ClientSessionId:{clientSessionId}");
 
                         if (msgId == MessageIds.PlayerDisconnectNotif)
                         {
+                            Shared.Log.Info($"Login 收到玩家断线通知，清理绑定 ClientSessionId:{clientSessionId}");
                             RemoveClientGatewayBinding(clientSessionId);
                         }
                     }
@@ -277,11 +294,12 @@ namespace Login
             // 当与 DB 建立连接时，向 DB 请求当前最大 UID（用于 UID 生成器初始化）
             dbClient.OnConnected += session =>
             {
-                Shared.Log.Info($"已连接到 DB 服务器 (Host:{dbHost} Port:{dbPort})");
+                Shared.Log.Info($"Login -> DB 已连接 (Host:{dbHost} Port:{dbPort}) SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
 
                 var request = new Shared.Messages.Db.GetMaxUidRequest();
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(request);
                 byte[] packet = Network.Routing.PacketBuilder.BuildPacket(Shared.Messages.MessageIds.DbGetMaxUidReq, data, out int totalLength);
+                Shared.Log.Info($"Login -> DB 发送获取最大UID请求 MsgId:{Shared.Messages.MessageIds.DbGetMaxUidReq} PacketLength:{totalLength}");
                 session.Send(packet.AsSpan(0, totalLength).ToArray());
                 System.Buffers.ArrayPool<byte>.Shared.Return(packet);
             };
@@ -296,6 +314,8 @@ namespace Login
                 }
 
                 int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                int payloadLength = data.Length - 4;
+                Shared.Log.Info($"Login <- DB 收到消息 MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{payloadLength} Remote:{session.RemoteEndPoint}");
                 byte[] payload = data.Slice(4).ToArray();
 
                 if (Shared.RouteMetadata.TryExtractRequestId(payload, out long requestId, out var cleanPayload)
@@ -303,6 +323,7 @@ namespace Login
                 {
                     try
                     {
+                        Shared.Log.Info($"Login <- DB 命中待处理请求 RequestId:{requestId} MsgId:{msgId} PayloadLength:{cleanPayload.Length}");
                         tcs.TrySetResult(cleanPayload);
                     }
                     catch (Exception ex)
@@ -326,7 +347,7 @@ namespace Login
             };
 
             // DB 断线日志并开始异步连接
-            dbClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"与 DB 服务器断开连接: {reason}");
+            dbClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"Login 与 DB 服务器断开连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Reason:{reason}");
             _ = dbClient.ConnectAsync();
 
             return dbClient;
@@ -349,7 +370,7 @@ namespace Login
 
             centerClient.OnConnected += session =>
             {
-                Shared.Log.Info($"已连接到 Center 服务器 (Host:{centerHost} Port:{centerPort})");
+                Shared.Log.Info($"Login -> Center 已连接 (Host:{centerHost} Port:{centerPort}) SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
                 SendRegisterNode(centerClient, nodeId, "Login", loginHost, port, activeGatewaySessions.Count);
 
                 centerHeartbeatCts?.Cancel();
@@ -375,9 +396,19 @@ namespace Login
             centerClient.OnDisconnected += (session, reason) =>
             {
                 centerHeartbeatCts?.Cancel();
-                Shared.Log.Warning($"与 Center 服务器断开连接: {reason}");
+                Shared.Log.Warning($"Login 与 Center 服务器断开连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Reason:{reason}");
             };
-            centerClient.OnDataReceived += (session, data) => Shared.Log.Info($"Login 收到 Center 消息，长度: {data.Length}");
+            centerClient.OnDataReceived += (session, data) =>
+            {
+                if (data.Length < 4)
+                {
+                    Shared.Log.Warning($"Login <- Center 收到无效数据，长度不足4 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Length:{data.Length}");
+                    return;
+                }
+
+                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                Shared.Log.Info($"Login <- Center 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{data.Length - 4}");
+            };
             _ = centerClient.ConnectAsync();
         }
 

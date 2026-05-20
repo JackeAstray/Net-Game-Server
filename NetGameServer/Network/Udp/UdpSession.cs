@@ -31,13 +31,14 @@ public class UdpSession : ISession
         try
         {
             byte[] payload = EnsureLengthPrefixed(data.Span);
+            Shared.Log.Debug($"[UdpSession] 发送数据 SessionId:{SessionId} Remote:{RemoteEndPoint} InputLength:{data.Length} FramedLength:{payload.Length}");
             udpClient.Send(payload, payload.Length, remoteEndPoint);
             LastActivityTime = DateTime.UtcNow;
         }
         catch (Exception ex)
         {
             // 对于UDP发送异常只做日志记录，不用断开
-            Shared.Log.Warning($"UdpSession Send Error: {ex.Message}");
+            Shared.Log.Warning($"[UdpSession] 发送异常 SessionId:{SessionId} Remote:{RemoteEndPoint} DataLength:{data.Length} Exception:{ex}");
         }
     }
 

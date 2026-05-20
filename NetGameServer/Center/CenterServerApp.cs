@@ -41,10 +41,13 @@ namespace Center
             {
                 if (data.Length < 4)
                 {
+                    Log.Warning($"Center 收到无效数据，长度不足4 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Length:{data.Length}");
                     return;
                 }
 
                 int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                int payloadLength = data.Length - 4;
+                Log.Info($"Center <- Node 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{payloadLength}");
                 byte[] payload = data.Slice(4).ToArray();
 
                 long originalSessionId = 0;
@@ -57,13 +60,16 @@ namespace Center
                 if (originalSessionId > 0)
                 {
                     Center.Handlers.NodeManager.Instance.BindClientGatewayRoute(originalSessionId, session);
+                    Log.Debug($"Center 路由绑定更新 ClientSessionId:{originalSessionId} -> NodeSessionId:{session.SessionId}");
                 }
 
                 if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
                 {
                     try
                     {
+                        Log.Info($"Center 开始处理消息 MsgId:{msgId} SessionId:{session.SessionId} OriginalSessionId:{originalSessionId} PayloadLength:{payload.Length}");
                         await handlerAction(payload, session, originalSessionId);
+                        Log.Info($"Center 完成处理消息 MsgId:{msgId} SessionId:{session.SessionId} OriginalSessionId:{originalSessionId}");
                     }
                     catch (Exception ex)
                     {

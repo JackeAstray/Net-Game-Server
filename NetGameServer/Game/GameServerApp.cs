@@ -59,15 +59,18 @@ namespace Game
             {
                 try
                 {
-                    Log.Info($"接收到数据，长度: {data.Length}");
                     if (data.Length < 4)
                     {
-                        Log.Warning($"Game 收到无效客户端数据包，长度不足 4，Session:{session.SessionId} Length:{data.Length}");
+                        Log.Warning($"Game 收到无效客户端数据包，长度不足 4，Session:{session.SessionId} Remote:{session.RemoteEndPoint} Length:{data.Length}");
                         return;
                     }
 
                     int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
-                    byte[] payload = data.Slice(4).ToArray();
+                    int payloadLength = data.Length - 4;
+                    var payloadPreview = data.Slice(4);
+                    Log.Info($"Game 接收到客户端数据 Session:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{payloadLength} RawHexPreview:{BuildHexPreview(payloadPreview)} Utf8Preview:{BuildUtf8Preview(payloadPreview)}");
+
+                    byte[] payload = payloadPreview.ToArray();
 
                     if (!Shared.RouteMetadata.TryExtractClientSessionId(payload, out long originalSessionId, out var cleanPayload))
                     {
@@ -224,10 +227,12 @@ namespace Game
                     int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
                     var payload = data.Slice(4);
 
+                    Log.Info($"Game <- DB 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{payload.Length}");
+
                     bool handled = Handlers.FriendHandler.TryHandleDbResponse(session, msgId, payload);
                     if (!handled)
                     {
-                        Log.Warning($"Game 未处理的 DB 响应消息: {msgId}");
+                        Log.Warning($"Game 未处理的 DB 响应消息 MsgId:{msgId} SessionId:{session.SessionId}");
                     }
                 }
                 catch (Exception ex)
@@ -288,7 +293,8 @@ namespace Game
                         return;
                     }
 
-                    Log.Info($"Game 收到 Center 消息，长度: {data.Length}");
+                    int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                    Log.Info($"Game <- Center 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{data.Length - 4}");
                 }
                 catch (Exception ex)
                 {
@@ -396,6 +402,56 @@ namespace Game
         private static int GetCurrentLoad()
         {
             return Game.Managers.PlayerSessionManager.Instance.GetOnlinePlayerCount();
+        }
+
+        /// <summary>
+        /// 生成字节序列的十六进制预览字符串；若输入为空返回"<empty>"。
+        /// </summary>
+        /// <param name="data">要生成预览的只读字节序列（ReadOnlyMemory<byte>）。</param>
+        /// <returns>包含输入前最多64字节的连贯大写十六进制表示的字符串；若输入长度超过64字节，则在末尾追加类似"...(truncated,total:12345bytes)"的文本以指示已截断并显示总字节数。</returns>
+        private static string BuildHexPreview(ReadOnlyMemory<byte> data)
+        {
+            if (data.Length == 0)
+            {
+                return "<empty>";
+            }
+
+            const int maxBytes = 64;
+            var span = data.Span;
+            int take = Math.Min(span.Length, maxBytes);
+            string hex = Convert.ToHexString(span.Slice(0, take));
+            return span.Length > maxBytes ? $"{hex}...(truncated,total:{span.Length}bytes)" : hex;
+        }
+
+        /// <summary>
+        /// 为给定的 UTF-8 字节序列生成简洁可读的预览文本，处理不可打印字符并在必要时截断。
+        /// </summary>
+        /// <remarks>最多显示前 128 字节；对控制字符用 '.' 替换以保证可读性；截断时使用格式 "...(truncated,total:{n}bytes)"
+        /// 指示原始总字节数。</remarks>
+        /// <param name="data">要生成预览的 UTF-8 字节序列。</param>
+        /// <returns>预览字符串；空序列返回 "<empty>"；回车换行以 "\\r"/"\\n" 表示，控制字符替换为 '.'，若长度超过 128 字节则截断并在末尾注明总字节数。</returns>
+        private static string BuildUtf8Preview(ReadOnlyMemory<byte> data)
+        {
+            if (data.Length == 0)
+            {
+                return "<empty>";
+            }
+
+            const int maxBytes = 128;
+            var span = data.Span;
+            int take = Math.Min(span.Length, maxBytes);
+            string text = Encoding.UTF8.GetString(span.Slice(0, take));
+            text = text.Replace("\r", "\\r").Replace("\n", "\\n");
+
+            var sanitized = new StringBuilder(text.Length);
+            foreach (char c in text)
+            {
+                sanitized.Append(char.IsControl(c) ? '.' : c);
+            }
+
+            return span.Length > maxBytes
+                ? $"{sanitized}...(truncated,total:{span.Length}bytes)"
+                : sanitized.ToString();
         }
     }
 }

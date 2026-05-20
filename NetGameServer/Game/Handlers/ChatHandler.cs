@@ -107,19 +107,30 @@ namespace Game.Handlers
             }
 
             // 创建聊天通知
+            var senderName = string.IsNullOrWhiteSpace(request.SenderName)
+                ? $"Player_{actualSenderId}"
+                : request.SenderName.Trim();
+
             var notification = new ReceiveChatNotification
             {
                 Message = new ChatMessage
                 {
                     Id = new Random().Next(), // 生成一个随机的新Id
                     SenderId = actualSenderId,
-                    SenderName = $"Player_{actualSenderId}",
+                    SenderName = senderName,
                     ReceiverId = request.ReceiverId,
                     Channel = request.Channel,
                     Content = request.Content,
                     SendTime = DateTime.UtcNow
                 }
             };
+
+            Log.Info("聊天消息 SenderId:{SenderId} SenderName:{SenderName} ReceiverId:{ReceiverId} Channel:{Channel} Content:{Content}",
+                actualSenderId,
+                senderName,
+                request.ReceiverId,
+                request.Channel,
+                request.Content);
 
             // 先返回发送成功的响应
             var response = new SendChatResponse { Success = true, Message = "消息处理成功。" };

@@ -29,6 +29,7 @@ public class WebSocketServer : INetworkServer
             try
             {
                 listener.Start();
+                Shared.Log.Info($"[WebSocketServer] 启动成功，监听前缀:http://+:{port}/");
             }
             catch (HttpListenerException ex) when (ex.ErrorCode == 5)
             {
@@ -39,6 +40,7 @@ public class WebSocketServer : INetworkServer
                 listener.Prefixes.Add($"http://localhost:{port}/");
                 listener.Prefixes.Add($"http://127.0.0.1:{port}/");
                 listener.Start();
+                Shared.Log.Info($"[WebSocketServer] 回退监听成功，前缀:http://localhost:{port}/, http://127.0.0.1:{port}/");
             }
 
             cts = new CancellationTokenSource();
@@ -46,7 +48,7 @@ public class WebSocketServer : INetworkServer
         }
         catch (Exception ex)
         {
-            Shared.Log.Error($"[WebSocketServer] 启动失败: {ex.Message}");
+            Shared.Log.Error($"[WebSocketServer] 启动失败 Port:{port} Exception:{ex}");
             throw;
         }
 
@@ -70,11 +72,13 @@ public class WebSocketServer : INetworkServer
                 var context = await listener.GetContextAsync();
                 if (context.Request.IsWebSocketRequest)
                 {
+                    Shared.Log.Info($"[WebSocketServer] 收到握手请求 Remote:{context.Request.RemoteEndPoint} Url:{context.Request.Url}");
                     var wsContext = await context.AcceptWebSocketAsync(null);
                     _ = HandleWebSocketAsync(wsContext.WebSocket, context.Request.RemoteEndPoint);
                 }
                 else
                 {
+                    Shared.Log.Warning($"[WebSocketServer] 拒绝非 WebSocket 请求 Remote:{context.Request.RemoteEndPoint} Url:{context.Request.Url}");
                     context.Response.StatusCode = 400;
                     context.Response.Close();
                 }
@@ -102,6 +106,7 @@ public class WebSocketServer : INetworkServer
     {
         var session = new WebSocketSession(webSocket, remoteEndPoint);
         var packetReader = new LengthPrefixedPacketReader();
+        Shared.Log.Info($"[WebSocketServer] 会话建立 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
         OnSessionConnected?.Invoke(session);
 
         var buffer = new byte[4096];
@@ -122,6 +127,7 @@ public class WebSocketServer : INetworkServer
 
                     if (receiveResult.Count > 0)
                     {
+                        Shared.Log.Debug($"[WebSocketServer] 接收分片 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Count:{receiveResult.Count} EndOfMessage:{receiveResult.EndOfMessage}");
                         packetReader.Append(buffer.AsSpan(0, receiveResult.Count));
                     }
                 }
@@ -132,23 +138,34 @@ public class WebSocketServer : INetworkServer
                     break;
                 }
 
+                int packetCount = 0;
                 while (packetReader.TryReadPacket(out var packet))
                 {
+                    packetCount++;
+                    Shared.Log.Debug($"[WebSocketServer] 完整分包 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} PacketLength:{packet.Length}");
                     OnDataReceived?.Invoke(session, packet);
+                }
+
+                if (packetCount == 0)
+                {
+                    Shared.Log.Debug($"[WebSocketServer] 当前消息未形成完整包 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
                 }
             }
         }
         catch (Exception ex)
         {
+            Shared.Log.Warning($"[WebSocketServer] 会话异常断开 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Exception:{ex}");
             OnSessionDisconnected?.Invoke(session, ex.Message);
             return;
         }
 
+        Shared.Log.Info($"[WebSocketServer] 会话正常关闭 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
         OnSessionDisconnected?.Invoke(session, "客户端主动关闭了连接。");
     }
 
     public Task StopAsync()
     {
+        Shared.Log.Info("[WebSocketServer] 停止监听。");
         cts?.Cancel();
         listener?.Stop();
         listener?.Close();

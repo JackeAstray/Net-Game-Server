@@ -263,15 +263,22 @@ namespace DB
             });
 
             // 简单的会话事件日志，用于监控连接与流量，实际部署时可扩展鉴权或限流逻辑
-            tcpServer.OnSessionConnected += session => Shared.Log.Info($"客户端已连接: {session.RemoteEndPoint}");
+            tcpServer.OnSessionConnected += session => Shared.Log.Info($"DB <- Client 已连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
             tcpServer.OnDataReceived += (session, data) =>
             {
-                Shared.Log.Info($"接收到数据，长度: {data.Length}");
+                if (data.Length < 4)
+                {
+                    Shared.Log.Warning($"DB 收到无效数据，长度不足4 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Length:{data.Length}");
+                    return;
+                }
+
+                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                Shared.Log.Info($"DB <- Client 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{data.Length - 4}");
             };
 
             // 将路由器绑定到 TcpServer，使其负责分发收到的消息
             router.BindServer(tcpServer);
-            tcpServer.OnSessionDisconnected += (session, reason) => Shared.Log.Info($"客户端断开连接，原因: {reason}");
+            tcpServer.OnSessionDisconnected += (session, reason) => Shared.Log.Info($"DB <- Client 断开连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Reason:{reason}");
 
             // 启动监听并记录启动信息
             await tcpServer.StartAsync(port);
