@@ -26,10 +26,22 @@ namespace DB
             modelBuilder.Entity<User>()
                 .HasIndex(u => u.Account)
                 .IsUnique();
+
+            modelBuilder.Entity<Friend>()
+                .HasIndex(f => new { f.UserId, f.FriendUserId })
+                .IsUnique();
+
+            modelBuilder.Entity<Blacklist>()
+                .HasIndex(b => new { b.UserId, b.BlockedUserId })
+                .IsUnique();
+
+            modelBuilder.Entity<FriendRequest>()
+                .HasIndex(r => new { r.RequesterUserId, r.ReceiverUserId, r.Status });
         }
 
         public DbSet<User> Users { get; set; }
         public DbSet<Friend> Friends { get; set; }
         public DbSet<Blacklist> Blacklists { get; set; }
+        public DbSet<FriendRequest> FriendRequests { get; set; }
     }
 }

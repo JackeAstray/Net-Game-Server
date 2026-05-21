@@ -169,6 +169,27 @@ namespace Center.Handlers
                 }
             };
 
+            handlers[MessageIds.CenterLeaveRoomReq] = async (payload, session, clientSessionId) =>
+            {
+                try
+                {
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<CenterLeaveRoomRequest>(payload.Span);
+                    if (req != null)
+                    {
+                        var res = await matchHandler.HandleLeaveRoomRequestAsync(clientSessionId, req, session, SendToGateway, SendToGateway, SendToGateway);
+                        SendToGateway(session, clientSessionId, MessageIds.CenterLeaveRoomRes, res);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"CenterLeaveRoomReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"CenterLeaveRoomReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
+                }
+            };
+
             handlers[MessageIds.CenterUpdateRoomSettingsReq] = async (payload, session, clientSessionId) =>
             {
                 try

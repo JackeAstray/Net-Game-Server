@@ -261,6 +261,21 @@ namespace DB
                 long? requestId = Shared.RouteMetadata.TryExtractRequestId(data, out long extractedRequestId, out var cleanPayload) ? extractedRequestId : null;
                 await Handlers.DbQueryHandler.HandleResolveUserByUserIdRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbResolveUserByUserIdRequest>(cleanPayload), requestId);
             });
+            router.RegisterHandler(MessageIds.DbCreateFriendApplyReq, async (session, data) =>
+            {
+                long? requestId = Shared.RouteMetadata.TryExtractRequestId(data, out long extractedRequestId, out var cleanPayload) ? extractedRequestId : null;
+                await Handlers.DbQueryHandler.HandleCreateFriendApplyRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbCreateFriendApplyRequest>(cleanPayload), requestId);
+            });
+            router.RegisterHandler(MessageIds.DbGetFriendApplyListReq, async (session, data) =>
+            {
+                long? requestId = Shared.RouteMetadata.TryExtractRequestId(data, out long extractedRequestId, out var cleanPayload) ? extractedRequestId : null;
+                await Handlers.DbQueryHandler.HandleGetFriendApplyListRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbGetFriendApplyListRequest>(cleanPayload), requestId);
+            });
+            router.RegisterHandler(MessageIds.DbHandleFriendApplyReq, async (session, data) =>
+            {
+                long? requestId = Shared.RouteMetadata.TryExtractRequestId(data, out long extractedRequestId, out var cleanPayload) ? extractedRequestId : null;
+                await Handlers.DbQueryHandler.HandleFriendApplyRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbHandleFriendApplyRequest>(cleanPayload), requestId);
+            });
 
             // 简单的会话事件日志，用于监控连接与流量，实际部署时可扩展鉴权或限流逻辑
             tcpServer.OnSessionConnected += session => Shared.Log.Info($"DB <- Client 已连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");

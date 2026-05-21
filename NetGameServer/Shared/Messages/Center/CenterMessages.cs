@@ -185,6 +185,27 @@ namespace Shared.Messages.Center
         public string RoomId { get; set; } = string.Empty;
     }
 
+    public class CenterLeaveRoomRequest
+    {
+        [JsonPropertyName("roomId")]
+        public string RoomId { get; set; } = string.Empty;
+    }
+
+    public class CenterLeaveRoomResponse
+    {
+        [JsonPropertyName("success")]
+        public bool Success { get; set; }
+
+        [JsonPropertyName("roomId")]
+        public string RoomId { get; set; } = string.Empty;
+
+        [JsonPropertyName("message")]
+        public string Message { get; set; } = string.Empty;
+
+        [JsonPropertyName("room")]
+        public RoomInfo? Room { get; set; }
+    }
+
     public class CenterCloseRoomResponse
     {
         [JsonPropertyName("success")]

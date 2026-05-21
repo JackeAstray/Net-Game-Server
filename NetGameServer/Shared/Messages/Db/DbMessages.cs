@@ -241,4 +241,57 @@ namespace Shared.Messages.Db
         public string UniqueId { get; set; }
         public string Nickname { get; set; }
     }
+
+    public class DbCreateFriendApplyRequest
+    {
+        public int RequesterUserId { get; set; }
+        public string TargetUniqueId { get; set; } = string.Empty;
+        public string Message { get; set; } = string.Empty;
+    }
+
+    public class DbCreateFriendApplyResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+        public long ApplyId { get; set; }
+        public int TargetUserId { get; set; }
+    }
+
+    public class DbGetFriendApplyListRequest
+    {
+        public int UserId { get; set; }
+    }
+
+    public class DbFriendApplyItem
+    {
+        public long ApplyId { get; set; }
+        public int RequesterUserId { get; set; }
+        public string RequesterUniqueId { get; set; } = string.Empty;
+        public string RequesterNickname { get; set; } = string.Empty;
+        public string Message { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public DateTime CreateTimeUtc { get; set; }
+    }
+
+    public class DbGetFriendApplyListResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+        public List<DbFriendApplyItem> Applies { get; set; } = new();
+    }
+
+    public class DbHandleFriendApplyRequest
+    {
+        public int UserId { get; set; }
+        public long ApplyId { get; set; }
+        public bool Accept { get; set; }
+    }
+
+    public class DbHandleFriendApplyResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+        public int RequesterUserId { get; set; }
+        public int ReceiverUserId { get; set; }
+    }
 }

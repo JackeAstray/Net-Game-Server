@@ -482,6 +482,96 @@ namespace Center.Handlers
             };
         }
 
+        public async Task<CenterLeaveRoomResponse> HandleLeaveRoomRequestAsync(long clientSessionId, CenterLeaveRoomRequest request, Network.ISession gatewaySession, Action<Network.ISession, long, int, RoomClosedNotification> sendClosedToGatewayFunc, Action<Network.ISession, long, int, RoomMemberListChangedNotification> sendMemberListToGatewayFunc, Action<Network.ISession, long, int, RoomOwnerChangedNotification> sendOwnerChangedToGatewayFunc)
+        {
+            if (clientSessionId <= 0)
+            {
+                return new CenterLeaveRoomResponse
+                {
+                    Success = false,
+                    Message = "无效的会话"
+                };
+            }
+
+            if (string.IsNullOrWhiteSpace(request.RoomId))
+            {
+                return new CenterLeaveRoomResponse
+                {
+                    Success = false,
+                    Message = "RoomId 不能为空"
+                };
+            }
+
+            string roomId = request.RoomId.Trim();
+            if (!rooms.TryGetValue(roomId, out var room))
+            {
+                return new CenterLeaveRoomResponse
+                {
+                    Success = false,
+                    RoomId = roomId,
+                    Message = "房间不存在或已关闭"
+                };
+            }
+
+            if (!room.MemberStates.TryRemove(clientSessionId, out var leavingMember))
+            {
+                return new CenterLeaveRoomResponse
+                {
+                    Success = false,
+                    RoomId = roomId,
+                    Message = "当前不在该房间中"
+                };
+            }
+
+            bool ownerLeft = room.Info.OwnerUserId > 0 && leavingMember.UserId == room.Info.OwnerUserId;
+            room.Info.CurrentPlayers = room.MemberStates.Count;
+
+            if (ownerLeft && room.MemberStates.Count > 0)
+            {
+                TryAutoTransferOwner(gatewaySession, room, sendOwnerChangedToGatewayFunc, "房主已自动转移");
+            }
+
+            room.Info.Members = BuildRoomMembers(room);
+            var roomSnapshot = CloneRoomInfo(room.Info);
+
+            if (room.MemberStates.Count > 0)
+            {
+                BroadcastRoomMemberListChanged(gatewaySession, room, sendMemberListToGatewayFunc, "房间成员列表已更新");
+                return new CenterLeaveRoomResponse
+                {
+                    Success = true,
+                    RoomId = roomId,
+                    Message = "已退出房间",
+                    Room = roomSnapshot
+                };
+            }
+
+            room.Info.RoomStatus = RoomStatuses.Closed;
+            var destroyResult = await DestroySceneAsync(room.Info.BattleNodeId, roomId);
+            if (destroyResult == null || !destroyResult.Success)
+            {
+                Shared.Log.Warning($"主动离房后空房自动关闭失败 RoomId:{roomId} Message:{destroyResult?.Message}");
+                return new CenterLeaveRoomResponse
+                {
+                    Success = false,
+                    RoomId = roomId,
+                    Message = destroyResult?.Message ?? "已退出房间，但空房关闭失败",
+                    Room = roomSnapshot
+                };
+            }
+
+            rooms.TryRemove(roomId, out _);
+            BroadcastRoomClosedNotification(gatewaySession, destroyResult.AffectedSessionIds, roomId, sendClosedToGatewayFunc);
+            Shared.Log.Info($"玩家主动离房导致空房关闭 RoomId:{roomId} ClientSessionId:{clientSessionId}");
+
+            return new CenterLeaveRoomResponse
+            {
+                Success = true,
+                RoomId = roomId,
+                Message = "已退出房间，房间已关闭"
+            };
+        }
+
         public void HandleCreateSceneResponse(CenterCreateSceneResponse response)
         {
             if (pendingSceneCreations.TryGetValue(response.RoomId, out var tcs))

@@ -572,26 +572,55 @@ namespace DB.Handlers
                     }
                     else
                     {
-                        bool exists = await dbContext.Friends.AnyAsync(f => f.UserId == request.UserId && f.FriendUserId == targetUser.Id);
-                        if (exists)
+                        bool hasBlacklistConflict = await dbContext.Blacklists.AnyAsync(b =>
+                            (b.UserId == request.UserId && b.BlockedUserId == targetUser.Id)
+                            || (b.UserId == targetUser.Id && b.BlockedUserId == request.UserId));
+                        if (hasBlacklistConflict)
                         {
                             response.Success = false;
-                            response.Message = "已经是好友了";
+                            response.Message = "存在黑名单关系，无法添加好友";
                         }
                         else
                         {
-                            var newFriend = new Shared.Data.Social.Friend
+                            bool forwardExists = await dbContext.Friends.AnyAsync(f => f.UserId == request.UserId && f.FriendUserId == targetUser.Id);
+                            bool reverseExists = await dbContext.Friends.AnyAsync(f => f.UserId == targetUser.Id && f.FriendUserId == request.UserId);
+                            if (forwardExists && reverseExists)
                             {
-                                UserId = request.UserId,
-                                FriendUserId = targetUser.Id,
-                                Remark = request.Remark ?? string.Empty,
-                                AddTime = DateTime.UtcNow
-                            };
-                            dbContext.Friends.Add(newFriend);
-                            await dbContext.SaveChangesAsync();
+                                response.Success = false;
+                                response.Message = "已经是好友了";
+                            }
+                            else
+                            {
+                                using var transaction = await dbContext.Database.BeginTransactionAsync();
 
-                            response.Success = true;
-                            response.Message = "添加成功";
+                                if (!forwardExists)
+                                {
+                                    dbContext.Friends.Add(new Shared.Data.Social.Friend
+                                    {
+                                        UserId = request.UserId,
+                                        FriendUserId = targetUser.Id,
+                                        Remark = request.Remark?.Trim() ?? string.Empty,
+                                        AddTime = DateTime.UtcNow
+                                    });
+                                }
+
+                                if (!reverseExists)
+                                {
+                                    dbContext.Friends.Add(new Shared.Data.Social.Friend
+                                    {
+                                        UserId = targetUser.Id,
+                                        FriendUserId = request.UserId,
+                                        Remark = string.Empty,
+                                        AddTime = DateTime.UtcNow
+                                    });
+                                }
+
+                                await dbContext.SaveChangesAsync();
+                                await transaction.CommitAsync();
+
+                                response.Success = true;
+                                response.Message = "添加成功";
+                            }
                         }
                     }
                 }
@@ -642,10 +671,14 @@ namespace DB.Handlers
                     }
                     else
                     {
-                        var friend = await dbContext.Friends.FirstOrDefaultAsync(f => f.UserId == request.UserId && f.FriendUserId == targetUser.Id);
-                        if (friend != null)
+                        var friendPairs = await dbContext.Friends
+                            .Where(f => (f.UserId == request.UserId && f.FriendUserId == targetUser.Id)
+                                || (f.UserId == targetUser.Id && f.FriendUserId == request.UserId))
+                            .ToListAsync();
+
+                        if (friendPairs.Count > 0)
                         {
-                            dbContext.Friends.Remove(friend);
+                            dbContext.Friends.RemoveRange(friendPairs);
                             await dbContext.SaveChangesAsync();
                             response.Success = true;
                             response.Message = "删除成功";
@@ -827,13 +860,26 @@ namespace DB.Handlers
                         }
                         else
                         {
+                            using var transaction = await dbContext.Database.BeginTransactionAsync();
+
                             dbContext.Blacklists.Add(new Blacklist
                             {
                                 UserId = request.UserId,
                                 BlockedUserId = targetUser.Id,
                                 AddTime = DateTime.UtcNow
                             });
+
+                            var friendPairs = await dbContext.Friends
+                                .Where(f => (f.UserId == request.UserId && f.FriendUserId == targetUser.Id)
+                                    || (f.UserId == targetUser.Id && f.FriendUserId == request.UserId))
+                                .ToListAsync();
+                            if (friendPairs.Count > 0)
+                            {
+                                dbContext.Friends.RemoveRange(friendPairs);
+                            }
+
                             await dbContext.SaveChangesAsync();
+                            await transaction.CommitAsync();
                             response.Success = true;
                             response.Message = "拉黑成功";
                         }
@@ -1073,6 +1119,301 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"按UserId解析用户异常: {ex}");
+            }
+        }
+
+        public static async Task HandleCreateFriendApplyRequest(ISession session, DbCreateFriendApplyRequest? request, long? requestId = null)
+        {
+            if (request == null)
+            {
+                Log.Warning("收到无效的 CreateFriendApplyRequest，数据无法被反序列化。");
+                return;
+            }
+
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+
+                var response = new DbCreateFriendApplyResponse();
+
+                if (request.RequesterUserId <= 0 || string.IsNullOrWhiteSpace(request.TargetUniqueId))
+                {
+                    response.Success = false;
+                    response.Message = "请求参数无效";
+                    SendDbResponse(session, Shared.Messages.MessageIds.DbCreateFriendApplyRes, response, requestId);
+                    return;
+                }
+
+                string targetUniqueId = request.TargetUniqueId.Trim();
+                var targetUser = await dbContext.Users.FirstOrDefaultAsync(u => u.UniqueId == targetUniqueId);
+                if (targetUser == null)
+                {
+                    response.Success = false;
+                    response.Message = "目标用户不存在";
+                    SendDbResponse(session, Shared.Messages.MessageIds.DbCreateFriendApplyRes, response, requestId);
+                    return;
+                }
+
+                response.TargetUserId = targetUser.Id;
+
+                if (targetUser.Id == request.RequesterUserId)
+                {
+                    response.Success = false;
+                    response.Message = "不能向自己发送申请";
+                    SendDbResponse(session, Shared.Messages.MessageIds.DbCreateFriendApplyRes, response, requestId);
+                    return;
+                }
+
+                bool hasBlacklistConflict = await dbContext.Blacklists.AnyAsync(b =>
+                    (b.UserId == request.RequesterUserId && b.BlockedUserId == targetUser.Id)
+                    || (b.UserId == targetUser.Id && b.BlockedUserId == request.RequesterUserId));
+                if (hasBlacklistConflict)
+                {
+                    response.Success = false;
+                    response.Message = "存在黑名单关系，无法发送申请";
+                    SendDbResponse(session, Shared.Messages.MessageIds.DbCreateFriendApplyRes, response, requestId);
+                    return;
+                }
+
+                bool isFriend = await dbContext.Friends.AnyAsync(f =>
+                    (f.UserId == request.RequesterUserId && f.FriendUserId == targetUser.Id)
+                    || (f.UserId == targetUser.Id && f.FriendUserId == request.RequesterUserId));
+                if (isFriend)
+                {
+                    response.Success = false;
+                    response.Message = "对方已是你的好友";
+                    SendDbResponse(session, Shared.Messages.MessageIds.DbCreateFriendApplyRes, response, requestId);
+                    return;
+                }
+
+                bool hasPendingApply = await dbContext.FriendRequests.AnyAsync(r =>
+                    r.RequesterUserId == request.RequesterUserId
+                    && r.ReceiverUserId == targetUser.Id
+                    && r.Status == "Pending");
+                if (hasPendingApply)
+                {
+                    response.Success = false;
+                    response.Message = "已有待处理申请，请勿重复发送";
+                    SendDbResponse(session, Shared.Messages.MessageIds.DbCreateFriendApplyRes, response, requestId);
+                    return;
+                }
+
+                bool reversePending = await dbContext.FriendRequests.AnyAsync(r =>
+                    r.RequesterUserId == targetUser.Id
+                    && r.ReceiverUserId == request.RequesterUserId
+                    && r.Status == "Pending");
+                if (reversePending)
+                {
+                    response.Success = false;
+                    response.Message = "对方已向你发送申请，请先处理";
+                    SendDbResponse(session, Shared.Messages.MessageIds.DbCreateFriendApplyRes, response, requestId);
+                    return;
+                }
+
+                var apply = new FriendRequest
+                {
+                    RequesterUserId = request.RequesterUserId,
+                    ReceiverUserId = targetUser.Id,
+                    Message = request.Message?.Trim() ?? string.Empty,
+                    Status = "Pending",
+                    CreateTimeUtc = DateTime.UtcNow
+                };
+
+                dbContext.FriendRequests.Add(apply);
+                await dbContext.SaveChangesAsync();
+
+                response.Success = true;
+                response.Message = "申请已发送";
+                response.ApplyId = apply.Id;
+                SendDbResponse(session, Shared.Messages.MessageIds.DbCreateFriendApplyRes, response, requestId);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"创建好友申请异常: {ex}");
+            }
+        }
+
+        public static async Task HandleGetFriendApplyListRequest(ISession session, DbGetFriendApplyListRequest? request, long? requestId = null)
+        {
+            if (request == null)
+            {
+                Log.Warning("收到无效的 GetFriendApplyListRequest，数据无法被反序列化。");
+                return;
+            }
+
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+
+                var response = new DbGetFriendApplyListResponse();
+
+                if (request.UserId <= 0)
+                {
+                    response.Success = false;
+                    response.Message = "UserId无效";
+                    SendDbResponse(session, Shared.Messages.MessageIds.DbGetFriendApplyListRes, response, requestId);
+                    return;
+                }
+
+                var applyRows = await dbContext.FriendRequests
+                    .Where(r => r.ReceiverUserId == request.UserId && r.Status == "Pending")
+                    .OrderByDescending(r => r.CreateTimeUtc)
+                    .ToListAsync();
+
+                var requesterIds = applyRows.Select(r => r.RequesterUserId).Distinct().ToList();
+                var requesters = requesterIds.Count == 0
+                    ? new System.Collections.Generic.Dictionary<int, Shared.Data.User>()
+                    : await dbContext.Users.Where(u => requesterIds.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u);
+
+                response.Success = true;
+                response.Message = "获取成功";
+                response.Applies = applyRows.Select(r =>
+                {
+                    requesters.TryGetValue(r.RequesterUserId, out var requester);
+                    return new DbFriendApplyItem
+                    {
+                        ApplyId = r.Id,
+                        RequesterUserId = r.RequesterUserId,
+                        RequesterUniqueId = requester?.UniqueId ?? string.Empty,
+                        RequesterNickname = requester?.Nickname ?? string.Empty,
+                        Message = r.Message ?? string.Empty,
+                        Status = r.Status ?? string.Empty,
+                        CreateTimeUtc = r.CreateTimeUtc
+                    };
+                }).ToList();
+
+                SendDbResponse(session, Shared.Messages.MessageIds.DbGetFriendApplyListRes, response, requestId);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"获取好友申请列表异常: {ex}");
+            }
+        }
+
+        public static async Task HandleFriendApplyRequest(ISession session, DbHandleFriendApplyRequest? request, long? requestId = null)
+        {
+            if (request == null)
+            {
+                Log.Warning("收到无效的 HandleFriendApplyRequest，数据无法被反序列化。");
+                return;
+            }
+
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+
+                var response = new DbHandleFriendApplyResponse();
+
+                if (request.UserId <= 0 || request.ApplyId <= 0)
+                {
+                    response.Success = false;
+                    response.Message = "参数无效";
+                    SendDbResponse(session, Shared.Messages.MessageIds.DbHandleFriendApplyRes, response, requestId);
+                    return;
+                }
+
+                var apply = await dbContext.FriendRequests.FirstOrDefaultAsync(r => r.Id == request.ApplyId && r.ReceiverUserId == request.UserId);
+                if (apply == null)
+                {
+                    response.Success = false;
+                    response.Message = "申请不存在";
+                    SendDbResponse(session, Shared.Messages.MessageIds.DbHandleFriendApplyRes, response, requestId);
+                    return;
+                }
+
+                response.RequesterUserId = apply.RequesterUserId;
+                response.ReceiverUserId = apply.ReceiverUserId;
+
+                if (!string.Equals(apply.Status, "Pending", StringComparison.Ordinal))
+                {
+                    response.Success = false;
+                    response.Message = "申请已处理";
+                    SendDbResponse(session, Shared.Messages.MessageIds.DbHandleFriendApplyRes, response, requestId);
+                    return;
+                }
+
+                using var transaction = await dbContext.Database.BeginTransactionAsync();
+
+                if (request.Accept)
+                {
+                    bool hasBlacklistConflict = await dbContext.Blacklists.AnyAsync(b =>
+                        (b.UserId == apply.RequesterUserId && b.BlockedUserId == apply.ReceiverUserId)
+                        || (b.UserId == apply.ReceiverUserId && b.BlockedUserId == apply.RequesterUserId));
+                    if (hasBlacklistConflict)
+                    {
+                        response.Success = false;
+                        response.Message = "存在黑名单关系，无法同意";
+                        SendDbResponse(session, Shared.Messages.MessageIds.DbHandleFriendApplyRes, response, requestId);
+                        return;
+                    }
+
+                    bool forwardExists = await dbContext.Friends.AnyAsync(f => f.UserId == apply.RequesterUserId && f.FriendUserId == apply.ReceiverUserId);
+                    bool reverseExists = await dbContext.Friends.AnyAsync(f => f.UserId == apply.ReceiverUserId && f.FriendUserId == apply.RequesterUserId);
+
+                    if (!forwardExists)
+                    {
+                        dbContext.Friends.Add(new Friend
+                        {
+                            UserId = apply.RequesterUserId,
+                            FriendUserId = apply.ReceiverUserId,
+                            Remark = string.Empty,
+                            AddTime = DateTime.UtcNow
+                        });
+                    }
+
+                    if (!reverseExists)
+                    {
+                        dbContext.Friends.Add(new Friend
+                        {
+                            UserId = apply.ReceiverUserId,
+                            FriendUserId = apply.RequesterUserId,
+                            Remark = string.Empty,
+                            AddTime = DateTime.UtcNow
+                        });
+                    }
+
+                    apply.Status = "Accepted";
+                    apply.HandleTimeUtc = DateTime.UtcNow;
+
+                    var reversePendings = await dbContext.FriendRequests
+                        .Where(r => r.RequesterUserId == apply.ReceiverUserId
+                            && r.ReceiverUserId == apply.RequesterUserId
+                            && r.Status == "Pending")
+                        .ToListAsync();
+                    foreach (var reverse in reversePendings)
+                    {
+                        reverse.Status = "Accepted";
+                        reverse.HandleTimeUtc = DateTime.UtcNow;
+                    }
+
+                    await dbContext.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    response.Success = true;
+                    response.Message = "已同意好友申请";
+                }
+                else
+                {
+                    apply.Status = "Rejected";
+                    apply.HandleTimeUtc = DateTime.UtcNow;
+                    await dbContext.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    response.Success = true;
+                    response.Message = "已拒绝好友申请";
+                }
+
+                SendDbResponse(session, Shared.Messages.MessageIds.DbHandleFriendApplyRes, response, requestId);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"处理好友申请异常: {ex}");
             }
         }
 

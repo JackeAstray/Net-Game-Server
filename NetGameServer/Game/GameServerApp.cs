@@ -80,19 +80,32 @@ namespace Game
 
                     if (msgId == MessageIds.PlayerDisconnectNotif)
                     {
+                        int disconnectedUserId = Game.Managers.PlayerSessionManager.Instance.GetUserIdBySessionId(originalSessionId);
+                        Game.Handlers.FriendHandler.NotifyFriendOnlineStatus(session, originalSessionId, disconnectedUserId, false);
                         Game.Managers.PlayerSessionManager.Instance.UnbindSession(originalSessionId);
                     }
                     else
                     {
                         if (Shared.RouteMetadata.TryExtractUserId(cleanPayload, out int routedUserId, out var payloadWithoutUserId) && routedUserId > 0)
                         {
+                            bool firstBind = Game.Managers.PlayerSessionManager.Instance.GetUserIdBySessionId(originalSessionId) <= 0;
                             Game.Managers.PlayerSessionManager.Instance.BindSession(originalSessionId, routedUserId);
+                            if (firstBind)
+                            {
+                                Game.Handlers.FriendHandler.WarmupSocialCache(originalSessionId, routedUserId);
+                            }
                             cleanPayload = payloadWithoutUserId;
                         }
 
                         if (Shared.RouteMetadata.TryExtractUid(cleanPayload, out string routedUid, out var payloadWithoutUid) && !string.IsNullOrWhiteSpace(routedUid))
                         {
+                            bool hadUid = !string.IsNullOrWhiteSpace(Game.Managers.PlayerSessionManager.Instance.GetUidBySessionId(originalSessionId));
                             Game.Managers.PlayerSessionManager.Instance.BindUid(originalSessionId, routedUid);
+                            if (!hadUid)
+                            {
+                                int onlineUserId = Game.Managers.PlayerSessionManager.Instance.GetUserIdBySessionId(originalSessionId);
+                                Game.Handlers.FriendHandler.NotifyFriendOnlineStatus(session, originalSessionId, onlineUserId, true);
+                            }
                             cleanPayload = payloadWithoutUid;
                         }
                     }
@@ -112,6 +125,10 @@ namespace Game
                             MessageIds.AddBlacklistReq => MessageIds.AddBlacklistRes,
                             MessageIds.RemoveBlacklistReq => MessageIds.RemoveBlacklistRes,
                             MessageIds.GetBlacklistReq => MessageIds.GetBlacklistRes,
+                            MessageIds.FriendApplyReq => MessageIds.FriendApplyRes,
+                            MessageIds.FriendApplyListReq => MessageIds.FriendApplyListRes,
+                            MessageIds.FriendApplyHandleReq => MessageIds.FriendApplyHandleRes,
+                            MessageIds.InviteGameAckReq => MessageIds.InviteGameAckRes,
                             _ => 0
                         };
 
@@ -166,6 +183,27 @@ namespace Game
                                     Success = false,
                                     Message = errorMessage,
                                     Blacklists = Array.Empty<Shared.Messages.Social.BlacklistInfo>()
+                                }),
+                                MessageIds.FriendApplyRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.FriendApplyResponse
+                                {
+                                    Success = false,
+                                    Message = errorMessage
+                                }),
+                                MessageIds.FriendApplyListRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.FriendApplyListResponse
+                                {
+                                    Success = false,
+                                    Message = errorMessage,
+                                    Applies = Array.Empty<Shared.Messages.Social.FriendApplyInfo>()
+                                }),
+                                MessageIds.FriendApplyHandleRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.FriendApplyHandleResponse
+                                {
+                                    Success = false,
+                                    Message = errorMessage
+                                }),
+                                MessageIds.InviteGameAckRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.InviteGameAckResponse
+                                {
+                                    Success = false,
+                                    Message = errorMessage
                                 }),
                                 _ => Array.Empty<byte>()
                             };

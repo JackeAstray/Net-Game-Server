@@ -16,16 +16,46 @@ namespace Game.Handlers
     {
         private static readonly ConcurrentDictionary<long, PendingFriendRequest> PendingFriendRequests = new();
         private static readonly ConcurrentDictionary<int, ConcurrentDictionary<int, byte>> BlacklistCache = new();
+        private static readonly ConcurrentDictionary<int, ConcurrentDictionary<int, byte>> FriendCache = new();
+        private static readonly ConcurrentDictionary<string, DateTime> InviteDedupCache = new();
+        private static readonly ConcurrentDictionary<int, DateTime> InviteRateLimit = new();
+        private static readonly ConcurrentDictionary<long, PendingInvite> PendingInvites = new();
+        private static readonly ConcurrentDictionary<int, ConcurrentDictionary<long, byte>> PendingInvitesByInvitee = new();
         private static long requestIdSeed = DateTime.UtcNow.Ticks;
+        private static long inviteIdSeed = DateTime.UtcNow.Ticks;
+        private static readonly TimeSpan InviteMinInterval = TimeSpan.FromSeconds(3);
+        private static readonly TimeSpan InviteDedupWindow = TimeSpan.FromSeconds(20);
+        private static readonly TimeSpan InviteExpireWindow = TimeSpan.FromMinutes(2);
 
         private sealed class PendingFriendRequest
         {
             public long SessionId { get; set; }
             public int ResponseMsgId { get; set; }
             public bool IsInviteResolve { get; set; }
+            public bool IsInviteFriendCheck { get; set; }
             public bool IsInviteSenderResolve { get; set; }
+            public bool IsFriendApplyCreate { get; set; }
+            public bool IsFriendApplyHandle { get; set; }
             public string InviteRoomId { get; set; } = string.Empty;
+            public string InviteSceneType { get; set; } = string.Empty;
+            public string InviteRoomName { get; set; } = string.Empty;
             public int InviteTargetUserId { get; set; }
+            public string FriendApplyMessage { get; set; } = string.Empty;
+            public bool FriendApplyAccept { get; set; }
+        }
+
+        private sealed class PendingInvite
+        {
+            public long InviteId { get; set; }
+            public int InviterUserId { get; set; }
+            public int InviteeUserId { get; set; }
+            public string InviterUniqueId { get; set; } = string.Empty;
+            public string InviterNickname { get; set; } = string.Empty;
+            public string RoomId { get; set; } = string.Empty;
+            public string SceneType { get; set; } = string.Empty;
+            public string RoomName { get; set; } = string.Empty;
+            public DateTime CreateTimeUtc { get; set; }
+            public DateTime ExpireAtUtc { get; set; }
         }
 
         /// <summary>
@@ -44,6 +74,10 @@ namespace Game.Handlers
             router.RegisterHandler(MessageIds.AddBlacklistReq, (s, p) => HandleAddBlacklistRequest(s, p));
             router.RegisterHandler(MessageIds.RemoveBlacklistReq, (s, p) => HandleRemoveBlacklistRequest(s, p));
             router.RegisterHandler(MessageIds.GetBlacklistReq, (s, p) => HandleGetBlacklistRequest(s, p));
+            router.RegisterHandler(MessageIds.FriendApplyReq, (s, p) => HandleFriendApplyRequest(s, p));
+            router.RegisterHandler(MessageIds.FriendApplyListReq, (s, p) => HandleFriendApplyListRequest(s, p));
+            router.RegisterHandler(MessageIds.FriendApplyHandleReq, (s, p) => HandleFriendApplyHandleRequest(s, p));
+            router.RegisterHandler(MessageIds.InviteGameAckReq, (s, p) => HandleInviteGameAckRequest(s, p));
         }
 
         /// <summary>
@@ -267,15 +301,45 @@ namespace Game.Handlers
                 return;
             }
 
+            if (string.IsNullOrWhiteSpace(req.RoomId))
+            {
+                SendSimpleResponse(session, MessageIds.InviteGameRes, new InviteGameResponse { Success = false, Message = "房间ID不能为空" });
+                return;
+            }
+
+            string friendUniqueId = req.FriendUniqueId.Trim();
+            string roomId = req.RoomId.Trim();
+            string sceneType = req.SceneType?.Trim() ?? string.Empty;
+            string roomName = req.RoomName?.Trim() ?? string.Empty;
+
+            DateTime now = DateTime.UtcNow;
+            if (InviteRateLimit.TryGetValue(userId, out var lastInviteTime) && now - lastInviteTime < InviteMinInterval)
+            {
+                SendSimpleResponse(session, MessageIds.InviteGameRes, new InviteGameResponse { Success = false, Message = "邀请过于频繁，请稍后再试" });
+                return;
+            }
+
+            string inviteDedupKey = $"{userId}:{friendUniqueId}:{roomId}";
+            if (InviteDedupCache.TryGetValue(inviteDedupKey, out var dedupTime) && now - dedupTime < InviteDedupWindow)
+            {
+                SendSimpleResponse(session, MessageIds.InviteGameRes, new InviteGameResponse { Success = false, Message = "重复邀请，请稍后再试" });
+                return;
+            }
+
+            InviteRateLimit[userId] = now;
+            InviteDedupCache[inviteDedupKey] = now;
+
             var dbReq = new Shared.Messages.Db.DbResolveUserByUniqueIdRequest
             {
-                UniqueId = req.FriendUniqueId.Trim()
+                UniqueId = friendUniqueId
             };
 
             if (!TrySendDbRequest(MessageIds.DbResolveUserByUniqueIdReq, dbReq, session.SessionId, MessageIds.InviteGameRes, pending =>
             {
                 pending.IsInviteResolve = true;
-                pending.InviteRoomId = req.RoomId;
+                pending.InviteRoomId = roomId;
+                pending.InviteSceneType = sceneType;
+                pending.InviteRoomName = roomName;
             }))
             {
                 SendSimpleResponse(session, MessageIds.InviteGameRes, new InviteGameResponse { Success = false, Message = "发送DB请求失败" });
@@ -419,6 +483,132 @@ namespace Game.Handlers
             }
         }
 
+        private static void HandleFriendApplyRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        {
+            if (sessionBase is not ClientSessionWrapper session) return;
+            var req = Shared.Json.DeserializeFromUtf8Bytes<FriendApplyRequest>(payload.Span);
+            if (req == null)
+            {
+                SendSimpleResponse(session, MessageIds.FriendApplyRes, new FriendApplyResponse { Success = false, Message = "请求格式无效" });
+                return;
+            }
+
+            int userId = PlayerSessionManager.Instance.GetUserIdBySessionId(session.SessionId);
+            if (userId <= 0)
+            {
+                SendSimpleResponse(session, MessageIds.FriendApplyRes, new FriendApplyResponse { Success = false, Message = "会话未登录或未绑定" });
+                return;
+            }
+
+            if (GameServerApp.DbClient == null)
+            {
+                SendSimpleResponse(session, MessageIds.FriendApplyRes, new FriendApplyResponse { Success = false, Message = "DB服务未连接" });
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(req.TargetUniqueId))
+            {
+                SendSimpleResponse(session, MessageIds.FriendApplyRes, new FriendApplyResponse { Success = false, Message = "目标UniqueId不能为空" });
+                return;
+            }
+
+            var dbReq = new Shared.Messages.Db.DbCreateFriendApplyRequest
+            {
+                RequesterUserId = userId,
+                TargetUniqueId = req.TargetUniqueId.Trim(),
+                Message = req.Message?.Trim() ?? string.Empty
+            };
+
+            if (!TrySendDbRequest(MessageIds.DbCreateFriendApplyReq, dbReq, session.SessionId, MessageIds.FriendApplyRes, pending =>
+            {
+                pending.IsFriendApplyCreate = true;
+                pending.FriendApplyMessage = dbReq.Message;
+            }))
+            {
+                SendSimpleResponse(session, MessageIds.FriendApplyRes, new FriendApplyResponse { Success = false, Message = "发送DB请求失败" });
+            }
+        }
+
+        private static void HandleFriendApplyListRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        {
+            if (sessionBase is not ClientSessionWrapper session) return;
+            var req = Shared.Json.DeserializeFromUtf8Bytes<FriendApplyListRequest>(payload.Span);
+            if (req == null)
+            {
+                SendSimpleResponse(session, MessageIds.FriendApplyListRes, new FriendApplyListResponse { Success = false, Message = "请求格式无效" });
+                return;
+            }
+
+            int userId = PlayerSessionManager.Instance.GetUserIdBySessionId(session.SessionId);
+            if (userId <= 0)
+            {
+                SendSimpleResponse(session, MessageIds.FriendApplyListRes, new FriendApplyListResponse { Success = false, Message = "会话未登录或未绑定" });
+                return;
+            }
+
+            if (GameServerApp.DbClient == null)
+            {
+                SendSimpleResponse(session, MessageIds.FriendApplyListRes, new FriendApplyListResponse { Success = false, Message = "DB服务未连接" });
+                return;
+            }
+
+            var dbReq = new Shared.Messages.Db.DbGetFriendApplyListRequest
+            {
+                UserId = userId
+            };
+
+            if (!TrySendDbRequest(MessageIds.DbGetFriendApplyListReq, dbReq, session.SessionId, MessageIds.FriendApplyListRes))
+            {
+                SendSimpleResponse(session, MessageIds.FriendApplyListRes, new FriendApplyListResponse { Success = false, Message = "发送DB请求失败" });
+            }
+        }
+
+        private static void HandleFriendApplyHandleRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        {
+            if (sessionBase is not ClientSessionWrapper session) return;
+            var req = Shared.Json.DeserializeFromUtf8Bytes<FriendApplyHandleRequest>(payload.Span);
+            if (req == null)
+            {
+                SendSimpleResponse(session, MessageIds.FriendApplyHandleRes, new FriendApplyHandleResponse { Success = false, Message = "请求格式无效" });
+                return;
+            }
+
+            int userId = PlayerSessionManager.Instance.GetUserIdBySessionId(session.SessionId);
+            if (userId <= 0)
+            {
+                SendSimpleResponse(session, MessageIds.FriendApplyHandleRes, new FriendApplyHandleResponse { Success = false, Message = "会话未登录或未绑定" });
+                return;
+            }
+
+            if (GameServerApp.DbClient == null)
+            {
+                SendSimpleResponse(session, MessageIds.FriendApplyHandleRes, new FriendApplyHandleResponse { Success = false, Message = "DB服务未连接" });
+                return;
+            }
+
+            if (req.ApplyId <= 0)
+            {
+                SendSimpleResponse(session, MessageIds.FriendApplyHandleRes, new FriendApplyHandleResponse { Success = false, Message = "申请ID无效" });
+                return;
+            }
+
+            var dbReq = new Shared.Messages.Db.DbHandleFriendApplyRequest
+            {
+                UserId = userId,
+                ApplyId = req.ApplyId,
+                Accept = req.Accept
+            };
+
+            if (!TrySendDbRequest(MessageIds.DbHandleFriendApplyReq, dbReq, session.SessionId, MessageIds.FriendApplyHandleRes, pending =>
+            {
+                pending.IsFriendApplyHandle = true;
+                pending.FriendApplyAccept = req.Accept;
+            }))
+            {
+                SendSimpleResponse(session, MessageIds.FriendApplyHandleRes, new FriendApplyHandleResponse { Success = false, Message = "发送DB请求失败" });
+            }
+        }
+
         /// <summary>
         /// 将序列化的请求发送到数据库客户端并注册等待响应的条目。
         /// </summary>
@@ -433,6 +623,8 @@ namespace Game.Handlers
         /// <returns>若成功将请求发送并注册为待处理响应则返回 true；若发生错误或数据库客户端为空则返回 false。</returns>
         private static bool TrySendDbRequest<TRequest>(int dbMsgId, TRequest request, long clientSessionId, int responseMsgId, Action<PendingFriendRequest>? configurePending = null)
         {
+            CleanupInviteDedupCache();
+
             var dbClient = GameServerApp.DbClient;
             if (dbClient == null)
             {
@@ -549,6 +741,48 @@ namespace Game.Handlers
                         {
                             Shared.Log.Warning($"Game 解析获取好友列表 DB 回包失败 RequestId:{requestId}");
                         }
+
+                        if (pending.IsInviteFriendCheck)
+                        {
+                            var inviteRes = new InviteGameResponse { Success = false, Message = "不在线或无法邀请" };
+                            if (dbRes?.Success != true)
+                            {
+                                inviteRes.Message = dbRes?.Message ?? "获取好友列表失败";
+                                SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
+                                return true;
+                            }
+
+                            bool isFriend = dbRes.Friends?.Exists(f => f.FriendUserId == pending.InviteTargetUserId) == true;
+                            if (!isFriend)
+                            {
+                                inviteRes.Message = "仅可邀请好友";
+                                SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
+                                return true;
+                            }
+
+                            var senderResolveReq = new Shared.Messages.Db.DbResolveUserByUserIdRequest
+                            {
+                                UserId = requesterUserId
+                            };
+
+                            bool sent = TrySendDbRequest(MessageIds.DbResolveUserByUserIdReq, senderResolveReq, pending.SessionId, pending.ResponseMsgId, nextPending =>
+                            {
+                                nextPending.IsInviteSenderResolve = true;
+                                nextPending.InviteRoomId = pending.InviteRoomId;
+                                nextPending.InviteTargetUserId = pending.InviteTargetUserId;
+                                nextPending.InviteSceneType = pending.InviteSceneType;
+                                nextPending.InviteRoomName = pending.InviteRoomName;
+                            });
+
+                            if (!sent)
+                            {
+                                inviteRes.Message = "发送DB请求失败";
+                                SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
+                            }
+
+                            return true;
+                        }
+
                         var friends = dbRes?.Friends == null
                             ? Array.Empty<FriendInfo>()
                             : dbRes.Friends.ConvertAll(f => new FriendInfo
@@ -559,6 +793,11 @@ namespace Game.Handlers
                                 Remark = f.Remark,
                                 IsOnline = PlayerSessionManager.Instance.GetSessionIdByUserId(f.FriendUserId) > 0
                             }).ToArray();
+
+                        if (requesterUserId > 0)
+                        {
+                            SetFriendCache(requesterUserId, friends);
+                        }
 
                         var res = new GetFriendsResponse
                         {
@@ -640,6 +879,107 @@ namespace Game.Handlers
                         SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, res);
                         return true;
                     }
+                case MessageIds.DbCreateFriendApplyRes:
+                    {
+                        var dbRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbCreateFriendApplyResponse>(cleanPayload);
+                        if (dbRes == null)
+                        {
+                            Shared.Log.Warning($"Game 解析创建好友申请 DB 回包失败 RequestId:{requestId}");
+                        }
+
+                        if (pending.IsFriendApplyCreate && dbRes?.Success == true && dbRes.TargetUserId > 0)
+                        {
+                            long targetSessionId = PlayerSessionManager.Instance.GetSessionIdByUserId(dbRes.TargetUserId);
+                            if (targetSessionId > 0)
+                            {
+                                int requesterUserIdFromSession = PlayerSessionManager.Instance.GetUserIdBySessionId(pending.SessionId);
+                                string requesterUid = PlayerSessionManager.Instance.GetUidBySessionId(pending.SessionId);
+                                var notif = new FriendApplyNotification
+                                {
+                                    ApplyId = dbRes.ApplyId,
+                                    RequesterUserId = requesterUserIdFromSession,
+                                    RequesterUniqueId = requesterUid,
+                                    RequesterNickname = string.IsNullOrWhiteSpace(requesterUid) ? $"Player_{requesterUserIdFromSession}" : requesterUid,
+                                    Message = pending.FriendApplyMessage,
+                                    CreateTimeUtc = DateTime.UtcNow
+                                };
+                                SendResponseBySessionId(gameSession, targetSessionId, MessageIds.FriendApplyNotif, notif);
+                            }
+                        }
+
+                        var res = new FriendApplyResponse
+                        {
+                            Success = dbRes?.Success == true,
+                            Message = dbRes?.Message ?? "发送好友申请失败"
+                        };
+                        SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, res);
+                        return true;
+                    }
+                case MessageIds.DbGetFriendApplyListRes:
+                    {
+                        var dbRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbGetFriendApplyListResponse>(cleanPayload);
+                        if (dbRes == null)
+                        {
+                            Shared.Log.Warning($"Game 解析获取好友申请列表 DB 回包失败 RequestId:{requestId}");
+                        }
+
+                        var applies = dbRes?.Applies == null
+                            ? Array.Empty<FriendApplyInfo>()
+                            : dbRes.Applies.ConvertAll(a => new FriendApplyInfo
+                            {
+                                ApplyId = a.ApplyId,
+                                RequesterUserId = a.RequesterUserId,
+                                RequesterUniqueId = a.RequesterUniqueId,
+                                RequesterNickname = a.RequesterNickname,
+                                Message = a.Message,
+                                Status = a.Status,
+                                CreateTimeUtc = a.CreateTimeUtc
+                            }).ToArray();
+
+                        var res = new FriendApplyListResponse
+                        {
+                            Success = dbRes?.Success == true,
+                            Message = dbRes?.Message ?? "获取好友申请列表失败",
+                            Applies = applies
+                        };
+                        SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, res);
+                        return true;
+                    }
+                case MessageIds.DbHandleFriendApplyRes:
+                    {
+                        var dbRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbHandleFriendApplyResponse>(cleanPayload);
+                        if (dbRes == null)
+                        {
+                            Shared.Log.Warning($"Game 解析处理好友申请 DB 回包失败 RequestId:{requestId}");
+                        }
+
+                        if (pending.IsFriendApplyHandle && dbRes?.Success == true && dbRes.RequesterUserId > 0)
+                        {
+                            long requesterSessionId = PlayerSessionManager.Instance.GetSessionIdByUserId(dbRes.RequesterUserId);
+                            if (requesterSessionId > 0)
+                            {
+                                int receiverUserId = PlayerSessionManager.Instance.GetUserIdBySessionId(pending.SessionId);
+                                string receiverUid = PlayerSessionManager.Instance.GetUidBySessionId(pending.SessionId);
+                                var notif = new InviteGameAckNotification
+                                {
+                                    InviteeUniqueId = receiverUid,
+                                    InviteeNickname = string.IsNullOrWhiteSpace(receiverUid) ? $"Player_{receiverUserId}" : receiverUid,
+                                    RoomId = string.Empty,
+                                    Accept = pending.FriendApplyAccept,
+                                    Reason = pending.FriendApplyAccept ? "对方已同意你的好友申请" : "对方已拒绝你的好友申请"
+                                };
+                                SendResponseBySessionId(gameSession, requesterSessionId, MessageIds.InviteGameAckNotif, notif);
+                            }
+                        }
+
+                        var res = new FriendApplyHandleResponse
+                        {
+                            Success = dbRes?.Success == true,
+                            Message = dbRes?.Message ?? "处理好友申请失败"
+                        };
+                        SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, res);
+                        return true;
+                    }
                 case MessageIds.DbResolveUserByUniqueIdRes:
                     {
                         var dbRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbResolveUserByUniqueIdResponse>(cleanPayload);
@@ -682,19 +1022,28 @@ namespace Game.Handlers
                             return true;
                         }
 
-                        var senderResolveReq = new Shared.Messages.Db.DbResolveUserByUserIdRequest
+                        if (IsBlockedByTarget(requesterUserId, dbRes.UserId))
+                        {
+                            inviteRes.Message = "你已将对方拉黑，无法邀请";
+                            SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
+                            return true;
+                        }
+
+                        var friendCheckReq = new Shared.Messages.Db.DbGetFriendsRequest
                         {
                             UserId = requesterUserId
                         };
 
-                        bool sent = TrySendDbRequest(MessageIds.DbResolveUserByUserIdReq, senderResolveReq, pending.SessionId, pending.ResponseMsgId, nextPending =>
+                        bool sentFriendCheck = TrySendDbRequest(MessageIds.DbGetFriendsReq, friendCheckReq, pending.SessionId, pending.ResponseMsgId, nextPending =>
                         {
-                            nextPending.IsInviteSenderResolve = true;
-                            nextPending.InviteRoomId = pending.InviteRoomId;
+                            nextPending.IsInviteFriendCheck = true;
                             nextPending.InviteTargetUserId = dbRes.UserId;
+                            nextPending.InviteRoomId = pending.InviteRoomId;
+                            nextPending.InviteSceneType = pending.InviteSceneType;
+                            nextPending.InviteRoomName = pending.InviteRoomName;
                         });
 
-                        if (!sent)
+                        if (!sentFriendCheck)
                         {
                             inviteRes.Message = "发送DB请求失败";
                             SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
@@ -725,30 +1074,20 @@ namespace Game.Handlers
                         string inviterUniqueId = dbRes?.Success == true ? (dbRes.UniqueId ?? string.Empty) : string.Empty;
                         string inviterNickname = dbRes?.Success == true ? (dbRes.Nickname ?? string.Empty) : string.Empty;
 
+                        var pendingInvite = CreatePendingInvite(requesterUserId, pending.InviteTargetUserId, inviterUniqueId, inviterNickname, pending.InviteRoomId, pending.InviteSceneType, pending.InviteRoomName);
+                        CleanupExpiredPendingInvites(gameSession);
+
                         long targetSessionId = PlayerSessionManager.Instance.GetSessionIdByUserId(pending.InviteTargetUserId);
                         if (targetSessionId > 0)
                         {
-                            var notif = new InviteGameNotification
-                            {
-                                InviterUniqueId = inviterUniqueId,
-                                InviterNickname = string.IsNullOrWhiteSpace(inviterNickname) ? $"Player_{requesterUserId}" : inviterNickname,
-                                RoomId = pending.InviteRoomId,
-                                SceneType = string.Empty,
-                                RoomName = string.Empty
-                            };
-                            var notifPayload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(notif), targetSessionId);
-                            var notifData = PacketBuilder.BuildPacket(MessageIds.InviteGameNotif, notifPayload, out int notifLength);
-                            try
-                            {
-                                gameSession.Send(notifData.AsSpan(0, notifLength).ToArray());
-                            }
-                            finally
-                            {
-                                System.Buffers.ArrayPool<byte>.Shared.Return(notifData);
-                            }
-
+                            SendInviteNotification(gameSession, targetSessionId, pendingInvite);
                             inviteRes.Success = true;
                             inviteRes.Message = "邀请已发送";
+                        }
+                        else
+                        {
+                            inviteRes.Success = true;
+                            inviteRes.Message = "对方离线，邀请已暂存";
                         }
 
                         SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
@@ -772,6 +1111,74 @@ namespace Game.Handlers
                 && senderUserId > 0
                 && BlacklistCache.TryGetValue(targetUserId, out var blockedUsers)
                 && blockedUsers.ContainsKey(senderUserId);
+        }
+
+        public static bool IsFriend(int userId, int targetUserId)
+        {
+            return userId > 0
+                && targetUserId > 0
+                && FriendCache.TryGetValue(userId, out var friends)
+                && friends.ContainsKey(targetUserId);
+        }
+
+        public static void WarmupSocialCache(long sessionId, int userId)
+        {
+            if (sessionId <= 0 || userId <= 0)
+            {
+                return;
+            }
+
+            var dbReq = new Shared.Messages.Db.DbGetBlacklistRequest
+            {
+                UserId = userId
+            };
+            _ = TrySendDbRequest(MessageIds.DbGetBlacklistReq, dbReq, sessionId, MessageIds.GetBlacklistRes);
+
+            var friendsReq = new Shared.Messages.Db.DbGetFriendsRequest
+            {
+                UserId = userId
+            };
+            _ = TrySendDbRequest(MessageIds.DbGetFriendsReq, friendsReq, sessionId, MessageIds.GetFriendsRes);
+        }
+
+        public static void NotifyFriendOnlineStatus(global::Network.ISession gameSession, long sessionId, int userId, bool isOnline)
+        {
+            if (gameSession == null || sessionId <= 0 || userId <= 0)
+            {
+                return;
+            }
+
+            string uid = PlayerSessionManager.Instance.GetUidBySessionId(sessionId);
+            if (string.IsNullOrWhiteSpace(uid))
+            {
+                return;
+            }
+
+            if (!FriendCache.TryGetValue(userId, out var friendIds) || friendIds.Count == 0)
+            {
+                return;
+            }
+
+            var notif = new FriendOnlineStatusNotification
+            {
+                UserId = userId,
+                UniqueId = uid,
+                IsOnline = isOnline
+            };
+
+            foreach (var friendId in friendIds.Keys)
+            {
+                long friendSessionId = PlayerSessionManager.Instance.GetSessionIdByUserId(friendId);
+                if (friendSessionId > 0)
+                {
+                    SendResponseBySessionId(gameSession, friendSessionId, MessageIds.FriendOnlineStatusNotif, notif);
+                }
+            }
+
+            if (isOnline)
+            {
+                DeliverPendingInvites(gameSession, sessionId, userId);
+            }
         }
 
         /// <summary>
@@ -840,6 +1247,147 @@ namespace Game.Handlers
             BlacklistCache[blockerUserId] = blockedUsers;
         }
 
+        private static void SetFriendCache(int userId, FriendInfo[] friends)
+        {
+            if (userId <= 0)
+            {
+                return;
+            }
+
+            var friendIds = new ConcurrentDictionary<int, byte>();
+            if (friends != null)
+            {
+                foreach (var item in friends)
+                {
+                    if (item.FriendUserId > 0)
+                    {
+                        friendIds[item.FriendUserId] = 0;
+                    }
+                }
+            }
+
+            FriendCache[userId] = friendIds;
+        }
+
+        private static PendingInvite CreatePendingInvite(int inviterUserId, int inviteeUserId, string inviterUniqueId, string inviterNickname, string roomId, string sceneType, string roomName)
+        {
+            var invite = new PendingInvite
+            {
+                InviteId = System.Threading.Interlocked.Increment(ref inviteIdSeed),
+                InviterUserId = inviterUserId,
+                InviteeUserId = inviteeUserId,
+                InviterUniqueId = inviterUniqueId,
+                InviterNickname = string.IsNullOrWhiteSpace(inviterNickname) ? $"Player_{inviterUserId}" : inviterNickname,
+                RoomId = roomId ?? string.Empty,
+                SceneType = sceneType ?? string.Empty,
+                RoomName = roomName ?? string.Empty,
+                CreateTimeUtc = DateTime.UtcNow,
+                ExpireAtUtc = DateTime.UtcNow.Add(InviteExpireWindow)
+            };
+
+            PendingInvites[invite.InviteId] = invite;
+            var inviteeIndex = PendingInvitesByInvitee.GetOrAdd(inviteeUserId, _ => new ConcurrentDictionary<long, byte>());
+            inviteeIndex[invite.InviteId] = 0;
+            return invite;
+        }
+
+        private static void SendInviteNotification(global::Network.ISession gameSession, long targetSessionId, PendingInvite invite)
+        {
+            var notif = new InviteGameNotification
+            {
+                InviterUniqueId = invite.InviterUniqueId,
+                InviterNickname = invite.InviterNickname,
+                RoomId = invite.RoomId,
+                SceneType = invite.SceneType,
+                RoomName = invite.RoomName
+            };
+            SendResponseBySessionId(gameSession, targetSessionId, MessageIds.InviteGameNotif, notif);
+        }
+
+        private static void DeliverPendingInvites(global::Network.ISession gameSession, long inviteeSessionId, int inviteeUserId)
+        {
+            CleanupExpiredPendingInvites(gameSession);
+
+            if (!PendingInvitesByInvitee.TryGetValue(inviteeUserId, out var inviteIds) || inviteIds.Count <= 0)
+            {
+                return;
+            }
+
+            foreach (var inviteId in inviteIds.Keys)
+            {
+                if (!PendingInvites.TryGetValue(inviteId, out var invite))
+                {
+                    inviteIds.TryRemove(inviteId, out _);
+                    continue;
+                }
+
+                if (invite.ExpireAtUtc <= DateTime.UtcNow)
+                {
+                    RemovePendingInvite(inviteId);
+                    continue;
+                }
+
+                SendInviteNotification(gameSession, inviteeSessionId, invite);
+            }
+        }
+
+        private static void CleanupExpiredPendingInvites(global::Network.ISession gameSession)
+        {
+            DateTime now = DateTime.UtcNow;
+            foreach (var pair in PendingInvites)
+            {
+                if (pair.Value.ExpireAtUtc > now)
+                {
+                    continue;
+                }
+
+                if (!PendingInvites.TryRemove(pair.Key, out var expiredInvite))
+                {
+                    continue;
+                }
+
+                if (PendingInvitesByInvitee.TryGetValue(expiredInvite.InviteeUserId, out var inviteeIndex))
+                {
+                    inviteeIndex.TryRemove(pair.Key, out _);
+                    if (inviteeIndex.IsEmpty)
+                    {
+                        PendingInvitesByInvitee.TryRemove(expiredInvite.InviteeUserId, out _);
+                    }
+                }
+
+                long inviterSessionId = PlayerSessionManager.Instance.GetSessionIdByUserId(expiredInvite.InviterUserId);
+                if (inviterSessionId > 0)
+                {
+                    var expireNotif = new InviteGameAckNotification
+                    {
+                        InviteeUniqueId = string.Empty,
+                        InviteeNickname = string.Empty,
+                        RoomId = expiredInvite.RoomId,
+                        Accept = false,
+                        Reason = "邀请已过期"
+                    };
+                    SendResponseBySessionId(gameSession, inviterSessionId, MessageIds.InviteGameAckNotif, expireNotif);
+                }
+            }
+        }
+
+        private static void RemovePendingInvite(long inviteId)
+        {
+            if (!PendingInvites.TryRemove(inviteId, out var invite))
+            {
+                return;
+            }
+
+            if (PendingInvitesByInvitee.TryGetValue(invite.InviteeUserId, out var inviteeIndex))
+            {
+                inviteeIndex.TryRemove(inviteId, out _);
+                if (inviteeIndex.IsEmpty)
+                {
+                    PendingInvitesByInvitee.TryRemove(invite.InviteeUserId, out _);
+                }
+            }
+        }
+
         /// <summary>
         /// 将响应序列化为 UTF-8 字节、附加目标会话 ID、构建数据包并通过指定会话发送。
         /// </summary>
@@ -861,6 +1409,87 @@ namespace Game.Handlers
             finally
             {
                 System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            }
+        }
+
+        private static void HandleInviteGameAckRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        {
+            if (sessionBase is not ClientSessionWrapper session) return;
+            var req = Shared.Json.DeserializeFromUtf8Bytes<InviteGameAckRequest>(payload.Span);
+            if (req == null)
+            {
+                SendSimpleResponse(session, MessageIds.InviteGameAckRes, new InviteGameAckResponse { Success = false, Message = "请求格式无效" });
+                return;
+            }
+
+            int inviteeUserId = PlayerSessionManager.Instance.GetUserIdBySessionId(session.SessionId);
+            if (inviteeUserId <= 0)
+            {
+                SendSimpleResponse(session, MessageIds.InviteGameAckRes, new InviteGameAckResponse { Success = false, Message = "会话未登录或未绑定" });
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(req.InviterUniqueId))
+            {
+                SendSimpleResponse(session, MessageIds.InviteGameAckRes, new InviteGameAckResponse { Success = false, Message = "邀请人UniqueId不能为空" });
+                return;
+            }
+
+            CleanupExpiredPendingInvites(session);
+
+            PendingInvite? matchedInvite = PendingInvites.Values
+                .Where(invite => invite.InviteeUserId == inviteeUserId
+                    && string.Equals(invite.InviterUniqueId, req.InviterUniqueId.Trim(), StringComparison.Ordinal)
+                    && string.Equals(invite.RoomId, req.RoomId?.Trim() ?? string.Empty, StringComparison.Ordinal))
+                .OrderByDescending(invite => invite.CreateTimeUtc)
+                .FirstOrDefault();
+
+            if (matchedInvite == null)
+            {
+                SendSimpleResponse(session, MessageIds.InviteGameAckRes, new InviteGameAckResponse { Success = false, Message = "邀请不存在或已过期" });
+                return;
+            }
+
+            if (matchedInvite.ExpireAtUtc <= DateTime.UtcNow)
+            {
+                RemovePendingInvite(matchedInvite.InviteId);
+                SendSimpleResponse(session, MessageIds.InviteGameAckRes, new InviteGameAckResponse { Success = false, Message = "邀请已过期" });
+                return;
+            }
+
+            RemovePendingInvite(matchedInvite.InviteId);
+
+            long inviterSessionId = PlayerSessionManager.Instance.GetSessionIdByUserId(matchedInvite.InviterUserId);
+            if (inviterSessionId > 0)
+            {
+                string inviteeUid = PlayerSessionManager.Instance.GetUidBySessionId(session.SessionId);
+                var notif = new InviteGameAckNotification
+                {
+                    InviteeUniqueId = inviteeUid,
+                    InviteeNickname = string.IsNullOrWhiteSpace(inviteeUid) ? $"Player_{inviteeUserId}" : inviteeUid,
+                    RoomId = req.RoomId?.Trim() ?? string.Empty,
+                    Accept = req.Accept,
+                    Reason = req.Reason?.Trim() ?? string.Empty
+                };
+                SendResponseBySessionId(session, inviterSessionId, MessageIds.InviteGameAckNotif, notif);
+            }
+
+            SendSimpleResponse(session, MessageIds.InviteGameAckRes, new InviteGameAckResponse
+            {
+                Success = true,
+                Message = req.Accept ? "已接受邀请" : "已拒绝邀请"
+            });
+        }
+
+        private static void CleanupInviteDedupCache()
+        {
+            DateTime now = DateTime.UtcNow;
+            foreach (var pair in InviteDedupCache)
+            {
+                if (now - pair.Value > InviteDedupWindow)
+                {
+                    InviteDedupCache.TryRemove(pair.Key, out _);
+                }
             }
         }
 

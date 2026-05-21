@@ -42,6 +42,9 @@ namespace Shared.Messages
         public const int DbGetBlacklistReq = 1014;
         public const int DbResolveUserByUniqueIdReq = 1015;
         public const int DbResolveUserByUserIdReq = 1016;
+        public const int DbCreateFriendApplyReq = 1017;
+        public const int DbGetFriendApplyListReq = 1018;
+        public const int DbHandleFriendApplyReq = 1019;
 
         // === DB 好友/聊天等响应消息 (1100-1199) ===
         public const int DbAddFriendRes = 1106;
@@ -53,6 +56,9 @@ namespace Shared.Messages
         public const int DbGetBlacklistRes = 1114;
         public const int DbResolveUserByUniqueIdRes = 1115;
         public const int DbResolveUserByUserIdRes = 1116;
+        public const int DbCreateFriendApplyRes = 1117;
+        public const int DbGetFriendApplyListRes = 1118;
+        public const int DbHandleFriendApplyRes = 1119;
 
         // === 登录服务器客户端通信 (10000-19999 网关转发过来) ===
         public const int PlayerDisconnectNotif = 10000;
@@ -113,6 +119,8 @@ namespace Shared.Messages
         public const int CenterRoomChatReq = 30030;
         public const int CenterRoomChatRes = 30031;
         public const int CenterRoomChatNotif = 30032;
+        public const int CenterLeaveRoomReq = 30033;
+        public const int CenterLeaveRoomRes = 30034;
 
         // === Center 内部节点通信 (90000-90999，非客户端消息) ===
         public const int CenterRegisterNodeReq = 90001;
@@ -163,5 +171,16 @@ namespace Shared.Messages
         public const int RemoveBlacklistRes = 50015;
         public const int GetBlacklistReq = 50016;
         public const int GetBlacklistRes = 50017;
+        public const int FriendApplyReq = 50018;
+        public const int FriendApplyRes = 50019;
+        public const int FriendApplyNotif = 50020;
+        public const int FriendApplyListReq = 50021;
+        public const int FriendApplyListRes = 50022;
+        public const int FriendApplyHandleReq = 50023;
+        public const int FriendApplyHandleRes = 50024;
+        public const int FriendOnlineStatusNotif = 50025;
+        public const int InviteGameAckReq = 50026;
+        public const int InviteGameAckRes = 50027;
+        public const int InviteGameAckNotif = 50028;
     }
 }
