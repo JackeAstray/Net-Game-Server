@@ -178,6 +178,18 @@ namespace Gateway
                             routedPayload = Shared.RouteMetadata.AttachUserId(routedPayload, boundUserId);
                         }
 
+                        string boundUid = Gateway.Managers.GatewaySessionManager.Instance.GetUidBySessionId(session.SessionId);
+                        if (!string.IsNullOrWhiteSpace(boundUid))
+                        {
+                            routedPayload = Shared.RouteMetadata.AttachUid(routedPayload, boundUid);
+                        }
+
+                        string boundNickname = Gateway.Managers.GatewaySessionManager.Instance.GetNicknameBySessionId(session.SessionId);
+                        if (!string.IsNullOrWhiteSpace(boundNickname))
+                        {
+                            routedPayload = Shared.RouteMetadata.AttachNickname(routedPayload, boundNickname);
+                        }
+
                         byte[] wrapperMsg = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int routedLength);
                         byte[] outbound = wrapperMsg.AsSpan(0, routedLength).ToArray();
                         System.Buffers.ArrayPool<byte>.Shared.Return(wrapperMsg);
@@ -284,6 +296,14 @@ namespace Gateway
                         if (loginRes?.Success == true && loginRes.UserId > 0)
                         {
                             Gateway.Managers.GatewaySessionManager.Instance.BindUser(clientSessionId, loginRes.UserId);
+                            if (!string.IsNullOrWhiteSpace(loginRes.UniqueId))
+                            {
+                                Gateway.Managers.GatewaySessionManager.Instance.BindUid(clientSessionId, loginRes.UniqueId);
+                            }
+                            if (!string.IsNullOrWhiteSpace(loginRes.Nickname))
+                            {
+                                Gateway.Managers.GatewaySessionManager.Instance.BindNickname(clientSessionId, loginRes.Nickname);
+                            }
                         }
                         else if (loginRes != null && !loginRes.Success)
                         {
@@ -296,6 +316,8 @@ namespace Gateway
                         if (logoutRes?.Success == true)
                         {
                             Gateway.Managers.GatewaySessionManager.Instance.UnbindUser(clientSessionId);
+                            Gateway.Managers.GatewaySessionManager.Instance.UnbindUid(clientSessionId);
+                            Gateway.Managers.GatewaySessionManager.Instance.UnbindNickname(clientSessionId);
                         }
                         else if (logoutRes != null && !logoutRes.Success)
                         {

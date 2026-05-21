@@ -38,10 +38,32 @@ namespace Center.Handlers
             {
                 try
                 {
+                    int ownerUserId = 0;
+                    byte[] cleanPayload;
+                    if (Shared.RouteMetadata.TryExtractUserId(payload, out var extractedUserId, out cleanPayload))
+                    {
+                        ownerUserId = extractedUserId;
+                        payload = cleanPayload;
+                    }
+
+                    string ownerUid = string.Empty;
+                    if (Shared.RouteMetadata.TryExtractUid(payload, out var extractedUid, out cleanPayload))
+                    {
+                        ownerUid = extractedUid;
+                        payload = cleanPayload;
+                    }
+
+                    string ownerNickname = string.Empty;
+                    if (Shared.RouteMetadata.TryExtractNickname(payload, out var extractedNickname, out cleanPayload))
+                    {
+                        ownerNickname = extractedNickname;
+                        payload = cleanPayload;
+                    }
+
                     var req = Shared.Json.DeserializeFromUtf8Bytes<CenterCreateRoomRequest>(payload.Span);
                     if (req != null)
                     {
-                        var res = await matchHandler.HandleCreateRoomRequestAsync(req);
+                        var res = await matchHandler.HandleCreateRoomRequestAsync(clientSessionId, ownerUserId, ownerUid, ownerNickname, req);
                         SendToGateway(session, clientSessionId, MessageIds.CenterCreateRoomRes, res);
                     }
                     else
@@ -52,6 +74,197 @@ namespace Center.Handlers
                 catch (Exception ex)
                 {
                     Shared.Log.Error($"CenterCreateRoomReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
+                }
+            };
+
+            handlers[MessageIds.CenterListRoomsReq] = async (payload, session, clientSessionId) =>
+            {
+                try
+                {
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<CenterListRoomsRequest>(payload.Span);
+                    if (req != null)
+                    {
+                        var res = await matchHandler.HandleListRoomsRequestAsync(req);
+                        SendToGateway(session, clientSessionId, MessageIds.CenterListRoomsRes, res);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"CenterListRoomsReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"CenterListRoomsReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
+                }
+            };
+
+            handlers[MessageIds.CenterJoinRoomReq] = async (payload, session, clientSessionId) =>
+            {
+                try
+                {
+                    int requesterUserId = 0;
+                    byte[] cleanPayload;
+                    if (Shared.RouteMetadata.TryExtractUserId(payload, out var extractedUserId, out cleanPayload))
+                    {
+                        requesterUserId = extractedUserId;
+                        payload = cleanPayload;
+                    }
+
+                    string requesterUid = string.Empty;
+                    if (Shared.RouteMetadata.TryExtractUid(payload, out var extractedUid, out cleanPayload))
+                    {
+                        requesterUid = extractedUid;
+                        payload = cleanPayload;
+                    }
+
+                    string requesterNickname = string.Empty;
+                    if (Shared.RouteMetadata.TryExtractNickname(payload, out var extractedNickname, out cleanPayload))
+                    {
+                        requesterNickname = extractedNickname;
+                        payload = cleanPayload;
+                    }
+
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<CenterJoinRoomRequest>(payload.Span);
+                    if (req != null)
+                    {
+                        var res = await matchHandler.HandleJoinRoomRequestAsync(clientSessionId, requesterUserId, requesterUid, requesterNickname, req);
+                        SendToGateway(session, clientSessionId, MessageIds.CenterJoinRoomRes, res);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"CenterJoinRoomReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"CenterJoinRoomReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
+                }
+            };
+
+            handlers[MessageIds.CenterCloseRoomReq] = async (payload, session, clientSessionId) =>
+            {
+                try
+                {
+                    int requesterUserId = 0;
+                    if (Shared.RouteMetadata.TryExtractUserId(payload, out var extractedUserId, out var cleanPayload))
+                    {
+                        requesterUserId = extractedUserId;
+                        payload = cleanPayload;
+                    }
+
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<CenterCloseRoomRequest>(payload.Span);
+                    if (req != null)
+                    {
+                        var res = await matchHandler.HandleCloseRoomRequestAsync(requesterUserId, req, session, SendToGateway);
+                        SendToGateway(session, clientSessionId, MessageIds.CenterCloseRoomRes, res);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"CenterCloseRoomReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"CenterCloseRoomReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
+                }
+            };
+
+            handlers[MessageIds.CenterUpdateRoomSettingsReq] = async (payload, session, clientSessionId) =>
+            {
+                try
+                {
+                    int requesterUserId = 0;
+                    if (Shared.RouteMetadata.TryExtractUserId(payload, out var extractedUserId, out var cleanPayload))
+                    {
+                        requesterUserId = extractedUserId;
+                        payload = cleanPayload;
+                    }
+
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<CenterUpdateRoomSettingsRequest>(payload.Span);
+                    if (req != null)
+                    {
+                        var res = await matchHandler.HandleUpdateRoomSettingsRequestAsync(requesterUserId, req, session, SendToGateway);
+                        SendToGateway(session, clientSessionId, MessageIds.CenterUpdateRoomSettingsRes, res);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"CenterUpdateRoomSettingsReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"CenterUpdateRoomSettingsReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
+                }
+            };
+
+            handlers[MessageIds.CenterStartRoomGameReq] = async (payload, session, clientSessionId) =>
+            {
+                try
+                {
+                    int requesterUserId = 0;
+                    if (Shared.RouteMetadata.TryExtractUserId(payload, out var extractedUserId, out var cleanPayload))
+                    {
+                        requesterUserId = extractedUserId;
+                        payload = cleanPayload;
+                    }
+
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<CenterStartRoomGameRequest>(payload.Span);
+                    if (req != null)
+                    {
+                        var res = await matchHandler.HandleStartRoomGameRequestAsync(requesterUserId, req, session, SendToGateway);
+                        SendToGateway(session, clientSessionId, MessageIds.CenterStartRoomGameRes, res);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"CenterStartRoomGameReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"CenterStartRoomGameReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
+                }
+            };
+
+            handlers[MessageIds.CenterRoomChatReq] = async (payload, session, clientSessionId) =>
+            {
+                try
+                {
+                    int requesterUserId = 0;
+                    byte[] cleanPayload;
+                    if (Shared.RouteMetadata.TryExtractUserId(payload, out var extractedUserId, out cleanPayload))
+                    {
+                        requesterUserId = extractedUserId;
+                        payload = cleanPayload;
+                    }
+
+                    string requesterUid = string.Empty;
+                    if (Shared.RouteMetadata.TryExtractUid(payload, out var extractedUid, out cleanPayload))
+                    {
+                        requesterUid = extractedUid;
+                        payload = cleanPayload;
+                    }
+
+                    string requesterNickname = string.Empty;
+                    if (Shared.RouteMetadata.TryExtractNickname(payload, out var extractedNickname, out cleanPayload))
+                    {
+                        requesterNickname = extractedNickname;
+                        payload = cleanPayload;
+                    }
+
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<CenterRoomChatRequest>(payload.Span);
+                    if (req != null)
+                    {
+                        var res = await matchHandler.HandleRoomChatRequestAsync(clientSessionId, requesterUserId, requesterUid, requesterNickname, req, session, SendToGateway);
+                        SendToGateway(session, clientSessionId, MessageIds.CenterRoomChatRes, res);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"CenterRoomChatReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"CenterRoomChatReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
                 }
             };
 
@@ -73,6 +286,188 @@ namespace Center.Handlers
                 catch (Exception ex)
                 {
                     Shared.Log.Error($"CenterCreateSceneRes 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
+                }
+            };
+
+            handlers[MessageIds.CenterDestroySceneRes] = async (payload, session, clientSessionId) =>
+            {
+                try
+                {
+                    var res = Shared.Json.DeserializeFromUtf8Bytes<CenterDestroySceneResponse>(payload.Span);
+                    if (res != null)
+                    {
+                        matchHandler.HandleDestroySceneResponse(res);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"CenterDestroySceneRes 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                    await Task.CompletedTask;
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"CenterDestroySceneRes 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
+                }
+            };
+
+            handlers[MessageIds.CenterRoomPlayerCountSyncReq] = (payload, session, clientSessionId) =>
+            {
+                try
+                {
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<CenterRoomPlayerCountSyncRequest>(payload.Span);
+                    if (req != null)
+                    {
+                        matchHandler.HandleRoomPlayerCountSync(req);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"CenterRoomPlayerCountSyncReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"CenterRoomPlayerCountSyncReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
+                }
+                return Task.CompletedTask;
+            };
+
+            handlers[MessageIds.CenterRoomMemberLeaveSyncReq] = async (payload, session, clientSessionId) =>
+            {
+                try
+                {
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<CenterRoomMemberLeaveSyncRequest>(payload.Span);
+                    if (req != null)
+                    {
+                        await matchHandler.HandleRoomMemberLeaveSyncAsync(req, session, SendToGateway, SendToGateway, SendToGateway);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"CenterRoomMemberLeaveSyncReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"CenterRoomMemberLeaveSyncReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
+                }
+            };
+
+            handlers[MessageIds.RoomMemberListReq] = async (payload, session, clientSessionId) =>
+            {
+                try
+                {
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<RoomMemberListRequest>(payload.Span);
+                    if (req != null)
+                    {
+                        var res = await matchHandler.HandleRoomMemberListRequestAsync(req);
+                        SendToGateway(session, clientSessionId, MessageIds.RoomMemberListRes, res);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"RoomMemberListReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"RoomMemberListReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
+                }
+            };
+
+            handlers[MessageIds.RoomReadyReq] = async (payload, session, clientSessionId) =>
+            {
+                try
+                {
+                    int requesterUserId = 0;
+                    byte[] cleanPayload;
+                    if (Shared.RouteMetadata.TryExtractUserId(payload, out var extractedUserId, out cleanPayload))
+                    {
+                        requesterUserId = extractedUserId;
+                        payload = cleanPayload;
+                    }
+
+                    string requesterUid = string.Empty;
+                    if (Shared.RouteMetadata.TryExtractUid(payload, out var extractedUid, out cleanPayload))
+                    {
+                        requesterUid = extractedUid;
+                        payload = cleanPayload;
+                    }
+
+                    string requesterNickname = string.Empty;
+                    if (Shared.RouteMetadata.TryExtractNickname(payload, out var extractedNickname, out cleanPayload))
+                    {
+                        requesterNickname = extractedNickname;
+                        payload = cleanPayload;
+                    }
+
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<RoomReadyRequest>(payload.Span);
+                    if (req != null)
+                    {
+                        var res = await matchHandler.HandleRoomReadyRequestAsync(clientSessionId, requesterUserId, requesterUid, requesterNickname, req, session, SendToGateway);
+                        SendToGateway(session, clientSessionId, MessageIds.RoomReadyRes, res);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"RoomReadyReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"RoomReadyReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
+                }
+            };
+
+            handlers[MessageIds.RoomTransferOwnerReq] = async (payload, session, clientSessionId) =>
+            {
+                try
+                {
+                    int requesterUserId = 0;
+                    if (Shared.RouteMetadata.TryExtractUserId(payload, out var extractedUserId, out var cleanPayload))
+                    {
+                        requesterUserId = extractedUserId;
+                        payload = cleanPayload;
+                    }
+
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<RoomTransferOwnerRequest>(payload.Span);
+                    if (req != null)
+                    {
+                        var res = await matchHandler.HandleRoomTransferOwnerRequestAsync(requesterUserId, req, session, SendToGateway);
+                        SendToGateway(session, clientSessionId, MessageIds.RoomTransferOwnerRes, res);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"RoomTransferOwnerReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"RoomTransferOwnerReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
+                }
+            };
+
+            handlers[MessageIds.RoomKickMemberReq] = async (payload, session, clientSessionId) =>
+            {
+                try
+                {
+                    int requesterUserId = 0;
+                    if (Shared.RouteMetadata.TryExtractUserId(payload, out var extractedUserId, out var cleanPayload))
+                    {
+                        requesterUserId = extractedUserId;
+                        payload = cleanPayload;
+                    }
+
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<RoomKickMemberRequest>(payload.Span);
+                    if (req != null)
+                    {
+                        var res = await matchHandler.HandleRoomKickMemberRequestAsync(requesterUserId, req, session, SendToGateway, SendToGateway, SendToGateway);
+                        SendToGateway(session, clientSessionId, MessageIds.RoomKickMemberRes, res);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"RoomKickMemberReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"RoomKickMemberReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
                 }
             };
 

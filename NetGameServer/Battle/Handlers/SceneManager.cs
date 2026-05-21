@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Linq;
 
 namespace Battle.Handlers
 {
@@ -90,6 +91,63 @@ namespace Battle.Handlers
             {
                 Shared.Log.Info($" 场景已移除并清理干净: {sceneId}");
             }
+        }
+
+        /// <summary>
+        /// 获取指定场景中当前绑定的玩家会话数量。
+        /// </summary>
+        /// <param name="sceneId">场景标识。</param>
+        /// <returns>绑定到该场景的玩家数。</returns>
+        public int GetPlayerCount(string sceneId)
+        {
+            if (string.IsNullOrWhiteSpace(sceneId))
+            {
+                return 0;
+            }
+
+            return playerToSceneBinding.Count(pair => pair.Value == sceneId);
+        }
+
+        /// <summary>
+        /// 清理指定场景上的所有玩家绑定。
+        /// </summary>
+        /// <param name="sceneId">场景标识。</param>
+        /// <returns>被清理的玩家数量。</returns>
+        public int UnbindPlayersInScene(string sceneId)
+        {
+            if (string.IsNullOrWhiteSpace(sceneId))
+            {
+                return 0;
+            }
+
+            int removed = 0;
+            foreach (var pair in playerToSceneBinding)
+            {
+                if (pair.Value == sceneId && playerToSceneBinding.TryRemove(pair.Key, out _))
+                {
+                    removed++;
+                }
+            }
+
+            return removed;
+        }
+
+        /// <summary>
+        /// 获取指定场景当前绑定的玩家会话标识列表。
+        /// </summary>
+        /// <param name="sceneId">场景标识。</param>
+        /// <returns>当前绑定到该场景的玩家会话标识数组。</returns>
+        public long[] GetPlayerSessionIds(string sceneId)
+        {
+            if (string.IsNullOrWhiteSpace(sceneId))
+            {
+                return System.Array.Empty<long>();
+            }
+
+            return playerToSceneBinding
+                .Where(pair => pair.Value == sceneId)
+                .Select(pair => pair.Key)
+                .ToArray();
         }
 
         /// <summary>

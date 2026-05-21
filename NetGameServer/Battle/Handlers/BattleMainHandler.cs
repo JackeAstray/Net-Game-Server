@@ -29,11 +29,11 @@ namespace Battle.Handlers
                 var sceneConfig = new SceneConfig
                 {
                     SceneId = request.RoomId,
-                    Name = $"Scene_{request.SceneType}",
+                    Name = string.IsNullOrWhiteSpace(request.RoomName) ? $"Scene_{request.SceneType}" : request.RoomName,
                     SceneType = request.SceneType,
-                    UseAoi = request.SceneType.Contains("World", StringComparison.OrdinalIgnoreCase), // 示例：世界地图使用AOI
+                    UseAoi = request.SceneType.Contains("World", StringComparison.OrdinalIgnoreCase),
                     GridSize = 50.0f,
-                    MaxPlayers = 100,
+                    MaxPlayers = request.MaxPlayers > 0 ? request.MaxPlayers : 100,
                     IsPrivate = request.IsPrivate
                 };
 
@@ -55,6 +55,45 @@ namespace Battle.Handlers
                     Success = false,
                     RoomId = request.RoomId,
                     SceneId = ""
+                });
+            }
+        }
+
+        public Task<CenterDestroySceneResponse> HandleDestroySceneRequestAsync(CenterDestroySceneRequest request)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(request.RoomId))
+                {
+                    return Task.FromResult(new CenterDestroySceneResponse
+                    {
+                        Success = false,
+                        Message = "RoomId 不能为空"
+                    });
+                }
+
+                string roomId = request.RoomId.Trim();
+                long[] affectedSessionIds = sceneManager.GetPlayerSessionIds(roomId);
+                int removedPlayers = sceneManager.UnbindPlayersInScene(roomId);
+                sceneManager.RemoveScene(roomId);
+
+                return Task.FromResult(new CenterDestroySceneResponse
+                {
+                    Success = true,
+                    RoomId = roomId,
+                    Message = $"房间已销毁，清理玩家数: {removedPlayers}",
+                    AffectedSessionIds = affectedSessionIds
+                });
+            }
+            catch (Exception ex)
+            {
+                Shared.Log.Error($"销毁场景失败 {request.RoomId}: {ex.Message}");
+                return Task.FromResult(new CenterDestroySceneResponse
+                {
+                    Success = false,
+                    RoomId = request.RoomId,
+                    Message = "房间销毁失败",
+                    AffectedSessionIds = Array.Empty<long>()
                 });
             }
         }

@@ -30,4 +30,22 @@ namespace Shared.Messages.Battle
         [JsonPropertyName("message")]
         public string Message { get; set; } = string.Empty;
     }
+
+    public class BattleLeaveRoomRequest
+    {
+        [JsonPropertyName("roomId")]
+        public string RoomId { get; set; } = string.Empty;
+    }
+
+    public class BattleLeaveRoomResponse
+    {
+        [JsonPropertyName("success")]
+        public bool Success { get; set; }
+
+        [JsonPropertyName("roomId")]
+        public string RoomId { get; set; } = string.Empty;
+
+        [JsonPropertyName("message")]
+        public string Message { get; set; } = string.Empty;
+    }
 }

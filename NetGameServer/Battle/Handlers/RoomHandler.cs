@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading.Tasks;
 using Shared.Messages;
 using Shared.Messages.Battle;
@@ -53,6 +54,14 @@ namespace Battle.Handlers
 
                 // 获取或创建场景
                 var scene = sceneManager.GetOrCreateScene(sceneConfig);
+                if (scene.Config.MaxPlayers > 0 && scene.EntityManager.GetAllSessionIds().Count() >= scene.Config.MaxPlayers)
+                {
+                    return Task.FromResult(new BattleJoinResponse
+                    {
+                        Success = false,
+                        Message = "房间人数已满"
+                    });
+                }
 
                 // 将玩家绑定到该场景
                 sceneManager.BindPlayerToScene(clientSessionId, request.RoomId);
@@ -70,6 +79,7 @@ namespace Battle.Handlers
 
                 // 触发进入事件，进行数据广播
                 entitySyncHandler.OnPlayerEnter(clientSessionId, newPlayerState, gatewaySession);
+                Battle.BattleServerApp.SyncRoomPlayerCount(request.RoomId);
 
                 return Task.FromResult(new BattleJoinResponse
                 {
@@ -88,6 +98,42 @@ namespace Battle.Handlers
             }
         }
 
+        public Task<BattleLeaveRoomResponse> HandleLeaveRoomRequestAsync(long clientSessionId, BattleLeaveRoomRequest request, Network.ISession gatewaySession)
+        {
+            var scene = sceneManager.GetSceneByPlayer(clientSessionId);
+            if (scene == null)
+            {
+                return Task.FromResult(new BattleLeaveRoomResponse
+                {
+                    Success = false,
+                    RoomId = request?.RoomId ?? string.Empty,
+                    Message = "玩家当前不在房间中"
+                });
+            }
+
+            string roomId = scene.SceneId;
+            if (!string.IsNullOrWhiteSpace(request?.RoomId) && !string.Equals(roomId, request.RoomId, StringComparison.Ordinal))
+            {
+                return Task.FromResult(new BattleLeaveRoomResponse
+                {
+                    Success = false,
+                    RoomId = roomId,
+                    Message = "请求房间与当前所在房间不一致"
+                });
+            }
+
+            entitySyncHandler.OnPlayerLeave(clientSessionId, gatewaySession);
+            Battle.BattleServerApp.SyncRoomPlayerCount(roomId);
+            Battle.BattleServerApp.SyncRoomMemberLeave(roomId, clientSessionId);
+
+            return Task.FromResult(new BattleLeaveRoomResponse
+            {
+                Success = true,
+                RoomId = roomId,
+                Message = "已退出房间"
+            });
+        }
+
         /// <summary>
         /// 处理客户端断开连接：根据会话 ID 从场景解绑玩家并执行离开或清理逻辑。
         /// </summary>
@@ -99,7 +145,10 @@ namespace Battle.Handlers
             var scene = sceneManager.GetSceneByPlayer(clientSessionId);
             if (scene != null)
             {
+                string roomId = scene.SceneId;
                 entitySyncHandler.OnPlayerLeave(clientSessionId, gatewaySession);
+                Battle.BattleServerApp.SyncRoomPlayerCount(roomId);
+                Battle.BattleServerApp.SyncRoomMemberLeave(roomId, clientSessionId);
             }
             else
             {

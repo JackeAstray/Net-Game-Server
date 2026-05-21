@@ -60,7 +60,9 @@ namespace Shared.Messages.Social
     public class InviteGameRequest
     {
         public string FriendUniqueId { get; set; }
-        public int RoomId { get; set; }
+        public string RoomId { get; set; }
+        public string SceneType { get; set; }
+        public string RoomName { get; set; }
     }
 
     public class InviteGameResponse
@@ -73,7 +75,9 @@ namespace Shared.Messages.Social
     {
         public string InviterUniqueId { get; set; }
         public string InviterNickname { get; set; }
-        public int RoomId { get; set; }
+        public string RoomId { get; set; }
+        public string SceneType { get; set; }
+        public string RoomName { get; set; }
     }
 
     public class AddBlacklistRequest

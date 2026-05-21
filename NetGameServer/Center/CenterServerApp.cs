@@ -86,16 +86,36 @@ namespace Center
                         {
                             Shared.Messages.MessageIds.CenterMatchReq => Shared.Messages.MessageIds.CenterMatchRes,
                             Shared.Messages.MessageIds.CenterCreateRoomReq => Shared.Messages.MessageIds.CenterCreateRoomRes,
+                            Shared.Messages.MessageIds.CenterListRoomsReq => Shared.Messages.MessageIds.CenterListRoomsRes,
+                            Shared.Messages.MessageIds.CenterJoinRoomReq => Shared.Messages.MessageIds.CenterJoinRoomRes,
+                            Shared.Messages.MessageIds.CenterCloseRoomReq => Shared.Messages.MessageIds.CenterCloseRoomRes,
+                            Shared.Messages.MessageIds.CenterUpdateRoomSettingsReq => Shared.Messages.MessageIds.CenterUpdateRoomSettingsRes,
+                            Shared.Messages.MessageIds.CenterStartRoomGameReq => Shared.Messages.MessageIds.CenterStartRoomGameRes,
                             _ => 0
                         };
 
                         if (responseMsgId > 0)
                         {
-                            byte[] unknownPayload = Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Center.CenterMatchResponse
+                            object unknownResponse = responseMsgId switch
                             {
-                                Success = false,
-                                Message = $"未支持的中心消息类型: {msgId}"
-                            });
+                                Shared.Messages.MessageIds.CenterListRoomsRes => new Shared.Messages.Center.CenterListRoomsResponse
+                                {
+                                    Success = false,
+                                    Message = $"未支持的中心消息类型: {msgId}",
+                                    Rooms = Array.Empty<Shared.Messages.Center.RoomInfo>()
+                                },
+                                Shared.Messages.MessageIds.CenterCloseRoomRes => new Shared.Messages.Center.CenterCloseRoomResponse
+                                {
+                                    Success = false,
+                                    Message = $"未支持的中心消息类型: {msgId}"
+                                },
+                                _ => new Shared.Messages.Center.CenterMatchResponse
+                                {
+                                    Success = false,
+                                    Message = $"未支持的中心消息类型: {msgId}"
+                                }
+                            };
+                            byte[] unknownPayload = Shared.Json.SerializeToUtf8Bytes(unknownResponse);
                             byte[] routedUnknownPayload = Shared.RouteMetadata.AttachClientSessionId(unknownPayload, originalSessionId);
                             byte[] unknownPacket = Network.Routing.PacketBuilder.BuildPacket(responseMsgId, routedUnknownPayload, out int unknownLength);
                             try

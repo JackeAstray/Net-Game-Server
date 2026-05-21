@@ -6,9 +6,12 @@ namespace Shared.Messages.Chat
     public class SendChatRequest
     {
         public int SenderId { get; set; }
+        public string SenderUniqueId { get; set; }
         public string SenderName { get; set; }
         public int? ReceiverId { get; set; }
+        public string ReceiverUniqueId { get; set; }
         public ChatChannel Channel { get; set; }
+        public string RoomId { get; set; }
         public string Content { get; set; }
     }
 

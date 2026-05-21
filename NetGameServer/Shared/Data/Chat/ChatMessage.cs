@@ -9,7 +9,8 @@ namespace Shared.Data.Chat
         Channel = 2,
         Friend = 3,
         Team = 4,   //对局队友聊天
-        Match = 5   //对局所有人聊天
+        Match = 5,   //对局所有人聊天
+        Room = 6     //房间聊天
     }
 
     /// <summary>
@@ -22,11 +23,17 @@ namespace Shared.Data.Chat
 
         public int SenderId { get; set; }
 
+        public string SenderUniqueId { get; set; }
+
         public string SenderName { get; set; }
 
         public int? ReceiverId { get; set; }
 
+        public string ReceiverUniqueId { get; set; }
+
         public ChatChannel Channel { get; set; }
+
+        public string RoomId { get; set; }
 
         public string Content { get; set; }
 

@@ -16,6 +16,7 @@ namespace Battle
         private static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>? handlers;
         private static System.Threading.CancellationTokenSource? centerHeartbeatCts;
         private static Battle.Handlers.SceneManager? sceneManager;
+        private static TcpClientWrapper? centerClient;
         public static string CurrentNodeId { get; private set; } = string.Empty;
 
         /// <summary>
@@ -145,7 +146,7 @@ namespace Battle
             string battleHost = ConfigHelper.GetConfig<string>("BattleHost") ?? "127.0.0.1";
             string nodeId = $"Battle-{battleHost}:{port}";
             CurrentNodeId = nodeId;
-            var centerClient = new TcpClientWrapper(centerHost, centerPort);
+            centerClient = new TcpClientWrapper(centerHost, centerPort);
 
             centerClient.OnConnected += session =>
             {
@@ -216,6 +217,62 @@ namespace Battle
                 }
             };
             _ = centerClient.ConnectAsync();
+        }
+
+        public static void SyncRoomPlayerCount(string roomId)
+        {
+            if (centerClient == null || sceneManager == null || string.IsNullOrWhiteSpace(roomId))
+            {
+                return;
+            }
+
+            var request = new CenterRoomPlayerCountSyncRequest
+            {
+                RoomId = roomId,
+                CurrentPlayers = sceneManager.GetPlayerCount(roomId)
+            };
+            byte[] payload = Shared.Json.SerializeToUtf8Bytes(request);
+            byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterRoomPlayerCountSyncReq, payload, out int totalLength);
+            try
+            {
+                centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"Battle 同步房间人数失败 RoomId:{roomId} Exception:{ex}");
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            }
+        }
+
+        public static void SyncRoomMemberLeave(string roomId, long clientSessionId)
+        {
+            if (centerClient == null || string.IsNullOrWhiteSpace(roomId) || clientSessionId <= 0)
+            {
+                return;
+            }
+
+            var request = new CenterRoomMemberLeaveSyncRequest
+            {
+                RoomId = roomId,
+                ClientSessionId = clientSessionId
+            };
+            byte[] payload = Shared.Json.SerializeToUtf8Bytes(request);
+            byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterRoomMemberLeaveSyncReq, payload, out int totalLength);
+            try
+            {
+                centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"Battle 同步房间成员退出失败 RoomId:{roomId} ClientSessionId:{clientSessionId} Exception:{ex}");
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            }
         }
 
         /// <summary>

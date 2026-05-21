@@ -24,7 +24,7 @@ namespace Game.Handlers
             public int ResponseMsgId { get; set; }
             public bool IsInviteResolve { get; set; }
             public bool IsInviteSenderResolve { get; set; }
-            public int InviteRoomId { get; set; }
+            public string InviteRoomId { get; set; } = string.Empty;
             public int InviteTargetUserId { get; set; }
         }
 
@@ -732,7 +732,9 @@ namespace Game.Handlers
                             {
                                 InviterUniqueId = inviterUniqueId,
                                 InviterNickname = string.IsNullOrWhiteSpace(inviterNickname) ? $"Player_{requesterUserId}" : inviterNickname,
-                                RoomId = pending.InviteRoomId
+                                RoomId = pending.InviteRoomId,
+                                SceneType = string.Empty,
+                                RoomName = string.Empty
                             };
                             var notifPayload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(notif), targetSessionId);
                             var notifData = PacketBuilder.BuildPacket(MessageIds.InviteGameNotif, notifPayload, out int notifLength);

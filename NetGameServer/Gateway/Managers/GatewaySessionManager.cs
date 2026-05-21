@@ -32,6 +32,9 @@ namespace Gateway.Managers
         /// </summary>
         private readonly ConcurrentDictionary<long, Network.ISession> clientSessions = new();
         private readonly ConcurrentDictionary<long, int> sessionUsers = new();
+        private readonly ConcurrentDictionary<long, string> sessionUids = new();
+        private readonly ConcurrentDictionary<string, long> uidSessions = new();
+        private readonly ConcurrentDictionary<long, string> sessionNicknames = new();
 
         /// <summary>
         /// 私有构造函数，防止外部实例化（实现单例模式）
@@ -57,6 +60,16 @@ namespace Gateway.Managers
         {
             clientSessions.TryRemove(sessionId, out _);
             sessionUsers.TryRemove(sessionId, out _);
+
+            if (sessionUids.TryRemove(sessionId, out string? uid))
+            {
+                if (uidSessions.TryGetValue(uid, out long mappedSessionId) && mappedSessionId == sessionId)
+                {
+                    uidSessions.TryRemove(uid, out _);
+                }
+            }
+
+            sessionNicknames.TryRemove(sessionId, out _);
             Shared.Log.Info($"Gateway 会话已移除 SessionId:{sessionId}");
         }
 
@@ -125,6 +138,62 @@ namespace Gateway.Managers
         }
 
         /// <summary>
+        /// 将指定会话绑定到指定 UID。
+        /// </summary>
+        /// <param name="sessionId">要绑定的会话标识，必须大于 0。</param>
+        /// <param name="uid">要绑定的 UID，不能为空。</param>
+        public void BindUid(long sessionId, string uid)
+        {
+            if (sessionId <= 0 || string.IsNullOrWhiteSpace(uid))
+            {
+                return;
+            }
+
+            if (sessionUids.TryGetValue(sessionId, out string? previousUid) && previousUid != uid)
+            {
+                uidSessions.TryRemove(previousUid, out _);
+            }
+
+            if (uidSessions.TryGetValue(uid, out long previousSessionId) && previousSessionId != sessionId)
+            {
+                sessionUids.TryRemove(previousSessionId, out _);
+            }
+
+            sessionUids[sessionId] = uid;
+            uidSessions[uid] = sessionId;
+        }
+
+        /// <summary>
+        /// 解除指定会话上的 UID 绑定。
+        /// </summary>
+        /// <param name="sessionId">会话标识。</param>
+        public void UnbindUid(long sessionId)
+        {
+            if (sessionUids.TryRemove(sessionId, out string? uid))
+            {
+                if (uidSessions.TryGetValue(uid, out long mappedSessionId) && mappedSessionId == sessionId)
+                {
+                    uidSessions.TryRemove(uid, out _);
+                }
+            }
+        }
+
+        public void BindNickname(long sessionId, string nickname)
+        {
+            if (sessionId <= 0 || string.IsNullOrWhiteSpace(nickname))
+            {
+                return;
+            }
+
+            sessionNicknames[sessionId] = nickname;
+        }
+
+        public void UnbindNickname(long sessionId)
+        {
+            sessionNicknames.TryRemove(sessionId, out _);
+        }
+
+        /// <summary>
         /// 检索与指定会话标识关联的用户标识。
         /// </summary>
         /// <remarks>返回 0 表示未找到关联的用户。</remarks>
@@ -133,6 +202,36 @@ namespace Gateway.Managers
         public int GetUserIdBySessionId(long sessionId)
         {
             return sessionUsers.TryGetValue(sessionId, out var userId) ? userId : 0;
+        }
+
+        /// <summary>
+        /// 检索与指定会话标识关联的 UID。
+        /// </summary>
+        /// <param name="sessionId">会话标识。</param>
+        /// <returns>匹配的 UID；若未找到则返回空字符串。</returns>
+        public string GetUidBySessionId(long sessionId)
+        {
+            return sessionUids.TryGetValue(sessionId, out string? uid) ? uid : string.Empty;
+        }
+
+        public string GetNicknameBySessionId(long sessionId)
+        {
+            return sessionNicknames.TryGetValue(sessionId, out string? nickname) ? nickname : string.Empty;
+        }
+
+        /// <summary>
+        /// 检索与指定 UID 关联的会话标识。
+        /// </summary>
+        /// <param name="uid">UID。</param>
+        /// <returns>匹配的会话标识；若未找到则返回 0。</returns>
+        public long GetSessionIdByUid(string uid)
+        {
+            if (string.IsNullOrWhiteSpace(uid))
+            {
+                return 0;
+            }
+
+            return uidSessions.TryGetValue(uid, out long sessionId) ? sessionId : 0;
         }
 
         /// <summary>

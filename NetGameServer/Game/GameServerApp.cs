@@ -89,6 +89,12 @@ namespace Game
                             Game.Managers.PlayerSessionManager.Instance.BindSession(originalSessionId, routedUserId);
                             cleanPayload = payloadWithoutUserId;
                         }
+
+                        if (Shared.RouteMetadata.TryExtractUid(cleanPayload, out string routedUid, out var payloadWithoutUid) && !string.IsNullOrWhiteSpace(routedUid))
+                        {
+                            Game.Managers.PlayerSessionManager.Instance.BindUid(originalSessionId, routedUid);
+                            cleanPayload = payloadWithoutUid;
+                        }
                     }
 
                     var clientSession = new Game.Network.ClientSessionWrapper(session, originalSessionId);

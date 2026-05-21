@@ -59,6 +59,27 @@ namespace Battle.Handlers
                 }
             };
 
+            handlers[MessageIds.BattleLeaveRoomReq] = async (payload, session, clientSessionId) =>
+            {
+                try
+                {
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<BattleLeaveRoomRequest>(payload.Span);
+                    if (req != null)
+                    {
+                        var res = await roomHandler.HandleLeaveRoomRequestAsync(clientSessionId, req, session);
+                        SendToGateway(session, clientSessionId, MessageIds.BattleLeaveRoomRes, res);
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"BattleLeaveRoomReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"BattleLeaveRoomReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
+                }
+            };
+
             handlers[MessageIds.PlayerDisconnectNotif] = async (payload, session, clientSessionId) =>
             {
                 roomHandler.HandleDisconnect(clientSessionId, session);
@@ -92,6 +113,36 @@ namespace Battle.Handlers
                 catch (Exception ex)
                 {
                     Shared.Log.Error($"CenterCreateSceneReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
+                }
+            };
+
+            handlers[MessageIds.CenterDestroySceneReq] = async (payload, session, clientSessionId) =>
+            {
+                try
+                {
+                    var req = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Center.CenterDestroySceneRequest>(payload.Span);
+                    if (req != null)
+                    {
+                        var res = await battleMainHandler.HandleDestroySceneRequestAsync(req);
+                        byte[] resPayload = Shared.Json.SerializeToUtf8Bytes(res);
+                        byte[] packet = Network.Routing.PacketBuilder.BuildPacket(MessageIds.CenterDestroySceneRes, resPayload, out int totalLength);
+                        try
+                        {
+                            session.Send(packet.AsSpan(0, totalLength).ToArray());
+                        }
+                        finally
+                        {
+                            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+                        }
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"CenterDestroySceneReq 反序列化失败 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"CenterDestroySceneReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
                 }
             };
 

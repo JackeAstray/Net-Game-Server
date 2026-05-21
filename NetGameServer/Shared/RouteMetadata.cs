@@ -12,6 +12,8 @@ public static class RouteMetadata
     public const string BroadcastField = "__broadcast";
     public const string RequestIdField = "__requestId";
     public const string UserIdField = "__userId";
+    public const string UidField = "__uid";
+    public const string NicknameField = "__nickname";
 
     private const uint BinaryMetadataMagic = 0x4154454D;
     private const int BinaryMetadataFooterSize = 8;
@@ -122,6 +124,16 @@ public static class RouteMetadata
         return UpsertLongField(payload, UserIdField, userId);
     }
 
+    public static byte[] AttachUid(ReadOnlyMemory<byte> payload, string uid)
+    {
+        return UpsertStringField(payload, UidField, uid);
+    }
+
+    public static byte[] AttachNickname(ReadOnlyMemory<byte> payload, string nickname)
+    {
+        return UpsertStringField(payload, NicknameField, nickname);
+    }
+
     /// <summary>
     /// 尝试从给定的负载中提取请求标识符。
     /// </summary>
@@ -140,6 +152,16 @@ public static class RouteMetadata
         bool ok = TryExtractLongField(payload, UserIdField, out long value, out cleanPayload);
         userId = ok ? (int)value : 0;
         return ok;
+    }
+
+    public static bool TryExtractUid(ReadOnlyMemory<byte> payload, out string uid, out byte[] cleanPayload)
+    {
+        return TryExtractStringField(payload, UidField, out uid, out cleanPayload);
+    }
+
+    public static bool TryExtractNickname(ReadOnlyMemory<byte> payload, out string nickname, out byte[] cleanPayload)
+    {
+        return TryExtractStringField(payload, NicknameField, out nickname, out cleanPayload);
     }
 
     /// <summary>
@@ -227,6 +249,54 @@ public static class RouteMetadata
         }
 
         return payload.ToArray();
+    }
+
+    private static byte[] UpsertStringField(ReadOnlyMemory<byte> payload, string fieldName, string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return payload.ToArray();
+        }
+
+        if (payload.IsEmpty)
+        {
+            var emptyObj = new JObject
+            {
+                [fieldName] = value
+            };
+            return Encoding.UTF8.GetBytes(emptyObj.ToString(Newtonsoft.Json.Formatting.None));
+        }
+
+        if (TryParseObject(payload, out var obj))
+        {
+            obj[fieldName] = value;
+            return Encoding.UTF8.GetBytes(obj.ToString(Newtonsoft.Json.Formatting.None));
+        }
+
+        return payload.ToArray();
+    }
+
+    private static bool TryExtractStringField(ReadOnlyMemory<byte> payload, string fieldName, out string value, out byte[] cleanPayload)
+    {
+        if (TryParseObject(payload, out var obj))
+        {
+            JToken? token = obj[fieldName];
+            if (token != null && token.Type == JTokenType.String)
+            {
+                value = token.Value<string>() ?? string.Empty;
+                obj.Remove(fieldName);
+                cleanPayload = Encoding.UTF8.GetBytes(obj.ToString(Newtonsoft.Json.Formatting.None));
+                return !string.IsNullOrWhiteSpace(value);
+            }
+
+            cleanPayload = payload.ToArray();
+            value = string.Empty;
+            return false;
+        }
+
+        cleanPayload = payload.ToArray();
+        value = string.Empty;
+        return false;
     }
 
     /// <summary>

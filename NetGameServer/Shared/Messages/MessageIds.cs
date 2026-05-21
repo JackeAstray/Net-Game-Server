@@ -74,6 +74,34 @@ namespace Shared.Messages
         public const int CenterMatchRes = 30002;
         public const int CenterCreateRoomReq = 30003;
         public const int CenterCreateRoomRes = 30004;
+        public const int CenterListRoomsReq = 30005;
+        public const int CenterListRoomsRes = 30006;
+        public const int CenterJoinRoomReq = 30007;
+        public const int CenterJoinRoomRes = 30008;
+        public const int CenterCloseRoomReq = 30009;
+        public const int CenterCloseRoomRes = 30010;
+        public const int RoomClosedNotif = 30011;
+        public const int CenterUpdateRoomSettingsReq = 30012;
+        public const int CenterUpdateRoomSettingsRes = 30013;
+        public const int RoomSettingsChangedNotif = 30014;
+        public const int CenterStartRoomGameReq = 30015;
+        public const int CenterStartRoomGameRes = 30016;
+        public const int RoomGameStartedNotif = 30017;
+        public const int RoomMemberListReq = 30018;
+        public const int RoomMemberListRes = 30019;
+        public const int RoomMemberListChangedNotif = 30020;
+        public const int RoomReadyReq = 30021;
+        public const int RoomReadyRes = 30022;
+        public const int RoomReadyChangedNotif = 30023;
+        public const int RoomTransferOwnerReq = 30024;
+        public const int RoomTransferOwnerRes = 30025;
+        public const int RoomOwnerChangedNotif = 30026;
+        public const int RoomKickMemberReq = 30027;
+        public const int RoomKickMemberRes = 30028;
+        public const int RoomKickedNotif = 30029;
+        public const int CenterRoomChatReq = 30030;
+        public const int CenterRoomChatRes = 30031;
+        public const int CenterRoomChatNotif = 30032;
 
         // === Center 内部节点通信 (90000-90999，非客户端消息) ===
         public const int CenterRegisterNodeReq = 90001;
@@ -81,11 +109,19 @@ namespace Shared.Messages
         public const int CenterCreateSceneReq = 90003; // Center -> Battle
         public const int CenterCreateSceneRes = 90004; // Battle -> Center
         public const int CenterNodeStatusReq = 90005;
+        public const int CenterDestroySceneReq = 90006; // Center -> Battle
+        public const int CenterDestroySceneRes = 90007; // Battle -> Center
+        public const int CenterRoomPlayerCountSyncReq = 90008; // Battle -> Center
+        public const int CenterRoomPlayerCountSyncRes = 90009;
+        public const int CenterRoomMemberLeaveSyncReq = 90010; // Battle -> Center
+        public const int CenterRoomMemberLeaveSyncRes = 90011;
 
         // === 战斗/房间服务器客户端通信 (40000-49999 网关转发过来) ===
         public const int BattleJoinReq = 40001;
         public const int BattleJoinRes = 40002;
         public const int BattleFrameSync = 40003;
+        public const int BattleLeaveRoomReq = 40004;
+        public const int BattleLeaveRoomRes = 40005;
 
         // 实体相关同步与广播 (40100-40199)
         public const int EntitySyncReq = 40101;                // 客户端上报自身状态

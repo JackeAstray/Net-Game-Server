@@ -49,6 +49,7 @@ namespace Game.Handlers
         private void HandleSendChatRequest(ISession session, SendChatRequest request)
         {
             int realSenderId = Game.Managers.PlayerSessionManager.Instance.GetUserIdBySessionId(session.SessionId);
+            string realSenderUid = Game.Managers.PlayerSessionManager.Instance.GetUidBySessionId(session.SessionId);
 
             if (realSenderId <= 0)
             {
@@ -85,10 +86,33 @@ namespace Game.Handlers
             }
 
             int actualSenderId = realSenderId;
+            string actualSenderUid = string.IsNullOrWhiteSpace(realSenderUid) ? (request.SenderUniqueId ?? string.Empty) : realSenderUid;
 
-            if (request.Channel == ChatChannel.Friend && request.ReceiverId.HasValue)
+            long targetSessionId = 0;
+            int targetUserId = 0;
+            string targetUid = string.Empty;
+            if (request.Channel == ChatChannel.Friend)
             {
-                if (Game.Handlers.FriendHandler.IsBlockedByTarget(request.ReceiverId.Value, actualSenderId))
+                if (!string.IsNullOrWhiteSpace(request.ReceiverUniqueId))
+                {
+                    targetUid = request.ReceiverUniqueId.Trim();
+                    targetSessionId = Game.Managers.PlayerSessionManager.Instance.GetSessionIdByUid(targetUid);
+                    if (targetSessionId != 0)
+                    {
+                        targetUserId = Game.Managers.PlayerSessionManager.Instance.GetUserIdBySessionId(targetSessionId);
+                    }
+                }
+                else if (request.ReceiverId.HasValue)
+                {
+                    targetUserId = request.ReceiverId.Value;
+                    targetSessionId = Game.Managers.PlayerSessionManager.Instance.GetSessionIdByUserId(targetUserId);
+                    if (targetSessionId != 0)
+                    {
+                        targetUid = Game.Managers.PlayerSessionManager.Instance.GetUidBySessionId(targetSessionId);
+                    }
+                }
+
+                if (targetUserId > 0 && Game.Handlers.FriendHandler.IsBlockedByTarget(targetUserId, actualSenderId))
                 {
                     var blockedResponse = new SendChatResponse { Success = false, Message = "对方已将你拉黑。" };
                     var blockedPayload = Json.SerializeToUtf8Bytes(blockedResponse);
@@ -106,7 +130,6 @@ namespace Game.Handlers
                 }
             }
 
-            // 创建聊天通知
             var senderName = string.IsNullOrWhiteSpace(request.SenderName)
                 ? $"Player_{actualSenderId}"
                 : request.SenderName.Trim();
@@ -115,24 +138,27 @@ namespace Game.Handlers
             {
                 Message = new ChatMessage
                 {
-                    Id = new Random().Next(), // 生成一个随机的新Id
+                    Id = new Random().Next(),
                     SenderId = actualSenderId,
+                    SenderUniqueId = actualSenderUid,
                     SenderName = senderName,
-                    ReceiverId = request.ReceiverId,
+                    ReceiverId = targetUserId > 0 ? targetUserId : request.ReceiverId,
+                    ReceiverUniqueId = targetUid,
                     Channel = request.Channel,
                     Content = request.Content,
                     SendTime = DateTime.UtcNow
                 }
             };
 
-            Log.Info("聊天消息 SenderId:{SenderId} SenderName:{SenderName} ReceiverId:{ReceiverId} Channel:{Channel} Content:{Content}",
+            Log.Info("聊天消息 SenderId:{SenderId} SenderUid:{SenderUid} SenderName:{SenderName} ReceiverId:{ReceiverId} ReceiverUid:{ReceiverUid} Channel:{Channel} Content:{Content}",
                 actualSenderId,
+                actualSenderUid,
                 senderName,
-                request.ReceiverId,
+                notification.Message.ReceiverId,
+                notification.Message.ReceiverUniqueId,
                 request.Channel,
                 request.Content);
 
-            // 先返回发送成功的响应
             var response = new SendChatResponse { Success = true, Message = "消息处理成功。" };
             var responsePayload = Json.SerializeToUtf8Bytes(response);
             var routedResponsePayload = Shared.RouteMetadata.AttachTargetSessionId(responsePayload, session.SessionId);
@@ -148,11 +174,8 @@ namespace Game.Handlers
 
             var notifPayload = Json.SerializeToUtf8Bytes(notification);
 
-            // 根据频道处理广播目标
-            if (request.Channel == ChatChannel.Friend && request.ReceiverId.HasValue)
+            if (request.Channel == ChatChannel.Friend)
             {
-                // 发送给特定的好友
-                long targetSessionId = Game.Managers.PlayerSessionManager.Instance.GetSessionIdByUserId(request.ReceiverId.Value);
                 if (targetSessionId != 0)
                 {
                     var routedNotifPayload = Shared.RouteMetadata.AttachTargetSessionId(notifPayload, targetSessionId);
@@ -169,12 +192,9 @@ namespace Game.Handlers
             }
             else if (request.Channel == ChatChannel.Team)
             {
-                // TODO: 从组队系统获取所有SessionID进行遍历投递。这里演示暂不实现具体业务调用
-                // foreach(var memberSessionId in teamManager.GetTeamSessionIds(actualSenderId))
             }
-            else // World or Channel
+            else
             {
-                // 发送通知给所有的客户端（广播）, 通过 SessionId = 0 指示网关广播
                 var routedNotifPayload = Shared.RouteMetadata.AttachBroadcast(notifPayload, true);
                 var notifData = PacketBuilder.BuildPacket(MessageIds.ChatMessageNotif, routedNotifPayload, out int notifLength);
                 try
