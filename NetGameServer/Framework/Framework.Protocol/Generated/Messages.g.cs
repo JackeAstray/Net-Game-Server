@@ -1136,7 +1136,7 @@ public partial class DbFriendAdd : IGameMessage
     /// <summary>从二进制负载反序列化。</summary>
     public static DbFriendAdd? Deserialize(ReadOnlySpan<byte> payload) => MemoryPackSerializer.Deserialize<DbFriendAdd>(payload);
     public int UserId { get; set; } = default;
-    public int FriendUserId { get; set; } = default;
+    public string FriendUniqueId { get; set; } = string.Empty;
     public string Remark { get; set; } = string.Empty;
 }
 
@@ -1165,7 +1165,7 @@ public partial class DbFriendRemove : IGameMessage
     /// <summary>从二进制负载反序列化。</summary>
     public static DbFriendRemove? Deserialize(ReadOnlySpan<byte> payload) => MemoryPackSerializer.Deserialize<DbFriendRemove>(payload);
     public int UserId { get; set; } = default;
-    public int FriendUserId { get; set; } = default;
+    public string FriendUniqueId { get; set; } = string.Empty;
 }
 
 [MemoryPackable]
@@ -1193,7 +1193,7 @@ public partial class DbFriendSetRemark : IGameMessage
     /// <summary>从二进制负载反序列化。</summary>
     public static DbFriendSetRemark? Deserialize(ReadOnlySpan<byte> payload) => MemoryPackSerializer.Deserialize<DbFriendSetRemark>(payload);
     public int UserId { get; set; } = default;
-    public int FriendUserId { get; set; } = default;
+    public string FriendUniqueId { get; set; } = string.Empty;
     public string Remark { get; set; } = string.Empty;
 }
 
@@ -1249,6 +1249,7 @@ public partial class DbChangePassword : IGameMessage
     public byte[] Serialize() => MemoryPackSerializer.Serialize(this);
     /// <summary>从二进制负载反序列化。</summary>
     public static DbChangePassword? Deserialize(ReadOnlySpan<byte> payload) => MemoryPackSerializer.Deserialize<DbChangePassword>(payload);
+    public int UserId { get; set; } = default;
     public string Account { get; set; } = string.Empty;
     public string OldPassword { get; set; } = string.Empty;
     public string NewPassword { get; set; } = string.Empty;
@@ -1308,7 +1309,7 @@ public partial class DbBlacklistAdd : IGameMessage
     /// <summary>从二进制负载反序列化。</summary>
     public static DbBlacklistAdd? Deserialize(ReadOnlySpan<byte> payload) => MemoryPackSerializer.Deserialize<DbBlacklistAdd>(payload);
     public int UserId { get; set; } = default;
-    public int BlockedUserId { get; set; } = default;
+    public string TargetUniqueId { get; set; } = string.Empty;
 }
 
 [MemoryPackable]
@@ -1336,7 +1337,7 @@ public partial class DbBlacklistRemove : IGameMessage
     /// <summary>从二进制负载反序列化。</summary>
     public static DbBlacklistRemove? Deserialize(ReadOnlySpan<byte> payload) => MemoryPackSerializer.Deserialize<DbBlacklistRemove>(payload);
     public int UserId { get; set; } = default;
-    public int BlockedUserId { get; set; } = default;
+    public string TargetUniqueId { get; set; } = string.Empty;
 }
 
 [MemoryPackable]
@@ -1450,7 +1451,7 @@ public partial class DbFriendApplyCreate : IGameMessage
     /// <summary>从二进制负载反序列化。</summary>
     public static DbFriendApplyCreate? Deserialize(ReadOnlySpan<byte> payload) => MemoryPackSerializer.Deserialize<DbFriendApplyCreate>(payload);
     public int RequesterUserId { get; set; } = default;
-    public int ReceiverUserId { get; set; } = default;
+    public string TargetUniqueId { get; set; } = string.Empty;
     public string Message { get; set; } = string.Empty;
 }
 

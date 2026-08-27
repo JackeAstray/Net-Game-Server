@@ -277,6 +277,9 @@ namespace DB
                 await Handlers.DbQueryHandler.HandleFriendApplyRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbHandleFriendApplyRequest>(cleanPayload), requestId);
             });
 
+            // 新协议分发器：强类型消息 + MemoryPack（JSON 兼容回退），消灭手写 MsgId 分支
+            var dbDispatcher = Handlers.DbDispatcher.BuildDispatcher();
+
             // 内部连接认证：业务服务（Login/Game）连接必须先通过认证握手（InternalAuth），密钥共享。
             string authSecret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
             var clientAuthFilters = new System.Collections.Concurrent.ConcurrentDictionary<long, Framework.Core.Security.InternalAuthFilter>();
@@ -288,8 +291,8 @@ namespace DB
                 clientAuthFilters[session.SessionId] = new Framework.Core.Security.InternalAuthFilter(authSecret, $"DB-{ConfigHelper.GetConfig<string>("DBHost") ?? "127.0.0.1"}:{port}");
             };
 
-            // 统一收包管线：先认证，再分发。
-            tcpServer.OnDataReceived += (session, data) =>
+            // 统一收包管线：先认证，再分发（新 Dispatcher 优先、旧路由回退）。
+            tcpServer.OnDataReceived += async (session, data) =>
             {
                 if (data.Length < 4)
                 {
@@ -326,6 +329,25 @@ namespace DB
                 }
 
                 Shared.Log.Info($"DB <- Client 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{data.Length - 4}");
+
+                // 新协议分发优先：提取 RequestId 路由元数据后，交由强类型分发器（MemoryPack/JSON 双格式）。
+                ReadOnlyMemory<byte> payload = data.Slice(4);
+                long requestId = 0;
+                ReadOnlyMemory<byte> cleanPayload = payload;
+                if (Shared.RouteMetadata.TryExtractRequestId(payload, out long extractedRequestId, out var clean))
+                {
+                    requestId = extractedRequestId;
+                    cleanPayload = clean;
+                }
+
+                bool dispatched = await dbDispatcher.TryDispatch(
+                    new Handlers.DbSessionContext(session, requestId), msgId, cleanPayload);
+                if (dispatched)
+                {
+                    return;
+                }
+
+                // 未注册的 MsgId 回退旧路由（保留内部兼容路径）
                 router.DispatchData(session, data);
             };
 

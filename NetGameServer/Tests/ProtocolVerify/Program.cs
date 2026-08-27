@@ -572,6 +572,77 @@ leaderA.Dispose();
 leaderB.Dispose();
 File.Delete(leaderLock);
 
+// ===== 18. DB 配置化分发验证（DbDispatcher 全量注册 + 双格式 + RequestId 路由） =====
+
+// 18.1 全量注册：DB 服务器 20 条请求消息全部迁移到强类型分发
+var dbDispatcher = DB.Handlers.DbDispatcher.BuildDispatcher();
+Console.WriteLine($"DB Dispatcher 注册消息数: {dbDispatcher.RegisteredCount} (期望 20)");
+if (dbDispatcher.RegisteredCount != 20) return 1;
+
+// 18.2 生成类字段对齐 round-trip（defs 与旧协议对齐：FriendUniqueId/TargetUniqueId/UserId）
+var dbAddFriend = new Framework.Protocol.Generated.DbFriendAdd { UserId = 7, FriendUniqueId = "100000008", Remark = "hi" };
+byte[] dbAddFriendBody = MemoryPack.MemoryPackSerializer.Serialize(dbAddFriend);
+var dbAddFriendBack = MemoryPack.MemoryPackSerializer.Deserialize<Framework.Protocol.Generated.DbFriendAdd>(dbAddFriendBody);
+Console.WriteLine($"DB 生成类 round-trip: UserId={dbAddFriendBack?.UserId} FriendUniqueId={dbAddFriendBack?.FriendUniqueId} Remark={dbAddFriendBack?.Remark} (期望 7/100000008/hi)");
+if (dbAddFriendBack?.UserId != 7 || dbAddFriendBack?.FriendUniqueId != "100000008" || dbAddFriendBack?.Remark != "hi") return 1;
+
+var dbChangePwd = new Framework.Protocol.Generated.DbChangePassword { UserId = 3, Account = "alice", OldPassword = "old", NewPassword = "new" };
+byte[] dbChangePwdBody = MemoryPack.MemoryPackSerializer.Serialize(dbChangePwd);
+var dbChangePwdBack = MemoryPack.MemoryPackSerializer.Deserialize<Framework.Protocol.Generated.DbChangePassword>(dbChangePwdBody);
+Console.WriteLine($"DB 改密 round-trip: UserId={dbChangePwdBack?.UserId} Account={dbChangePwdBack?.Account} (期望 3/alice)");
+if (dbChangePwdBack?.UserId != 3 || dbChangePwdBack?.Account != "alice") return 1;
+
+// 18.3 JSON 旧格式兼容：旧客户端（Login/Game）发送的 JSON 字段名可直接映射到生成类（双格式兼容基础）
+var dbBlacklistJson = "{\"UserId\":9,\"TargetUniqueId\":\"100000010\"}";
+var dbBlacklistBack = Newtonsoft.Json.JsonConvert.DeserializeObject<Framework.Protocol.Generated.DbBlacklistAdd>(dbBlacklistJson);
+Console.WriteLine($"DB JSON 兼容: UserId={dbBlacklistBack?.UserId} TargetUniqueId={dbBlacklistBack?.TargetUniqueId} (期望 9/100000010)");
+if (dbBlacklistBack?.UserId != 9 || dbBlacklistBack?.TargetUniqueId != "100000010") return 1;
+
+var dbApplyJson = "{\"RequesterUserId\":11,\"TargetUniqueId\":\"100000012\",\"Message\":\"加个好友\"}";
+var dbApplyBack = Newtonsoft.Json.JsonConvert.DeserializeObject<Framework.Protocol.Generated.DbFriendApplyCreate>(dbApplyJson);
+Console.WriteLine($"DB 申请 JSON 兼容: Requester={dbApplyBack?.RequesterUserId} Target={dbApplyBack?.TargetUniqueId} Msg={dbApplyBack?.Message} (期望 11/100000012/加个好友)");
+if (dbApplyBack?.RequesterUserId != 11 || dbApplyBack?.TargetUniqueId != "100000012" || dbApplyBack?.Message != "加个好友") return 1;
+
+// 18.4 DbSessionContext + RequestId 路由：分发处理器经 DbSessionContext 发响应时自动附加请求 ID（等价旧 RequestContextSession）
+var dbSentFrames = new List<(int msgId, byte[] payload)>();
+var dbGatewaySession = new TestGatewaySession(dbSentFrames);
+var dbCtx = new DB.Handlers.DbSessionContext(dbGatewaySession, 4242);
+var dbRouteDispatcher = new Framework.Protocol.MessageDispatcher();
+int dbRouteHandled = 0;
+dbRouteDispatcher.RegisterSync<Framework.Protocol.Generated.DbResolveUserByUniqueId>((ctx, msg) =>
+{
+    dbRouteHandled++;
+    ctx.Send(new Framework.Protocol.Generated.DbResolveUserByUniqueIdResult
+    {
+        Success = true,
+        Message = $"resolved {msg.UniqueId}",
+        UserId = 5,
+        Nickname = "npc5"
+    });
+}, jsonFallback: true);
+
+var dbResolveMsg = new Framework.Protocol.Generated.DbResolveUserByUniqueId { UniqueId = "100000005" };
+byte[] dbResolvePacket = Framework.Protocol.ProtocolCodec.Encode(dbResolveMsg);
+Framework.Protocol.ProtocolCodec.TryParseFrame(dbResolvePacket.AsSpan(4), out int dbResolveMsgId, out var dbResolveBody);
+bool dbResolveOk = await dbRouteDispatcher.TryDispatch(dbCtx, dbResolveMsgId, dbResolveBody);
+bool dbRequestIdOk = false;
+long dbExtractedRequestId = 0;
+string? dbResolvedNickname = null;
+if (dbRouteHandled == 1 && dbSentFrames.Count > 0)
+{
+    // 帧格式：[TotalLength][MsgId][AttachRequestId(ResultBody)]
+    byte[] dbFrame = dbSentFrames[0].payload;
+    var dbPayloadWithMetadata = dbFrame.AsMemory(8);
+    if (Shared.RouteMetadata.TryExtractRequestId(dbPayloadWithMetadata, out dbExtractedRequestId, out byte[] dbCleanPayload))
+    {
+        var dbResultBack = MemoryPack.MemoryPackSerializer.Deserialize<Framework.Protocol.Generated.DbResolveUserByUniqueIdResult>(dbCleanPayload);
+        dbResolvedNickname = dbResultBack?.Nickname;
+        dbRequestIdOk = dbExtractedRequestId == 4242 && dbResolvedNickname == "npc5";
+    }
+}
+Console.WriteLine($"DB RequestId 路由: ok={dbResolveOk} handled={dbRouteHandled} requestId={dbExtractedRequestId} nickname={dbResolvedNickname} (期望 True/1/4242/npc5)");
+if (!dbResolveOk || !dbRequestIdOk) return 1;
+
 Console.WriteLine("\n===== 全部验证通过 =====");
 return 0;
 

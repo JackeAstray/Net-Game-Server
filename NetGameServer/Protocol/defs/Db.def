@@ -70,7 +70,7 @@
 
   <Message id="1006" name="DbFriendAdd" target="Db" internal="true" reply="1106">
     <Field name="UserId" type="int32" />
-    <Field name="FriendUserId" type="int32" />
+    <Field name="FriendUniqueId" type="string" />
     <Field name="Remark" type="string" />
   </Message>
   <Message id="1106" name="DbFriendAddResult" target="Db" internal="true">
@@ -80,7 +80,7 @@
 
   <Message id="1007" name="DbFriendRemove" target="Db" internal="true" reply="1107">
     <Field name="UserId" type="int32" />
-    <Field name="FriendUserId" type="int32" />
+    <Field name="FriendUniqueId" type="string" />
   </Message>
   <Message id="1107" name="DbFriendRemoveResult" target="Db" internal="true">
     <Field name="Success" type="bool" />
@@ -89,7 +89,7 @@
 
   <Message id="1008" name="DbFriendSetRemark" target="Db" internal="true" reply="1108">
     <Field name="UserId" type="int32" />
-    <Field name="FriendUserId" type="int32" />
+    <Field name="FriendUniqueId" type="string" />
     <Field name="Remark" type="string" />
   </Message>
   <Message id="1108" name="DbFriendSetRemarkResult" target="Db" internal="true">
@@ -107,6 +107,7 @@
   </Message>
 
   <Message id="1010" name="DbChangePassword" target="Db" internal="true" reply="1110">
+    <Field name="UserId" type="int32" />
     <Field name="Account" type="string" />
     <Field name="OldPassword" type="string" />
     <Field name="NewPassword" type="string" />
@@ -128,7 +129,7 @@
 
   <Message id="1012" name="DbBlacklistAdd" target="Db" internal="true" reply="1112">
     <Field name="UserId" type="int32" />
-    <Field name="BlockedUserId" type="int32" />
+    <Field name="TargetUniqueId" type="string" />
   </Message>
   <Message id="1112" name="DbBlacklistAddResult" target="Db" internal="true">
     <Field name="Success" type="bool" />
@@ -137,7 +138,7 @@
 
   <Message id="1013" name="DbBlacklistRemove" target="Db" internal="true" reply="1113">
     <Field name="UserId" type="int32" />
-    <Field name="BlockedUserId" type="int32" />
+    <Field name="TargetUniqueId" type="string" />
   </Message>
   <Message id="1113" name="DbBlacklistRemoveResult" target="Db" internal="true">
     <Field name="Success" type="bool" />
@@ -175,7 +176,7 @@
 
   <Message id="1017" name="DbFriendApplyCreate" target="Db" internal="true" reply="1117">
     <Field name="RequesterUserId" type="int32" />
-    <Field name="ReceiverUserId" type="int32" />
+    <Field name="TargetUniqueId" type="string" />
     <Field name="Message" type="string" />
   </Message>
   <Message id="1117" name="DbFriendApplyCreateResult" target="Db" internal="true">

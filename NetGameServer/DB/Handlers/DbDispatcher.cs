@@ -1,0 +1,307 @@
+using System;
+using Framework.Protocol;
+using Framework.Protocol.Generated;
+using Network;
+using Shared.Messages.Db;
+using DB.Routing;
+
+namespace DB.Handlers
+{
+    /// <summary>
+    /// DB 服务器的会话上下文适配（ISessionContext 实现）：
+    /// 将 MessageDispatcher 的抽象发送接口适配到 DB 底层网络会话，
+    /// 并在 Send 时为出包附加 RequestId 路由元数据（与 RequestContextSession 行为一致，
+    /// 保证"先写后读"请求关联不丢失）。
+    /// </summary>
+    public sealed class DbSessionContext : ISessionContext
+    {
+        private readonly ISession session;
+        private readonly long requestId;
+
+        public DbSessionContext(ISession session, long requestId)
+        {
+            this.session = session;
+            this.requestId = requestId;
+        }
+
+        /// <summary>底层网络会话（业务处理器需要它做定向发送/透传）。</summary>
+        public ISession Session => session;
+
+        /// <summary>当前请求的路由请求 ID（0 表示无请求关联）。</summary>
+        public long RequestId => requestId;
+
+        public long ClientSessionId => session.SessionId;
+
+        public void Send(int msgId, ReadOnlyMemory<byte> payload)
+        {
+            byte[] routedPayload = requestId > 0
+                ? Shared.RouteMetadata.AttachRequestId(payload.ToArray(), requestId)
+                : payload.ToArray();
+            SendPacket(msgId, routedPayload);
+        }
+
+        public void Send(IGameMessage message)
+        {
+            Send(message.MessageId, message.Serialize());
+        }
+
+        public void SendTo(long targetSessionId, int msgId, ReadOnlyMemory<byte> payload)
+        {
+            // DB 内部消息没有跨客户端会话概念；保留契约实现（附加目标会话 ID 供扩展）。
+            byte[] routedPayload = Shared.RouteMetadata.AttachTargetSessionId(payload, targetSessionId);
+            SendPacket(msgId, routedPayload);
+        }
+
+        private void SendPacket(int msgId, byte[] routedPayload)
+        {
+            byte[] packet = global::Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
+            try
+            {
+                session.Send(packet.AsSpan(0, totalLength).ToArray());
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 基于 MessageDispatcher 的强类型处理器（DB 服务器）。
+    /// 使用生成的消息类 + MemoryPack 二进制序列化（JSON 兼容回退），消灭手写 MsgId 分支。
+    /// 全部 20 个 DB 请求消息已注册；未注册的 MsgId 由调用方回退旧路由。
+    /// </summary>
+    public static class DbDispatcher
+    {
+        /// <summary>
+        /// 构建 DB 服务器的配置化分发器（全量 20 条请求消息）。
+        /// 处理器模式：生成消息 → 适配为旧请求对象 → 复用现有 DbQueryHandler 业务管线
+        /// （响应仍走 SendDbResponse + RequestContextSession 的 RequestId 关联，双格式兼容）。
+        /// </summary>
+        public static Framework.Protocol.MessageDispatcher BuildDispatcher()
+        {
+            var dispatcher = new Framework.Protocol.MessageDispatcher();
+
+            // 提取底层会话（带 RequestId 路由）与请求 ID 的辅助函数
+            static RequestContextSession Routed(ISessionContext ctx, out long requestId)
+            {
+                var c = (DbSessionContext)ctx;
+                requestId = c.RequestId;
+                return new RequestContextSession(c.Session, c.RequestId);
+            }
+
+            // ---- 账户/登录类 ----
+
+            // 获取最大 UID
+            dispatcher.RegisterSync<DbGetMaxUid>((ctx, msg) =>
+            {
+                DbQueryHandler.HandleGetMaxUidRequest(Routed(ctx, out _), new GetMaxUidRequest());
+            }, jsonFallback: true);
+
+            // 登录验证
+            dispatcher.RegisterSync<DbLoginVerify>((ctx, msg) =>
+            {
+                DbQueryHandler.HandleLoginVerifyRequest(Routed(ctx, out _), new LoginVerifyRequest
+                {
+                    Account = msg.Account,
+                    Password = msg.Password
+                });
+            }, jsonFallback: true);
+
+            // 注册验证
+            dispatcher.RegisterSync<DbRegisterVerify>((ctx, msg) =>
+            {
+                DbQueryHandler.HandleRegisterVerifyRequest(Routed(ctx, out _), new RegisterVerifyRequest
+                {
+                    Account = msg.Account,
+                    Password = msg.Password,
+                    Nickname = msg.Nickname,
+                    Uid = msg.Uid
+                });
+            }, jsonFallback: true);
+
+            // 账户查询
+            dispatcher.RegisterSync<DbAccountQuery>((ctx, msg) =>
+            {
+                DbQueryHandler.HandleAccountQueryRequest(Routed(ctx, out _), new AccountQueryRequest
+                {
+                    Account = msg.Account
+                });
+            }, jsonFallback: true);
+
+            // 在线统计
+            dispatcher.RegisterSync<DbOnlineStats>((ctx, msg) =>
+            {
+                DbQueryHandler.HandleOnlineStatsRequest(Routed(ctx, out _), new OnlineStatsRequest());
+            }, jsonFallback: true);
+
+            // 更新在线状态
+            dispatcher.RegisterSync<DbUpdateOnlineState>((ctx, msg) =>
+            {
+                DbQueryHandler.HandleUpdateOnlineStateRequest(Routed(ctx, out _), new UpdateOnlineStateRequest
+                {
+                    UserId = msg.UserId,
+                    IsOnline = msg.IsOnline
+                });
+            }, jsonFallback: true);
+
+            // 更改密码
+            dispatcher.RegisterSync<DbChangePassword>((ctx, msg) =>
+            {
+                DbQueryHandler.HandleChangePasswordVerifyRequest(Routed(ctx, out _), new ChangePasswordVerifyRequest
+                {
+                    UserId = msg.UserId,
+                    Account = msg.Account,
+                    OldPassword = msg.OldPassword,
+                    NewPassword = msg.NewPassword
+                });
+            }, jsonFallback: true);
+
+            // 邮箱重置密码
+            dispatcher.RegisterSync<DbResetPasswordByEmail>((ctx, msg) =>
+            {
+                DbQueryHandler.HandleResetPasswordByEmailRequest(Routed(ctx, out _), new ResetPasswordByEmailRequest
+                {
+                    Account = msg.Account,
+                    Email = msg.Email,
+                    TemporaryPassword = msg.TemporaryPassword
+                });
+            }, jsonFallback: true);
+
+            // ---- 好友/黑名单/申请类（带 RequestId 请求关联）----
+
+            // 好友：添加
+            dispatcher.RegisterSync<DbFriendAdd>((ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                DbQueryHandler.HandleAddFriendRequest(session, new DbAddFriendRequest
+                {
+                    UserId = msg.UserId,
+                    FriendUniqueId = msg.FriendUniqueId,
+                    Remark = msg.Remark
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
+            // 好友：移除
+            dispatcher.RegisterSync<DbFriendRemove>((ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                DbQueryHandler.HandleRemoveFriendRequest(session, new DbRemoveFriendRequest
+                {
+                    UserId = msg.UserId,
+                    FriendUniqueId = msg.FriendUniqueId
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
+            // 好友：设置备注
+            dispatcher.RegisterSync<DbFriendSetRemark>((ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                DbQueryHandler.HandleSetFriendRemarkRequest(session, new DbSetFriendRemarkRequest
+                {
+                    UserId = msg.UserId,
+                    FriendUniqueId = msg.FriendUniqueId,
+                    Remark = msg.Remark
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
+            // 好友：获取列表
+            dispatcher.RegisterSync<DbFriendGetList>((ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                DbQueryHandler.HandleGetFriendsRequest(session, new DbGetFriendsRequest
+                {
+                    UserId = msg.UserId
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
+            // 黑名单：添加
+            dispatcher.RegisterSync<DbBlacklistAdd>((ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                DbQueryHandler.HandleAddBlacklistRequest(session, new DbAddBlacklistRequest
+                {
+                    UserId = msg.UserId,
+                    TargetUniqueId = msg.TargetUniqueId
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
+            // 黑名单：移除
+            dispatcher.RegisterSync<DbBlacklistRemove>((ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                DbQueryHandler.HandleRemoveBlacklistRequest(session, new DbRemoveBlacklistRequest
+                {
+                    UserId = msg.UserId,
+                    TargetUniqueId = msg.TargetUniqueId
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
+            // 黑名单：获取列表
+            dispatcher.RegisterSync<DbBlacklistGetList>((ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                DbQueryHandler.HandleGetBlacklistRequest(session, new DbGetBlacklistRequest
+                {
+                    UserId = msg.UserId
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
+            // 按 UniqueId 解析用户
+            dispatcher.RegisterSync<DbResolveUserByUniqueId>((ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                DbQueryHandler.HandleResolveUserByUniqueIdRequest(session, new DbResolveUserByUniqueIdRequest
+                {
+                    UniqueId = msg.UniqueId
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
+            // 按 UserId 解析用户
+            dispatcher.RegisterSync<DbResolveUserByUserId>((ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                DbQueryHandler.HandleResolveUserByUserIdRequest(session, new DbResolveUserByUserIdRequest
+                {
+                    UserId = msg.UserId
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
+            // 好友申请：发起
+            dispatcher.RegisterSync<DbFriendApplyCreate>((ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                DbQueryHandler.HandleCreateFriendApplyRequest(session, new DbCreateFriendApplyRequest
+                {
+                    RequesterUserId = msg.RequesterUserId,
+                    TargetUniqueId = msg.TargetUniqueId,
+                    Message = msg.Message
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
+            // 好友申请：列表查询
+            dispatcher.RegisterSync<DbFriendApplyList>((ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                DbQueryHandler.HandleGetFriendApplyListRequest(session, new DbGetFriendApplyListRequest
+                {
+                    UserId = msg.UserId
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
+            // 好友申请：处理（接受/拒绝）
+            dispatcher.RegisterSync<DbFriendApplyHandle>((ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                DbQueryHandler.HandleFriendApplyRequest(session, new DbHandleFriendApplyRequest
+                {
+                    UserId = msg.UserId,
+                    ApplyId = msg.ApplyId,
+                    Accept = msg.Accept
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
+            return dispatcher;
+        }
+    }
+}
