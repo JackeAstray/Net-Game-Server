@@ -1,6 +1,9 @@
 using Framework.Scripting;
 using EntityObj = Framework.Entity.Entity;
 
+// 启用控制台日志（脚本编译错误详情输出）
+Framework.Core.Log.Configure(true, Path.Combine(AppContext.BaseDirectory, "logs", "ScriptHostVerify.log"));
+
 // 准备脚本目录（csx 通过 Link 复制到输出目录的 scripts 子目录）
 string scriptsDir = Path.Combine(AppContext.BaseDirectory, "scripts");
 Directory.CreateDirectory(scriptsDir);
@@ -166,6 +169,110 @@ if (!questCompleted) return 1;
 // 查询进度消息
 host.DispatchMessage(quest, "QueryProgress", Array.Empty<object?>());
 Console.WriteLine("三脚本协作（Npc→全局数据→Quest）验证 OK");
+
+// 9. Skill 技能脚本验证（冷却管理 + 升级成长 + 全局伤害累计）
+var skillDef = new Framework.Entity.EntityDef { Name = "Skill" }
+    .Add("Level", Framework.Entity.EntityPropertyType.Int32)
+    .Add("CooldownRemaining", Framework.Entity.EntityPropertyType.Int32)
+    .Add("Casts", Framework.Entity.EntityPropertyType.Int32);
+var skill = skillDef.CreateEntity(5001);
+manager.AddOrUpdateEntity(5001, skill);
+
+var skillScript = host.GetScript("Skill");
+Console.WriteLine($"Skill 脚本加载: {skillScript != null} (期望 True)");
+if (skillScript == null) return 1;
+
+host.NotifyCreate(skill);
+if (skill.Get<int>("Level") != 1 || skill.Get<int>("CooldownRemaining") != 0) { Console.WriteLine("!! Skill OnCreate 初始化错误"); return 1; }
+
+// 首次释放：Lv.1 伤害 10
+host.DispatchMessage(skill, "CastSkill", Array.Empty<object?>());
+var skillTotal1 = host.GetGlobal("SkillTotalDamage");
+Console.WriteLine($"Skill 首次释放: TotalDamage={skillTotal1} CD={skill.Get<int>("CooldownRemaining")} (期望 10/10)");
+if (skillTotal1 is not int st1 || st1 != 10 || skill.Get<int>("CooldownRemaining") != 10) return 1;
+
+// 冷却中释放被拒绝
+host.DispatchMessage(skill, "CastSkill", Array.Empty<object?>());
+var skillTotal2 = host.GetGlobal("SkillTotalDamage");
+Console.WriteLine($"Skill 冷却拒绝: TotalDamage={skillTotal2} (期望 10 不变)");
+if (skillTotal2 is not int st2 || st2 != 10) return 1;
+
+// 等 10 tick 冷却归零，再释放（累计 2 次）
+for (long f = 1; f <= 10; f++) host.TickAll(manager, f);
+if (skill.Get<int>("CooldownRemaining") != 0) { Console.WriteLine("!! Skill 冷却未归零"); return 1; }
+host.DispatchMessage(skill, "CastSkill", Array.Empty<object?>());
+var skillTotal2b = host.GetGlobal("SkillTotalDamage");
+Console.WriteLine($"Skill 第二次释放: TotalDamage={skillTotal2b} (期望 20)");
+if (skillTotal2b is not int st2b || st2b != 20) return 1;
+
+// 再等 10 tick 冷却归零，第三次释放（累计 3 次）
+for (long f = 1; f <= 10; f++) host.TickAll(manager, f);
+host.DispatchMessage(skill, "CastSkill", Array.Empty<object?>());
+var skillTotal3 = host.GetGlobal("SkillTotalDamage");
+Console.WriteLine($"Skill 三次释放: TotalDamage={skillTotal3} Casts={skill.Get<int>("Casts")} (期望 30/3)");
+if (skillTotal3 is not int st3 || st3 != 30 || skill.Get<int>("Casts") != 3) return 1;
+
+// 5 tick 后升级检查触发：Lv.2，伤害基数翻倍
+for (long f = 1; f <= 5; f++) host.TickAll(manager, f);
+int skillLevel = skill.Get<int>("Level");
+var skillLevelGlobal = host.GetGlobal("SkillLevel");
+Console.WriteLine($"Skill 升级: Level={skillLevel} 全局SkillLevel={skillLevelGlobal} (期望 2/2)");
+if (skillLevel != 2 || skillLevelGlobal is not int slg || slg != 2) return 1;
+
+// Lv.2 释放伤害 20 → 累计 50（先等冷却归零）
+for (long f = 1; f <= 10; f++) host.TickAll(manager, f);
+host.DispatchMessage(skill, "CastSkill", Array.Empty<object?>());
+var skillTotal4 = host.GetGlobal("SkillTotalDamage");
+Console.WriteLine($"Skill 升级后伤害: TotalDamage={skillTotal4} (期望 50 = 30 + 10x2)");
+if (skillTotal4 is not int st4 || st4 != 50) return 1;
+Console.WriteLine("Skill 技能脚本验证 OK");
+
+// 10. Item 物品脚本验证（拾取堆叠 + 使用消耗 + 自动掉落）
+var itemDef = new Framework.Entity.EntityDef { Name = "Item" }
+    .Add("ItemId", Framework.Entity.EntityPropertyType.Int32)
+    .Add("Count", Framework.Entity.EntityPropertyType.Int32);
+var item = itemDef.CreateEntity(6001);
+manager.AddOrUpdateEntity(6001, item);
+
+var itemScript = host.GetScript("Item");
+if (itemScript == null)
+{
+    foreach (var loadErr in host.LastLoadErrors)
+    {
+        Console.WriteLine($"[诊断] 脚本加载错误 {loadErr.Key}: {loadErr.Value.Message}");
+        if (loadErr.Value.InnerException != null) Console.WriteLine($"[诊断] 内部: {loadErr.Value.InnerException.Message}");
+    }
+}
+Console.WriteLine($"Item 脚本加载: {itemScript != null} (期望 True)");
+if (itemScript == null) return 1;
+
+host.NotifyCreate(item);
+if (item.Get<int>("Count") != 0) { Console.WriteLine("!! Item OnCreate 初始化错误"); return 1; }
+
+// 拾取 5 个
+host.DispatchMessage(item, "Pickup", new object?[] { 101, 5 });
+var picked1 = host.GetGlobal("ItemTotalPicked");
+Console.WriteLine($"Item 拾取: Count={item.Get<int>("Count")} 累计拾取={picked1} (期望 5/5)");
+if (item.Get<int>("Count") != 5 || picked1 is not int p1 || p1 != 5) return 1;
+
+// 使用 3 个（每个回 10 血）
+for (int i = 0; i < 3; i++) host.DispatchMessage(item, "UseItem", Array.Empty<object?>());
+var healed1 = host.GetGlobal("ItemHealedTotal");
+Console.WriteLine($"Item 使用: Count={item.Get<int>("Count")} 累计治疗={healed1} (期望 2/30)");
+if (item.Get<int>("Count") != 2 || healed1 is not int h1 || h1 != 30) return 1;
+
+// 30 tick 自动掉落 1 个
+for (long f = 1; f <= 30; f++) host.TickAll(manager, f);
+var drops1 = host.GetGlobal("ItemAutoDrops");
+Console.WriteLine($"Item 自动掉落: Count={item.Get<int>("Count")} 掉落数={drops1} (期望 3/1)");
+if (item.Get<int>("Count") != 3 || drops1 is not int d1 || d1 != 1) return 1;
+
+// 再使用 1 个 → 累计治疗 40
+host.DispatchMessage(item, "UseItem", Array.Empty<object?>());
+var healed2 = host.GetGlobal("ItemHealedTotal");
+Console.WriteLine($"Item 最终: Count={item.Get<int>("Count")} 累计治疗={healed2} (期望 2/40)");
+if (item.Get<int>("Count") != 2 || healed2 is not int h2 || h2 != 40) return 1;
+Console.WriteLine("Item 物品脚本验证 OK");
 
 host.Dispose();
 Console.WriteLine("\n===== ScriptHost 验证通过 =====");

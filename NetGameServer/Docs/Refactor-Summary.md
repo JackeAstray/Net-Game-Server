@@ -209,30 +209,53 @@ Framework.Protocol/Generated/
 - 展示"全局数据即脚本间总线"的松耦合协作（Npc 产出 → Quest 消费，无互相引用）
 - 验证：Avatar + Npc + Quest 三脚本共存；击杀 2 只 Npc（40 经验）→ Quest 自动完成 ✓
 
+### 25. DB 全量消息 Dispatcher 迁移（20/20 完成）
+
+`Protocol/defs/Db.def` + `DB/Handlers/DbDispatcher.cs` + `DB/Handlers/DbSessionContext.cs`（同文件）：
+- **defs 字段对齐**：DbFriendAdd/DbFriendRemove/DbFriendSetRemark 改用 `FriendUniqueId`、DbBlacklistAdd/DbBlacklistRemove 改用 `TargetUniqueId`、
+  DbChangePassword 增加 `UserId`、DbFriendApplyCreate 改用 `TargetUniqueId`——生成类与旧 JSON 协议字段语义完全一致（双格式兼容基础）
+- **DbDispatcher**：20 条 DB 请求消息全量注册强类型分发（MemoryPack + JSON 兼容回退），
+  处理器模式 = 生成消息 → 适配旧请求对象 → 复用现有 DbQueryHandler 业务管线（响应仍走 SendDbResponse，零业务改动）
+- **DbSessionContext**：ISessionContext 适配，Send 时自动附加 RequestId 路由元数据（与 RequestContextSession 等价）
+- **RequestContextSession 提升**：从 MessageRouter 私有嵌套提升为公共类，新旧管线共用
+- **收包管线**：认证后 Dispatcher 优先，未注册 MsgId 回退旧路由（对标 Center/Game 迁移模式）
+- 验证：注册数 20/20、生成类 round-trip（FriendUniqueId 等字段）、JSON 旧格式兼容、RequestId 路由（4242 往返）全部通过 ✓
+
+### 26. 玩法脚本扩展：Skill / Item（五脚本共存）
+
+`GameLogic/scripts/Skill.csx` + `Item.csx`：
+- **Skill.csx**：技能系统——主动释放（OnMessage CastSkill）按 `基础伤害 × 等级 × 全局倍率` 结算、
+  冷却管理（OnTick 递减 CooldownRemaining，冷却中拒绝释放）、成长系统（累计 3 次释放升级）、
+  全局数据 `SkillTotalDamage`/`SkillLevel` 供任务类脚本消费
+- **Item.csx**：物品系统——拾取堆叠（OnMessage Pickup）、使用消耗（UseItem 回复生命并累计治疗量）、
+  周期自动掉落（OnTick 模拟怪物掉宝）、全局数据 `ItemTotalPicked`/`ItemHealedTotal`/`ItemAutoDrops`
+- 验证：五脚本（Avatar+Npc+Quest+Skill+Item）共存；技能 3 次释放 → 升级 → 伤害翻倍（累计 50）✓；
+  物品拾取 5 → 使用 3 → 自动掉落 1 → 再使用 1（累计治疗 40）✓
+
 ---
 
 ## 三、验证结果汇总
 
 | 套件 | 覆盖 | 结果 |
 |---|---|---|
-| `Tests/ProtocolVerify` | 序列化/路由/Token/认证/实体/增量/tick/KCP/队列/元数据/Dispatcher/备份（16 组） | ✅ 全部通过 |
-| `Tests/ScriptHostVerify` | 脚本加载/事件/tick/热更新/错误隔离/多脚本/全局数据（12 组） | ✅ 全部通过 |
+| `Tests/ProtocolVerify` | 序列化/路由/Token/认证/实体/增量/tick/KCP/队列/元数据/Dispatcher/备份/Leader 选举/DB 分发（18 组） | ✅ 全部通过 |
+| `Tests/ScriptHostVerify` | 脚本加载/事件/tick/热更新/错误隔离/多脚本/全局数据/Skill/Item（14 组） | ✅ 全部通过 |
 | `Tests/LoggerVerify` | 日志聚合端到端（上报/接收/落盘） | ✅ 全部通过 |
 | 解决方案构建 | 16 个项目 | ✅ 0 错误 |
 
 ---
 
-## 四、剩余工作（按优先级）
+## 四、剩余工作（✅ 已全部完成）
 
-### P1 收尾
-- [ ] Center 匹配/房间操作类消息（带 sendToGatewayFunc 回调）的 Dispatcher 迁移
-- [ ] Game FriendHandler / DB DbQueryHandler 剩余消息的 Dispatcher 迁移
+### P1 收尾 ✅
+- [x] Center 匹配/房间操作类消息（带 sendToGatewayFunc 回调）的 Dispatcher 迁移（见条目 22：Center 13/13 完成）
+- [x] Game FriendHandler / DB DbQueryHandler 剩余消息的 Dispatcher 迁移（Game 见条目 23：13/13；DB 见条目 25：20/20）
 
-### P2 完善
-- [ ] 更多玩法脚本示例（Skill/Item/Quest）
+### P2 完善 ✅
+- [x] 更多玩法脚本示例（Skill/Item/Quest）（Quest 见条目 22；Skill/Item 见条目 26，五脚本共存）
 
-### P3 完善
-- [ ] Center 主备（当前已具备注册表持久化基础，需选举/切换编排）
+### P3 完善 ✅
+- [x] Center 主备（见条目 24：Leader 选举 + 注册表快照持久化，故障自动接管验证通过）
 
 ---
 
