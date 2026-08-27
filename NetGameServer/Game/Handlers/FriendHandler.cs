@@ -483,7 +483,7 @@ namespace Game.Handlers
             }
         }
 
-        private static void HandleFriendApplyRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleFriendApplyRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
         {
             if (sessionBase is not ClientSessionWrapper session) return;
             var req = Shared.Json.DeserializeFromUtf8Bytes<FriendApplyRequest>(payload.Span);
@@ -529,7 +529,7 @@ namespace Game.Handlers
             }
         }
 
-        private static void HandleFriendApplyListRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleFriendApplyListRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
         {
             if (sessionBase is not ClientSessionWrapper session) return;
             var req = Shared.Json.DeserializeFromUtf8Bytes<FriendApplyListRequest>(payload.Span);
@@ -563,7 +563,7 @@ namespace Game.Handlers
             }
         }
 
-        private static void HandleFriendApplyHandleRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleFriendApplyHandleRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
         {
             if (sessionBase is not ClientSessionWrapper session) return;
             var req = Shared.Json.DeserializeFromUtf8Bytes<FriendApplyHandleRequest>(payload.Span);
@@ -1412,7 +1412,7 @@ namespace Game.Handlers
             }
         }
 
-        private static void HandleInviteGameAckRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleInviteGameAckRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
         {
             if (sessionBase is not ClientSessionWrapper session) return;
             var req = Shared.Json.DeserializeFromUtf8Bytes<InviteGameAckRequest>(payload.Span);

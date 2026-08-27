@@ -188,12 +188,12 @@ Framework.Protocol/Generated/
   旧字典仅保留内部节点消息（注册/心跳/场景创建回执）
 - 集成验证：创建房间 → 加入 → 聊天 → 离开 全链路通过（MatchHandler 真实业务执行）
 
-### 23. Game FriendHandler 迁移（8/13 消息）
+### 23. Game FriendHandler 迁移（13/13 完成）
 
 `Game/Handlers/GameDispatcher.cs`：
-- 新增迁移 7 个好友/黑名单消息：FriendAdd/FriendRemove/FriendSetRemark/FriendGetList/BlacklistAdd/BlacklistRemove/BlacklistGetList
+- 新增迁移 5 个消息：FriendApply（申请发起）、FriendApplyList（申请列表）、FriendApplyHandle（申请处理）、FriendInviteGame（游戏邀请）、FriendInviteGameAck（邀请回执）
+- **Game 全部 13 个请求类消息已迁移**（Chat 1 + Friend/Blacklist/Apply/Invite 12），旧路由仅剩回退路径
 - 模式：生成消息类 → 复用现有 FriendHandler 入口（身份映射 + DB 转发 + 异步响应管线）
-- Game 累计迁移 8/13 客户端消息（Chat 1 + Friend/Blacklist 7）
 
 ### 24. Center 主备 Leader 选举（HA）
 

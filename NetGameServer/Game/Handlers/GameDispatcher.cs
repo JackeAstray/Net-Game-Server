@@ -153,6 +153,66 @@ public static class GameDispatcher
             Game.Handlers.FriendHandler.HandleGetBlacklistRequest(session, Array.Empty<byte>());
         }, jsonFallback: true);
 
+        // 好友申请：发起（TargetUniqueId + 留言）
+        dispatcher.RegisterSync<FriendApply>((ctx, msg) =>
+        {
+            var session = new Game.Network.ClientSessionWrapper(
+                ((GameSessionContext)ctx).GatewaySession, ctx.ClientSessionId);
+            var req = new FriendApplyRequest { TargetUniqueId = msg.TargetUniqueId, Message = msg.Message };
+            var payload = Shared.Json.SerializeToUtf8Bytes(req);
+            Game.Handlers.FriendHandler.HandleFriendApplyRequest(session, payload);
+        }, jsonFallback: true);
+
+        // 好友申请：列表查询
+        dispatcher.RegisterSync<FriendApplyList>((ctx, msg) =>
+        {
+            var session = new Game.Network.ClientSessionWrapper(
+                ((GameSessionContext)ctx).GatewaySession, ctx.ClientSessionId);
+            Game.Handlers.FriendHandler.HandleFriendApplyListRequest(session, Array.Empty<byte>());
+        }, jsonFallback: true);
+
+        // 好友申请：处理（接受/拒绝）
+        dispatcher.RegisterSync<FriendApplyHandle>((ctx, msg) =>
+        {
+            var session = new Game.Network.ClientSessionWrapper(
+                ((GameSessionContext)ctx).GatewaySession, ctx.ClientSessionId);
+            var req = new FriendApplyHandleRequest { ApplyId = msg.ApplyId, Accept = msg.Accept };
+            var payload = Shared.Json.SerializeToUtf8Bytes(req);
+            Game.Handlers.FriendHandler.HandleFriendApplyHandleRequest(session, payload);
+        }, jsonFallback: true);
+
+        // 游戏邀请（发起）
+        dispatcher.RegisterSync<FriendInviteGame>((ctx, msg) =>
+        {
+            var session = new Game.Network.ClientSessionWrapper(
+                ((GameSessionContext)ctx).GatewaySession, ctx.ClientSessionId);
+            var req = new InviteGameRequest
+            {
+                FriendUniqueId = msg.FriendUniqueId,
+                RoomId = msg.RoomId,
+                SceneType = msg.SceneType,
+                RoomName = msg.RoomName
+            };
+            var payload = Shared.Json.SerializeToUtf8Bytes(req);
+            Game.Handlers.FriendHandler.HandleInviteGameRequest(session, payload);
+        }, jsonFallback: true);
+
+        // 游戏邀请：回执（接受/拒绝）
+        dispatcher.RegisterSync<FriendInviteGameAck>((ctx, msg) =>
+        {
+            var session = new Game.Network.ClientSessionWrapper(
+                ((GameSessionContext)ctx).GatewaySession, ctx.ClientSessionId);
+            var req = new InviteGameAckRequest
+            {
+                InviterUniqueId = msg.InviterUniqueId,
+                RoomId = msg.RoomId,
+                Accept = msg.Accept,
+                Reason = msg.Reason
+            };
+            var payload = Shared.Json.SerializeToUtf8Bytes(req);
+            Game.Handlers.FriendHandler.HandleInviteGameAckRequest(session, payload);
+        }, jsonFallback: true);
+
         return dispatcher;
     }
 }
