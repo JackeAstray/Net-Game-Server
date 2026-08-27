@@ -1,0 +1,15 @@
+{
+  "_comment": "Supervisor 样例配置：看护 Publish 目录下的服务器进程（崩溃自动重启，指数退避）。用法: Supervisor --config supervisor.json",
+  "LogDirectory": "supervisor-logs",
+  "RestartDelayMs": 2000,
+  "MaxRestartsPerMinute": 10,
+  "Processes": [
+    { "Name": "Redis", "File": "redis-server.exe", "WorkingDirectory": "Publish/Redis" },
+    { "Name": "DB", "File": "DB.exe", "WorkingDirectory": "Publish/DB" },
+    { "Name": "Center", "File": "Center.exe", "WorkingDirectory": "Publish/Center" },
+    { "Name": "Login", "File": "Login.exe", "WorkingDirectory": "Publish/Login" },
+    { "Name": "Game", "File": "Game.exe", "WorkingDirectory": "Publish/Game" },
+    { "Name": "Battle", "File": "Battle.exe", "WorkingDirectory": "Publish/Battle" },
+    { "Name": "Gateway", "File": "Gateway.exe", "WorkingDirectory": "Publish/Gateway" }
+  ]
+}

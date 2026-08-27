@@ -24,7 +24,12 @@ File.WriteAllText(Path.Combine(baseDir, "appsettings.json"), """
   "CenterHost": "127.0.0.1",
   "CenterPort": 31999,
   "CenterNodeSharedSecret": "change-this-secret",
-  "ReconnectGraceSeconds": 2
+  "ReconnectGraceSeconds": 2,
+  "GatewayPort": 31400,
+  "GatewayHost": "127.0.0.1",
+  "LoginPort": 31410,
+  "GamePort": 31411,
+  "BattleNodes": "[\"127.0.0.1:31420\",\"127.0.0.1:31421\"]"
 }
 """);
 
@@ -395,6 +400,127 @@ using (var conn2 = new TcpClient())
         conn3.Close();
     }
     await Task.WhenAny(read2, Task.Delay(1500));
+}
+
+// ========== 第四部分：静态分片（Gateway 多 Battle 节点 + 按玩家绑定路由） ==========
+Console.WriteLine("== 静态分片：Gateway 多 Battle 节点路由 ==");
+{
+    // 伪 Battle 节点 A/B：响应 40001/40006 战斗消息，回显节点标记
+    var fakeBattleServers = new List<TcpServer>();
+    void StartFakeBattleNode(int port, string marker)
+    {
+        var server = new TcpServer();
+        server.OnDataReceived += (session, data) =>
+        {
+            if (data.Length < 4) return;
+            int msgId = BitConverter.ToInt32(data.Span.Slice(0, 4));
+            if (msgId == Framework.Core.Security.InternalAuthFilter.AuthMsgId) return; // 忽略认证握手
+            if (msgId != GenIds.BattleJoin && msgId != GenIds.ScriptAction) return;    // 只响应战斗业务消息
+            if (!Shared.RouteMetadata.TryExtractClientSessionId(data.Slice(4), out long clientSessionId, out _)) return;
+            byte[] markerPayload = System.Text.Encoding.UTF8.GetBytes($"{marker}|{clientSessionId}");
+            byte[] routed = Shared.RouteMetadata.AttachTargetSessionId(markerPayload, clientSessionId);
+            byte[] packet = PacketBuilder.BuildPacket(40099, routed, out int len);
+            Network.PacketSender.Send(session, packet, len);
+        };
+        server.StartAsync(port).GetAwaiter().GetResult();
+        fakeBattleServers.Add(server);
+    }
+    StartFakeBattleNode(31420, "BAT-A");
+    StartFakeBattleNode(31421, "BAT-B");
+
+    // 伪 Center：响应匹配请求，分配节点 B（Battle-127.0.0.1:31421）
+    var fakeCenter = new TcpServer();
+    fakeCenter.OnDataReceived += (session, data) =>
+    {
+        if (data.Length < 4) return;
+        int msgId = BitConverter.ToInt32(data.Span.Slice(0, 4));
+        if (msgId != GenIds.CenterMatch) return;
+        if (!Shared.RouteMetadata.TryExtractClientSessionId(data.Slice(4), out long clientSessionId, out _)) return;
+        var res = new CenterMatchResult
+        {
+            Success = true,
+            RoomId = "shard-room",
+            BattleNodeId = "Battle-127.0.0.1:31421",
+            SceneId = "PVP",
+            SceneType = "PVP",
+            Message = "ok"
+        };
+        byte[] routed = Shared.RouteMetadata.AttachTargetSessionId(res.Serialize(), clientSessionId);
+        byte[] packet = PacketBuilder.BuildPacket(GenIds.CenterMatchResult, routed, out int len);
+        Network.PacketSender.Send(session, packet, len);
+    };
+    fakeCenter.StartAsync(31999).GetAwaiter().GetResult();
+
+    // 进程内启动 Gateway（后端 Login/Game 指向死端口自动重试；Center/Battle 连伪节点）
+    try
+    {
+        await Gateway.GatewayServerApp.StartNetworkAsync();
+        Check(true, "Gateway 启动（多 Battle 节点）");
+    }
+    catch (Exception ex)
+    {
+        Check(false, "Gateway 启动", ex.Message);
+        return 1;
+    }
+
+    using (var gwClient = new TcpClient())
+    {
+        await gwClient.ConnectAsync("127.0.0.1", 31400);
+        var gws = gwClient.GetStream();
+        var gwr = new LengthPrefixedPacketReader();
+        var gwb = new byte[8192];
+        var markers = new ConcurrentQueue<string>();
+
+        var readGw = Task.Run(async () =>
+        {
+            while (true)
+            {
+                int n = await gws.ReadAsync(gwb);
+                if (n == 0) break;
+                gwr.Append(gwb.AsSpan(0, n));
+                while (gwr.TryReadPacket(out var pkt))
+                {
+                    if (pkt.Length < 4) continue;
+                    int msgId = BitConverter.ToInt32(pkt.Span.Slice(0, 4));
+                    if (msgId == GenIds.CenterMatchResult)
+                    {
+                        markers.Enqueue("MATCH");
+                    }
+                    else if (msgId == 40099)
+                    {
+                        markers.Enqueue(System.Text.Encoding.UTF8.GetString(pkt.Slice(4).Span));
+                    }
+                }
+            }
+        });
+
+        void SendGw(int msgId, byte[] payload)
+        {
+            byte[] packet = PacketBuilder.BuildPacket(msgId, payload, out int len);
+            gws.Write(packet.AsSpan(0, len));
+            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+        }
+
+        await Task.Delay(1500); // 等待节点连接与认证就绪
+
+        // 1. 无绑定 → 默认节点 A
+        SendGw(GenIds.BattleJoin, new BattleJoin { RoomId = "shard-a" }.Serialize());
+        bool gotA = await WaitUntil(() => markers.Any(m => m.StartsWith("BAT-A")), TimeSpan.FromSeconds(5));
+        Check(gotA, "无绑定消息路由到默认节点 A");
+
+        // 2. 匹配 → 伪 Center 分配节点 B → 客户端收到回包（Gateway 同时学习绑定）
+        SendGw(GenIds.CenterMatch, new CenterMatch { CategoryId = "PVP" }.Serialize());
+        bool gotMatch = await WaitUntil(() => markers.Any(m => m == "MATCH"), TimeSpan.FromSeconds(5));
+        Check(gotMatch, "匹配回包到达（携带节点 B 分配）");
+
+        // 3. 绑定生效 → 后续战斗消息路由到节点 B
+        SendGw(GenIds.BattleJoin, new BattleJoin { RoomId = "shard-b" }.Serialize());
+        bool gotB = await WaitUntil(() => markers.Any(m => m.StartsWith("BAT-B")), TimeSpan.FromSeconds(5));
+        Check(gotB, "绑定后消息路由到节点 B");
+
+        await Task.WhenAny(readGw, Task.Delay(1000));
+        gwClient.Close();
+    }
 }
 
 Console.WriteLine(failures == 0 ? "\n===== NetworkVerify 全部通过 =====" : $"\n===== NetworkVerify 失败 {failures} 项 =====");

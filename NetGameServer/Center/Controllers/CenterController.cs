@@ -39,4 +39,11 @@ public class CenterController : ControllerBase
             timestamp = DateTime.UtcNow
         });
     }
+
+    [HttpGet("rooms")]
+    public IActionResult Rooms()
+    {
+        var rooms = CenterServerApp.Match?.GetRoomsSnapshot() ?? Array.Empty<Shared.Messages.Center.RoomInfo>();
+        return Ok(rooms);
+    }
 }

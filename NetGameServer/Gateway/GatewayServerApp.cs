@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Security.Cryptography;
 using System.Text;
+using MemoryPack;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Network;
@@ -34,8 +35,47 @@ namespace Gateway
 
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, PendingReconnect> pendingReconnects = new();
 
-        /// <summary>Battle 后端连接（登录处理器断线重连恢复时使用；连接建立后才触发业务消息）。</summary>
-        private static TcpClientWrapper? battleClientRef;
+        // ===== 静态分片（对标 KBE cellappmgr 调度）：多 Battle 节点 + 按玩家绑定路由 =====
+
+        // 后端发送器（Login/Game/Center）：在连接发起前创建并订阅 OnConnected，
+        // 避免 localhost 快速连上时 OnConnected 先于订阅触发导致 isConnected 永远为 false（消息被静默缓冲）。
+        private static BufferedBackendSender? loginSender;
+        private static BufferedBackendSender? gameSender;
+        private static BufferedBackendSender? centerSender;
+        /// <summary>Battle 节点连接：nodeId("Battle-{host}:{port}") -> 客户端。</summary>
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, TcpClientWrapper> battleNodes = new(StringComparer.Ordinal);
+
+        /// <summary>Battle 节点发送器（缓冲队列）：nodeId -> sender。</summary>
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, BufferedBackendSender> battleNodeSenders = new(StringComparer.Ordinal);
+
+        /// <summary>玩家 -> Battle 节点绑定：clientSessionId -> nodeId（从匹配结果学习）。</summary>
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, string> clientBattleNodeBindings = new();
+
+        /// <summary>默认 Battle 节点（无绑定时的回退目标）。</summary>
+        private static volatile string defaultBattleNodeId = string.Empty;
+
+        /// <summary>按玩家绑定（或默认节点）发送到对应 Battle 节点。</summary>
+        private static void SendToBattle(byte[] outbound, long clientSessionId)
+        {
+            string nodeId = clientBattleNodeBindings.TryGetValue(clientSessionId, out var bound)
+                ? bound
+                : defaultBattleNodeId;
+            if (battleNodeSenders.TryGetValue(nodeId, out var sender))
+            {
+                sender.SendOrBuffer(outbound);
+            }
+            else if (battleNodeSenders.Count > 0)
+            {
+                // 绑定节点不存在（节点已下线）：回退默认节点并清除绑定
+                clientBattleNodeBindings.TryRemove(clientSessionId, out _);
+                battleNodeSenders.TryGetValue(defaultBattleNodeId, out sender);
+                sender?.SendOrBuffer(outbound);
+            }
+            else
+            {
+                Shared.Log.Warning($"Gateway 无可用 Battle 节点，丢弃消息 ClientSessionId:{clientSessionId}");
+            }
+        }
 
         private sealed class BufferedBackendSender
         {
@@ -144,24 +184,9 @@ namespace Gateway
                 Gateway.Managers.GatewaySessionManager.Instance.AddSession(session);
             };
 
-            // 建立到后端 Login, Game, Center, Battle 服务器的连接（异步连接启动）
-            var (loginClient, gameClient, centerClient, battleClient) = ConnectToBackendServers();
-
-            var loginSender = new BufferedBackendSender("Login", data => loginClient.Send(data));
-            loginClient.OnConnected += _ => loginSender.OnConnected();
-            loginClient.OnDisconnected += (_, __) => loginSender.OnDisconnected();
-
-            var gameSender = new BufferedBackendSender("Game", data => gameClient.Send(data));
-            gameClient.OnConnected += _ => gameSender.OnConnected();
-            gameClient.OnDisconnected += (_, __) => gameSender.OnDisconnected();
-
-            var centerSender = new BufferedBackendSender("Center", data => centerClient.Send(data));
-            centerClient.OnConnected += _ => centerSender.OnConnected();
-            centerClient.OnDisconnected += (_, __) => centerSender.OnDisconnected();
-
-            var battleSender = new BufferedBackendSender("Battle", data => battleClient.Send(data));
-            battleClient.OnConnected += _ => battleSender.OnConnected();
-            battleClient.OnDisconnected += (_, __) => battleSender.OnDisconnected();
+            // 建立到后端 Login, Game, Center 与 Battle 节点池的连接（异步连接启动）
+            // 注：login/game/center 的发送器在 ConnectToBackendServers 内于连接发起前创建并订阅
+            var (loginClient, gameClient, centerClient) = ConnectToBackendServers();
 
             void NotifyPlayerDisconnected(long clientSessionId)
             {
@@ -173,7 +198,11 @@ namespace Gateway
                 Shared.Log.Info($"Gateway 广播玩家断线通知 MsgId:{MessageIds.PlayerDisconnectNotif} ClientSessionId:{clientSessionId} PacketLength:{totalLength}");
                 loginSender.SendOrBuffer(outbound);
                 gameSender.SendOrBuffer(outbound);
-                battleSender.SendOrBuffer(outbound);
+                // 断线通知广播到全部 Battle 节点（玩家可能挂在任一节点）
+                foreach (var sender in battleNodeSenders.Values)
+                {
+                    sender.SendOrBuffer(outbound);
+                }
             }
 
             // 数据接收处理器：统一协议 [MsgId(4)][Payload]
@@ -237,7 +266,7 @@ namespace Gateway
                                     centerSender.SendOrBuffer(outbound);
                                     break;
                                 case "Battle":
-                                    battleSender.SendOrBuffer(outbound);
+                                    SendToBattle(outbound, session.SessionId);
                                     break;
                                 default:
                                     Shared.Log.Warning($"Gateway: 未知的路由目标 TargetServer=>{targetServer} MsgId=>{msgId}");
@@ -264,7 +293,7 @@ namespace Gateway
                         else if (msgId >= 40000 && msgId < 50000)
                         {
                             Shared.Log.Debug("Gateway 路由客户端消息 -> Battle MsgId:{MsgId} ClientSessionId:{ClientSessionId} BoundUserId:{BoundUserId} OutboundLength:{OutboundLength}", msgId, session.SessionId, boundUserId, outbound.Length);
-                            battleSender.SendOrBuffer(outbound);
+                            SendToBattle(outbound, session.SessionId);
                         }
                         else
                         {
@@ -308,6 +337,7 @@ namespace Gateway
                     }
                 }
                 Gateway.Managers.GatewaySessionManager.Instance.RemoveSession(session.SessionId);
+                clientBattleNodeBindings.TryRemove(session.SessionId, out _); // 清除 Battle 节点绑定
                 NotifyPlayerDisconnected(session.SessionId);
             };
 
@@ -362,7 +392,7 @@ namespace Gateway
         /// - 为每个后端客户端注册连接、断开、接收数据事件，负责将后端返回的数据解析并转发给相应的客户端会话。
         /// - 连接建立后发送内部认证握手（InternalAuthFilter），未认证的连接将被后端拒绝业务消息。
         /// </summary>
-        private static (TcpClientWrapper, TcpClientWrapper, TcpClientWrapper, TcpClientWrapper) ConnectToBackendServers()
+        private static (TcpClientWrapper, TcpClientWrapper, TcpClientWrapper) ConnectToBackendServers()
         {
             string sharedSecret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
             string gatewayHost = ConfigHelper.GetConfig<string>("GatewayHost") ?? "127.0.0.1";
@@ -381,6 +411,10 @@ namespace Gateway
             int loginPort = ConfigHelper.GetConfig<int>("LoginPort") == 0 ? 31302 : ConfigHelper.GetConfig<int>("LoginPort");
             string loginHost = ConfigHelper.GetConfig<string>("LoginHost") ?? "127.0.0.1";
             var loginClient = new TcpClientWrapper(loginHost, loginPort);
+            // 发送器必须在 ConnectAsync 之前创建并订阅 OnConnected（避免快速连接竞态导致缓冲永不冲刷）
+            loginSender = new BufferedBackendSender("Login", data => loginClient.Send(data));
+            loginClient.OnConnected += _ => loginSender?.OnConnected();
+            loginClient.OnDisconnected += (_, __) => loginSender?.OnDisconnected();
             loginClient.OnConnected += session =>
             {
                 Shared.Log.Info($"已连接到 Login 服务器 (Host:{loginHost} Port:{loginPort})");
@@ -473,6 +507,10 @@ namespace Gateway
             int gamePort = ConfigHelper.GetConfig<int>("GamePort") == 0 ? 31304 : ConfigHelper.GetConfig<int>("GamePort");
             string gameHost = ConfigHelper.GetConfig<string>("GameHost") ?? "127.0.0.1";
             var gameClient = new TcpClientWrapper(gameHost, gamePort);
+            // 发送器必须在 ConnectAsync 之前创建并订阅 OnConnected（避免快速连接竞态）
+            gameSender = new BufferedBackendSender("Game", data => gameClient.Send(data));
+            gameClient.OnConnected += _ => gameSender?.OnConnected();
+            gameClient.OnDisconnected += (_, __) => gameSender?.OnDisconnected();
             gameClient.OnConnected += session =>
             {
                 Shared.Log.Info($"已连接到 Game 服务器 (Host:{gameHost} Port:{gamePort})");
@@ -535,6 +573,10 @@ namespace Gateway
             int centerPort = ConfigHelper.GetConfig<int>("CenterPort") == 0 ? 31306 : ConfigHelper.GetConfig<int>("CenterPort");
             string centerHost = ConfigHelper.GetConfig<string>("CenterHost") ?? "127.0.0.1";
             var centerClient = new TcpClientWrapper(centerHost, centerPort);
+            // 发送器必须在 ConnectAsync 之前创建并订阅 OnConnected（避免快速连接竞态）
+            centerSender = new BufferedBackendSender("Center", data => centerClient.Send(data));
+            centerClient.OnConnected += _ => centerSender?.OnConnected();
+            centerClient.OnDisconnected += (_, __) => centerSender?.OnDisconnected();
             centerClient.OnConnected += session =>
             {
                 Shared.Log.Info($"已连接到 Center 服务器 (Host:{centerHost} Port:{centerPort})");
@@ -585,73 +627,139 @@ namespace Gateway
                     return;
                 }
 
+                // 静态分片：匹配成功回包携带 BattleNodeId → 绑定玩家到对应 Battle 节点（对标 KBE cellappmgr 调度）
+                if (msgId == Framework.Protocol.Generated.MessageIds.CenterMatchResult)
+                {
+                    try
+                    {
+                        var matchRes = MemoryPackSerializer.Deserialize<Framework.Protocol.Generated.CenterMatchResult>(cleanPayload.AsSpan());
+                        if (matchRes != null && matchRes.Success && !string.IsNullOrWhiteSpace(matchRes.BattleNodeId))
+                        {
+                            clientBattleNodeBindings[targetSessionId] = matchRes.BattleNodeId;
+                            Shared.Log.Info($"Gateway 绑定玩家到 Battle 节点 ClientSessionId:{targetSessionId} Node:{matchRes.BattleNodeId}");
+                        }
+                    }
+                    catch
+                    {
+                        // 非 MemoryPack（旧 JSON 协议）或解析失败：忽略，走默认节点
+                    }
+                }
+
                 var clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, cleanPayload, out int responseLength);
                 Shared.Log.Debug("Gateway -> Client 转发 Center 回包 MsgId:{MsgId} TargetSessionId:{TargetSessionId} TargetRemote:{TargetRemote} PacketLength:{PacketLength}", msgId, targetSessionId, clientSession.RemoteEndPoint, responseLength);
                 Network.PacketSender.Send(clientSession, clientPacket, responseLength);
             };
             _ = centerClient.ConnectAsync();
 
-            int battlePort = ConfigHelper.GetConfig<int>("BattlePort") == 0 ? 31307 : ConfigHelper.GetConfig<int>("BattlePort");
-            string battleHost = ConfigHelper.GetConfig<string>("BattleHost") ?? "127.0.0.1";
-            var battleClient = new TcpClientWrapper(battleHost, battlePort);
-            battleClientRef = battleClient; // 断线重连恢复通知用（登录处理器触发时连接已建立）
-            battleClient.OnConnected += session =>
+            // Battle 节点（静态分片，对标 KBE cellappmgr 调度）：
+            // 支持多节点配置 BattleNodes=["host:port",...]；缺省回退单节点 BattleHost:BattlePort
+            var battleNodeEndpoints = new List<string>();
+            string? battleNodesCfg = ConfigHelper.GetConfig<string>("BattleNodes");
+            if (!string.IsNullOrWhiteSpace(battleNodesCfg))
             {
-                Shared.Log.Info($"已连接到 Battle 服务器 (Host:{battleHost} Port:{battlePort})");
-                SendAuthHandshake(battleClient);
-            };
-            battleClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"与 Battle 服务器断开连接: {reason}");
-            battleClient.OnDataReceived += delegate (Network.ISession session, ReadOnlyMemory<byte> data)
-            {
-                if (data.Length < 4)
+                try
                 {
-                    Shared.Log.Warning("Battle 回包长度不足，已丢弃。");
-                    return;
-                }
-
-                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
-                int payloadLength = data.Length - 4;
-                Shared.Log.Debug("Gateway <- Battle 收到回包 MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} Remote:{Remote}", msgId, data.Length, payloadLength, session.RemoteEndPoint);
-                byte[] payload = data.Slice(4).ToArray();
-
-                bool broadcast = Shared.RouteMetadata.TryExtractBroadcast(payload, out bool broadcastFlag, out var payloadAfterBroadcast) && broadcastFlag;
-                if (broadcast)
-                {
-                    var packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payloadAfterBroadcast, out int totalLength);
-                    try
+                    var parsed = System.Text.Json.JsonSerializer.Deserialize<List<string>>(battleNodesCfg);
+                    if (parsed != null && parsed.Count > 0)
                     {
-                        Shared.Log.Debug("Gateway 广播 Battle 回包 MsgId:{MsgId} PacketLength:{PacketLength}", msgId, totalLength);
-                        Gateway.Managers.GatewaySessionManager.Instance.Broadcast(packet.AsSpan(0, totalLength).ToArray());
-                    }
-                    finally { System.Buffers.ArrayPool<byte>.Shared.Return(packet); }
-                    return;
-                }
-
-                long targetSessionId;
-                byte[] cleanPayload;
-                if (!Shared.RouteMetadata.TryExtractTargetSessionId(payloadAfterBroadcast, out targetSessionId, out cleanPayload))
-                {
-                    if (!Shared.RouteMetadata.TryExtractClientSessionId(payloadAfterBroadcast, out targetSessionId, out cleanPayload))
-                    {
-                        Shared.Log.Warning($"Battle 回包缺少目标会话元数据 MsgId:{msgId}");
-                        return;
+                        battleNodeEndpoints.AddRange(parsed);
                     }
                 }
-
-                var clientSession = Gateway.Managers.GatewaySessionManager.Instance.GetSession(targetSessionId);
-                if (clientSession == null)
+                catch (Exception ex)
                 {
-                    Shared.Log.Warning($"Battle 回包目标会话不存在，已丢弃 MsgId:{msgId} TargetSessionId:{targetSessionId}");
+                    Shared.Log.Warning($"Gateway BattleNodes 配置解析失败，回退单节点: {ex.Message}");
+                }
+            }
+            if (battleNodeEndpoints.Count == 0)
+            {
+                int battlePort = ConfigHelper.GetConfig<int>("BattlePort") == 0 ? 31307 : ConfigHelper.GetConfig<int>("BattlePort");
+                string battleHost = ConfigHelper.GetConfig<string>("BattleHost") ?? "127.0.0.1";
+                battleNodeEndpoints.Add($"{battleHost}:{battlePort}");
+            }
+
+            foreach (var endpoint in battleNodeEndpoints)
+            {
+                var parts = endpoint.Split(':');
+                if (parts.Length != 2 || !int.TryParse(parts[1], out int nodePort))
+                {
+                    Shared.Log.Warning($"Gateway Battle 节点地址无效: {endpoint}");
+                    continue;
+                }
+                string nodeHost = parts[0];
+                string nodeId = $"Battle-{nodeHost}:{nodePort}";
+                var battleClient = new TcpClientWrapper(nodeHost, nodePort);
+                battleNodes[nodeId] = battleClient;
+
+                var sender = new BufferedBackendSender(nodeId, data => battleClient.Send(data));
+                battleNodeSenders[nodeId] = sender;
+
+                battleClient.OnConnected += _ =>
+                {
+                    Shared.Log.Info($"已连接到 Battle 节点 {nodeId}");
+                    sender.OnConnected();
+                    SendAuthHandshake(battleClient);
+                };
+                battleClient.OnDisconnected += (_, reason) => sender.OnDisconnected();
+                battleClient.OnDataReceived += HandleBattleNodeData;
+                _ = battleClient.ConnectAsync();
+            }
+            if (battleNodeSenders.Count > 0 && string.IsNullOrEmpty(defaultBattleNodeId))
+            {
+                defaultBattleNodeId = battleNodeSenders.Keys.OrderBy(k => k).First();
+            }
+            Shared.Log.Info($"Gateway Battle 节点就绪: {battleNodeSenders.Count} 个（默认 {defaultBattleNodeId}）");
+
+            return (loginClient, gameClient, centerClient);
+        }
+
+        /// <summary>处理 Battle 节点回包（转发给客户端；多节点共用同一处理）。</summary>
+        private static void HandleBattleNodeData(Network.ISession session, ReadOnlyMemory<byte> data)
+        {
+            if (data.Length < 4)
+            {
+                Shared.Log.Warning("Battle 回包长度不足，已丢弃。");
+                return;
+            }
+
+            int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+            int payloadLength = data.Length - 4;
+            Shared.Log.Debug("Gateway <- Battle 收到回包 MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} Remote:{Remote}", msgId, data.Length, payloadLength, session.RemoteEndPoint);
+            byte[] payload = data.Slice(4).ToArray();
+
+            bool broadcast = Shared.RouteMetadata.TryExtractBroadcast(payload, out bool broadcastFlag, out var payloadAfterBroadcast) && broadcastFlag;
+            if (broadcast)
+            {
+                var packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payloadAfterBroadcast, out int totalLength);
+                try
+                {
+                    Shared.Log.Debug("Gateway 广播 Battle 回包 MsgId:{MsgId} PacketLength:{PacketLength}", msgId, totalLength);
+                    Gateway.Managers.GatewaySessionManager.Instance.Broadcast(packet.AsSpan(0, totalLength).ToArray());
+                }
+                finally { System.Buffers.ArrayPool<byte>.Shared.Return(packet); }
+                return;
+            }
+
+            long targetSessionId;
+            byte[] cleanPayload;
+            if (!Shared.RouteMetadata.TryExtractTargetSessionId(payloadAfterBroadcast, out targetSessionId, out cleanPayload))
+            {
+                if (!Shared.RouteMetadata.TryExtractClientSessionId(payloadAfterBroadcast, out targetSessionId, out cleanPayload))
+                {
+                    Shared.Log.Warning($"Battle 回包缺少目标会话元数据 MsgId:{msgId}");
                     return;
                 }
+            }
 
-                var clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, cleanPayload, out int responseLength);
-                Shared.Log.Debug("Gateway -> Client 转发 Battle 回包 MsgId:{MsgId} TargetSessionId:{TargetSessionId} TargetRemote:{TargetRemote} PacketLength:{PacketLength}", msgId, targetSessionId, clientSession.RemoteEndPoint, responseLength);
-                Network.PacketSender.Send(clientSession, clientPacket, responseLength);
-            };
-            _ = battleClient.ConnectAsync();
+            var clientSession = Gateway.Managers.GatewaySessionManager.Instance.GetSession(targetSessionId);
+            if (clientSession == null)
+            {
+                Shared.Log.Warning($"Battle 回包目标会话不存在，已丢弃 MsgId:{msgId} TargetSessionId:{targetSessionId}");
+                return;
+            }
 
-            return (loginClient, gameClient, centerClient, battleClient);
+            var clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, cleanPayload, out int responseLength);
+            Shared.Log.Debug("Gateway -> Client 转发 Battle 回包 MsgId:{MsgId} TargetSessionId:{TargetSessionId} TargetRemote:{TargetRemote} PacketLength:{PacketLength}", msgId, targetSessionId, clientSession.RemoteEndPoint, responseLength);
+            Network.PacketSender.Send(clientSession, clientPacket, responseLength);
         }
 
         /// <summary>
@@ -851,26 +959,21 @@ namespace Gateway
                 }
                 if (Gateway.Managers.GatewaySessionManager.Instance.ResumeSession(newSessionId, pair.Key))
                 {
-                    // 通知 Battle：玩家会话恢复（实体从挂起转在线）
+                    // 通知 Battle 节点：玩家会话恢复（实体从挂起转在线），按玩家绑定路由到所在节点
                     var resume = new Framework.Protocol.Generated.PlayerSessionResume { ClientSessionId = pair.Key };
                     byte[] payload = resume.Serialize();
                     byte[] routedPayload = Shared.RouteMetadata.AttachClientSessionId(payload, pair.Key);
                     byte[] packet = PacketBuilder.BuildPacket(Framework.Protocol.Generated.MessageIds.PlayerSessionResume, routedPayload, out int totalLength);
-                    try
+                    string nodeId = clientBattleNodeBindings.TryGetValue(pair.Key, out var bound) ? bound : defaultBattleNodeId;
+                    if (battleNodeSenders.TryGetValue(nodeId, out var sender))
                     {
-                        if (battleClientRef != null)
-                        {
-                            Network.PacketSender.Send(battleClientRef, packet, totalLength);
-                        }
-                        else
-                        {
-                            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
-                            Shared.Log.Warning($"Gateway Battle 连接未就绪，重连恢复通知丢弃 ClientSessionId:{pair.Key}");
-                        }
+                        sender.SendOrBuffer(packet.AsSpan(0, totalLength).ToArray());
+                        System.Buffers.ArrayPool<byte>.Shared.Return(packet);
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        Shared.Log.Error($"Gateway 发送重连恢复通知失败 ClientSessionId:{pair.Key} Exception:{ex}");
+                        System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+                        Shared.Log.Warning($"Gateway Battle 节点不可用（{nodeId}），重连恢复通知丢弃 ClientSessionId:{pair.Key}");
                     }
                 }
                 return;

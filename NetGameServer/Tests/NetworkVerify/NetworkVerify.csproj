@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\Battle\Battle.csproj" />
+    <ProjectReference Include="..\..\Gateway\Gateway.csproj" />
   </ItemGroup>
 
   <ItemGroup>

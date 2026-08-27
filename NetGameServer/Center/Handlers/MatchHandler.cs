@@ -37,6 +37,14 @@ namespace Center.Handlers
         private readonly ConcurrentDictionary<string, RoomRegistryEntry> rooms = new();
 
         /// <summary>
+        /// 房间快照（管理台监控用）：返回当前注册的全部房间信息。
+        /// </summary>
+        public IReadOnlyList<RoomInfo> GetRoomsSnapshot()
+        {
+            return rooms.Values.Select(e => e.Info).ToList();
+        }
+
+        /// <summary>
         /// 处理匹配请求。根据 CategoryId 将玩家加入对应的匹配池。
         /// 当满足条件（如人数达到阈值）时，寻找真实的BattleNode请求创建场景并返回。
         /// </summary>

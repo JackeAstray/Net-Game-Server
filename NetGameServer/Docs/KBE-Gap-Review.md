@@ -339,3 +339,37 @@
   - Battle 每 5 秒输出 tick 统计日志（含入站队列深度）。
 - 验证：`dotnet build` 0 错误；四套件全部通过。
 
+### 迭代 6（已落地）——进程看护 Supervisor + 管理台
+
+- **C1 进程看护（Supervisor）**：
+  - 新增 `Tools/Supervisor`：JSON 配置驱动（进程名/路径/参数/工作目录/重启延迟），
+    异常退出（code≠0）自动重启（指数退避，上限 30s），正常退出（code=0）不重启；
+  - 输出带机器可读标记（START/RESTART/EXIT_OK/SUMMARY）供验证断言；`--test-duration` 测试模式；
+    Ctrl+C 优雅停机（先 CloseMainWindow 再 Kill 兜底）；子进程 stdout/stderr 落盘；
+  - `supervisor.sample.json` 覆盖 Publish 布局全进程（Redis/DB/Center/Login/Game/Battle/Gateway）。
+- **C5 管理台（guiconsole Web 简化版）**：
+  - Center HTTP 新增 `/api/center/rooms`（房间快照，MatchHandler.GetRoomsSnapshot + CenterServerApp.Match）；
+  - 根路径 `/` 提供无依赖单页仪表盘：节点表（类型/负载/心跳/在线）、房间表、健康汇总，
+    JS 轮询 health/nodes/summary/rooms 每 5 秒自动刷新（CenterHttpServer.cs:30-32、DashboardHtml）。
+- **新增 Tests/SupervisorVerify**：崩溃进程（退出码 1）被反复重启（指数退避验证）、
+  正常退出进程不重启、汇总输出齐全。
+- 验证：`dotnet build` 0 错误；五套件（Protocol/ScriptHost/Logger/Network/Supervisor）全部通过；
+  Center 冒烟：/api/center/health|nodes|rooms|summary 与首页 HTML 均 200 正常。
+
+### 迭代 7（已落地）——静态分片：Gateway 多 Battle 节点 + 按玩家绑定路由（C2 第一阶段）
+
+- **C2 静态分片（对标 KBE cellappmgr 调度）**：
+  - Gateway 支持多 Battle 节点：配置 `BattleNodes=["host:port",...]`（缺省回退单节点 BattleHost:BattlePort），
+    每节点独立连接 + 缓冲发送器（GatewayServerApp.cs battleNodes/battleNodeSenders）；
+  - **按玩家绑定路由**：匹配成功回包（CenterMatchResult）携带 BattleNodeId → Gateway 嗅探并记录
+    `clientSessionId → nodeId`（clientBattleNodeBindings），后续该玩家的战斗消息（40000-49999）按绑定
+    路由到对应节点；无绑定走默认节点；绑定节点不可用时回退默认并清除绑定；
+  - 断线通知广播到全部 Battle 节点；重连恢复通知（PlayerSessionResume）按绑定路由到玩家所在节点；
+    玩家断开时清除绑定；
+  - **顺带修复真实竞态 bug**：Login/Game/Center 的 BufferedBackendSender 原在连接发起后才订阅
+    OnConnected，localhost 快速连上时 isConnected 永远为 false → 消息被静默缓冲永不冲刷；
+    现改为在 ConnectAsync 之前创建并订阅发送器（connect-before-subscribe 竞态）。
+- **NetworkVerify 新增分片端到端验证**：进程内启动 Gateway + 两个伪 Battle 节点 + 伪 Center：
+  无绑定消息路由到默认节点 A → 匹配回包学习绑定（节点 B）→ 绑定后消息路由到节点 B（全链路标记回显）。
+- 验证：`dotnet build` 0 错误；五套件全部通过。
+

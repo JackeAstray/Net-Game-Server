@@ -11,6 +11,9 @@ namespace Center
     {
         private static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>? handlers;
 
+        /// <summary>匹配/房间处理器实例（管理台房间接口用）。</summary>
+        public static Center.Handlers.MatchHandler? Match { get; private set; }
+
         /// <summary>Leader 选举实例（主备高可用：仅 Leader 处理业务）。</summary>
         public static Framework.Core.LeaderElection? LeaderElection { get; private set; }
 
@@ -41,6 +44,7 @@ namespace Center
             }
 
             var matchHandler = new Center.Handlers.MatchHandler();
+            Match = matchHandler;
             handlers = Center.Handlers.MessageRouter.BuildHandlers(matchHandler);
 
             // 新协议分发器：强类型消息 + MemoryPack（JSON 兼容回退），消灭手写 switch
