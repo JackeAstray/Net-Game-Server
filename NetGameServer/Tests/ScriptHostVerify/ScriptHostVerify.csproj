@@ -15,7 +15,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\..\GameLogic\scripts\*.csx" Link="scripts\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Always：热更新测试会修改输出目录的脚本副本，失败退出时可能残留污染；
+         强制每次构建从源目录覆盖，保证验证套件可重复运行。 -->
+    <None Include="..\..\GameLogic\scripts\*.csx" Link="scripts\%(Filename)%(Extension)" CopyToOutputDirectory="Always" />
   </ItemGroup>
 
 </Project>
