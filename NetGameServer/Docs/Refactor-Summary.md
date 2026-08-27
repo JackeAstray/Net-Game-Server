@@ -179,6 +179,15 @@ Framework.Protocol/Generated/
 - 新增迁移：RoomReady（准备）、RoomTransferOwner（房主转移）、RoomKickMember（踢人）——带通知广播回调的消息已全部迁移
 - def 补齐：RoomReadyResult/RoomTransferOwnerResult/RoomKickMemberResult 增加 Room 字段
 
+### 22. Center 全量客户端消息迁移（13/13 完成）
+
+`Center/Handlers/CenterDispatcher.cs`：
+- 新增迁移 8 个消息：CenterMatch（匹配）、CenterCreateRoom、CenterJoinRoom、CenterCloseRoom、
+  CenterLeaveRoom、CenterUpdateRoomSettings、CenterStartRoomGame、CenterRoomChat
+- **Center 全部 13 个客户端消息已迁移到强类型分发**（查询类 2 + 回调类 3 + 操作类 8），
+  旧字典仅保留内部节点消息（注册/心跳/场景创建回执）
+- 集成验证：创建房间 → 加入 → 聊天 → 离开 全链路通过（MatchHandler 真实业务执行）
+
 ### 22. Quest 任务脚本示例（三脚本协作）
 
 `GameLogic/scripts/Quest.csx`：

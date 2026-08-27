@@ -184,6 +184,179 @@ public static class CenterDispatcher
             ctx.Send(resMsg);
         }, jsonFallback: true);
 
+        // 匹配（排队中返回 false + 提示消息；匹配成功广播给所有匹配玩家）
+        dispatcher.RegisterSync<CenterMatch>((ctx, msg) =>
+        {
+            var cctx = (CenterSessionContext)ctx;
+            var req = new CenterMatchRequest { CategoryId = msg.CategoryId };
+            var res = matchHandler.HandleMatchRequestAsync(
+                ctx.ClientSessionId, req, cctx.GatewaySession,
+                (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif))
+                .GetAwaiter().GetResult();
+            if (res != null)
+            {
+                ctx.Send(new CenterMatchResult
+                {
+                    Success = res.Success,
+                    Message = res.Message ?? string.Empty,
+                    RoomId = res.RoomId ?? string.Empty,
+                    BattleNodeId = res.BattleNodeId ?? string.Empty,
+                    SceneId = res.SceneId ?? string.Empty,
+                    SceneType = res.SceneType ?? string.Empty
+                });
+            }
+        }, jsonFallback: true);
+
+        // 创建房间
+        dispatcher.RegisterSync<CenterCreateRoom>((ctx, msg) =>
+        {
+            var cctx = (CenterSessionContext)ctx;
+            var req = new CenterCreateRoomRequest
+            {
+                SceneType = msg.SceneType,
+                IsPrivate = msg.IsPrivate,
+                RoomName = msg.RoomName,
+                Password = msg.Password,
+                MaxPlayers = msg.MaxPlayers
+            };
+            var res = matchHandler.HandleCreateRoomRequestAsync(
+                ctx.ClientSessionId, cctx.RoutedUserId, cctx.RoutedUid, cctx.RoutedNickname, req)
+                .GetAwaiter().GetResult();
+            ctx.Send(new CenterCreateRoomResult
+            {
+                Success = res.Success,
+                Message = res.Message ?? string.Empty,
+                RoomId = res.RoomId ?? string.Empty,
+                RoomName = res.RoomName ?? string.Empty,
+                BattleNodeId = res.BattleNodeId ?? string.Empty,
+                SceneId = res.SceneId ?? string.Empty,
+                HasPassword = res.HasPassword,
+                MaxPlayers = res.MaxPlayers,
+                CurrentPlayers = res.CurrentPlayers
+            });
+        }, jsonFallback: true);
+
+        // 加入房间
+        dispatcher.RegisterSync<CenterJoinRoom>((ctx, msg) =>
+        {
+            var cctx = (CenterSessionContext)ctx;
+            var req = new CenterJoinRoomRequest { RoomId = msg.RoomId, Password = msg.Password };
+            var res = matchHandler.HandleJoinRoomRequestAsync(
+                ctx.ClientSessionId, cctx.RoutedUserId, cctx.RoutedUid, cctx.RoutedNickname, req)
+                .GetAwaiter().GetResult();
+            ctx.Send(new CenterJoinRoomResult
+            {
+                Success = res.Success,
+                Message = res.Message ?? string.Empty,
+                RoomId = res.RoomId ?? string.Empty,
+                RoomName = res.RoomName ?? string.Empty,
+                BattleNodeId = res.BattleNodeId ?? string.Empty,
+                SceneId = res.SceneId ?? string.Empty,
+                SceneType = res.SceneType ?? string.Empty,
+                HasPassword = res.HasPassword,
+                MaxPlayers = res.MaxPlayers,
+                CurrentPlayers = res.CurrentPlayers
+            });
+        }, jsonFallback: true);
+
+        // 关闭房间
+        dispatcher.RegisterSync<CenterCloseRoom>((ctx, msg) =>
+        {
+            var cctx = (CenterSessionContext)ctx;
+            var req = new CenterCloseRoomRequest { RoomId = msg.RoomId };
+            var res = matchHandler.HandleCloseRoomRequestAsync(
+                cctx.RoutedUserId, req, cctx.GatewaySession,
+                (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif))
+                .GetAwaiter().GetResult();
+            ctx.Send(new CenterCloseRoomResult
+            {
+                Success = res.Success,
+                Message = res.Message ?? string.Empty,
+                RoomId = res.RoomId ?? string.Empty
+            });
+        }, jsonFallback: true);
+
+        // 离开房间（房主自动转移/空房关闭通知）
+        dispatcher.RegisterSync<CenterLeaveRoom>((ctx, msg) =>
+        {
+            var cctx = (CenterSessionContext)ctx;
+            var req = new CenterLeaveRoomRequest { RoomId = msg.RoomId };
+            var res = matchHandler.HandleLeaveRoomRequestAsync(
+                ctx.ClientSessionId, req, cctx.GatewaySession,
+                (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif),
+                (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif),
+                (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif))
+                .GetAwaiter().GetResult();
+            ctx.Send(new CenterLeaveRoomResult
+            {
+                Success = res.Success,
+                Message = res.Message ?? string.Empty,
+                RoomId = res.RoomId ?? string.Empty
+            });
+        }, jsonFallback: true);
+
+        // 更新房间设置
+        dispatcher.RegisterSync<CenterUpdateRoomSettings>((ctx, msg) =>
+        {
+            var cctx = (CenterSessionContext)ctx;
+            var req = new CenterUpdateRoomSettingsRequest
+            {
+                RoomId = msg.RoomId,
+                SceneType = msg.SceneType,
+                RoomName = msg.RoomName,
+                Password = msg.Password,
+                MaxPlayers = msg.MaxPlayers,
+                IsPrivate = msg.IsPrivate,
+                CustomRules = msg.CustomRules
+            };
+            var res = matchHandler.HandleUpdateRoomSettingsRequestAsync(
+                cctx.RoutedUserId, req, cctx.GatewaySession,
+                (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif))
+                .GetAwaiter().GetResult();
+            ctx.Send(new CenterUpdateRoomSettingsResult
+            {
+                Success = res.Success,
+                Message = res.Message ?? string.Empty
+            });
+        }, jsonFallback: true);
+
+        // 开始游戏
+        dispatcher.RegisterSync<CenterStartRoomGame>((ctx, msg) =>
+        {
+            var cctx = (CenterSessionContext)ctx;
+            var req = new CenterStartRoomGameRequest { RoomId = msg.RoomId };
+            var res = matchHandler.HandleStartRoomGameRequestAsync(
+                cctx.RoutedUserId, req, cctx.GatewaySession,
+                (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif))
+                .GetAwaiter().GetResult();
+            ctx.Send(new CenterStartRoomGameResult
+            {
+                Success = res.Success,
+                Message = res.Message ?? string.Empty,
+                RoomId = res.RoomId ?? string.Empty,
+                BattleNodeId = res.BattleNodeId ?? string.Empty,
+                SceneId = res.SceneId ?? string.Empty,
+                SceneType = res.SceneType ?? string.Empty
+            });
+        }, jsonFallback: true);
+
+        // 房间聊天
+        dispatcher.RegisterSync<CenterRoomChat>((ctx, msg) =>
+        {
+            var cctx = (CenterSessionContext)ctx;
+            var req = new CenterRoomChatRequest { RoomId = msg.RoomId, Content = msg.Content };
+            var res = matchHandler.HandleRoomChatRequestAsync(
+                ctx.ClientSessionId, cctx.RoutedUserId, cctx.RoutedUid, cctx.RoutedNickname,
+                req, cctx.GatewaySession,
+                (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif))
+                .GetAwaiter().GetResult();
+            ctx.Send(new CenterRoomChatResult
+            {
+                Success = res.Success,
+                Message = res.Message ?? string.Empty
+            });
+        }, jsonFallback: true);
+
         return dispatcher;
     }
 

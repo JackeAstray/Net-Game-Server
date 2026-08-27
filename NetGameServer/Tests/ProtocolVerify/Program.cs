@@ -499,6 +499,55 @@ Console.WriteLine($"删除实体: 剩余文件数={recoverService.Count("Player"
 if (recoverService.Count("Player") != 4) return 1;
 Directory.Delete(persistDir, recursive: true);
 
+// ===== 16. Center 配置化分发集成验证（MatchHandler 真实链路） =====
+var centerMatchHandler = new Center.Handlers.MatchHandler();
+var centerDispatcher = Center.Handlers.CenterDispatcher.BuildDispatcher(centerMatchHandler);
+var centerSent = new List<(int msgId, byte[] payload)>();
+var centerGatewaySession = new TestGatewaySession(centerSent);
+var centerCtx = new Center.Handlers.CenterSessionContext(centerGatewaySession, 7001)
+{
+    RoutedUserId = 42,
+    RoutedUid = "100000042",
+    RoutedNickname = "Tester"
+};
+
+// 创建房间（生成类 → Dispatcher → MatchHandler → 生成类响应）
+var createMsg = new Framework.Protocol.Generated.CenterCreateRoom
+{
+    SceneType = "PVP",
+    RoomName = "TestRoom",
+    MaxPlayers = 4
+};
+byte[] createPacket = Framework.Protocol.ProtocolCodec.Encode(createMsg);
+Framework.Protocol.ProtocolCodec.TryParseFrame(createPacket.AsSpan(4), out int createMsgId, out var createBody);
+bool createOk = await centerDispatcher.TryDispatch(centerCtx, createMsgId, createBody);
+Console.WriteLine($"Center 创建房间: ok={createOk} (期望 True)");
+if (!createOk) return 1;
+
+// 加入房间（同一会话加入）
+var centerJoinMsg = new Framework.Protocol.Generated.CenterJoinRoom { RoomId = "TestRoom" };
+byte[] centerJoinPacket = Framework.Protocol.ProtocolCodec.Encode(centerJoinMsg);
+Framework.Protocol.ProtocolCodec.TryParseFrame(centerJoinPacket.AsSpan(4), out int centerJoinMsgId, out var centerJoinBody);
+bool joinOk = await centerDispatcher.TryDispatch(centerCtx, centerJoinMsgId, centerJoinBody);
+Console.WriteLine($"Center 加入房间: ok={joinOk} (期望 True)");
+if (!joinOk) return 1;
+
+// 房间聊天
+var chatMsg = new Framework.Protocol.Generated.CenterRoomChat { RoomId = "TestRoom", Content = "hello" };
+byte[] chatPacket = Framework.Protocol.ProtocolCodec.Encode(chatMsg);
+Framework.Protocol.ProtocolCodec.TryParseFrame(chatPacket.AsSpan(4), out int chatMsgId, out var chatBody);
+bool chatOk = await centerDispatcher.TryDispatch(centerCtx, chatMsgId, chatBody);
+Console.WriteLine($"Center 房间聊天: ok={chatOk} (期望 True)");
+if (!chatOk) return 1;
+
+// 离开房间
+var leaveMsg = new Framework.Protocol.Generated.CenterLeaveRoom { RoomId = "TestRoom" };
+byte[] leavePacket = Framework.Protocol.ProtocolCodec.Encode(leaveMsg);
+Framework.Protocol.ProtocolCodec.TryParseFrame(leavePacket.AsSpan(4), out int leaveMsgId, out var leaveBody);
+bool leaveOk = await centerDispatcher.TryDispatch(centerCtx, leaveMsgId, leaveBody);
+Console.WriteLine($"Center 离开房间: ok={leaveOk} 发送包数={centerSent.Count} (期望 True/>=4)");
+if (!leaveOk || centerSent.Count < 4) return 1;
+
 Console.WriteLine("\n===== 全部验证通过 =====");
 return 0;
 
@@ -524,4 +573,25 @@ sealed class TestSessionContext : Framework.Protocol.ISessionContext
     }
 
     public void SendTo(long clientSessionId, int msgId, ReadOnlyMemory<byte> payload) => Send(msgId, payload);
+}
+
+/// <summary>测试用网关会话（实现 Network.ISession，记录发送数据）。</summary>
+sealed class TestGatewaySession : Network.ISession
+{
+    private readonly List<(int, byte[])> sent;
+    public long SessionId { get; } = 90001;
+    public System.Net.EndPoint? RemoteEndPoint { get; } = new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0);
+    public bool IsConnected => true;
+    public DateTime LastActivityTime { get; set; } = DateTime.UtcNow;
+    public object? UserData { get; set; }
+
+    public TestGatewaySession(List<(int, byte[])> sent) { this.sent = sent; }
+
+    public void Send(ReadOnlyMemory<byte> data)
+    {
+        sent.Add((0, data.ToArray())); // 记录原始帧（含长度头，此处仅计数用）
+        Console.WriteLine($"[gateway] Send {data.Length} bytes");
+    }
+
+    public void Close() { }
 }

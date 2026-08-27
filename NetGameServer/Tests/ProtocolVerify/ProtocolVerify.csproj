@@ -14,6 +14,7 @@
     <ProjectReference Include="..\..\Framework\Framework.Entity\Framework.Entity.csproj" />
     <ProjectReference Include="..\..\Framework\Framework.Tick\Framework.Tick.csproj" />
     <ProjectReference Include="..\..\Network\Network.csproj" />
+    <ProjectReference Include="..\..\Center\Center.csproj" />
   </ItemGroup>
 
 </Project>
