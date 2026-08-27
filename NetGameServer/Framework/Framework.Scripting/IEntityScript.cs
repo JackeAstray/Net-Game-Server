@@ -24,6 +24,19 @@ public interface IEntityScript
 
     /// <summary>收到客户端消息时调用（method 为消息名，args 为解码参数）。</summary>
     void OnMessage(EntityObj entity, string method, object?[] args);
+
+    /// <summary>
+    /// 实体属性变更时调用（Entity.Set 触发；SetSilent 不触发）。
+    /// 事件驱动替代轮询（对标 KBE 属性 change 回调链 / onPropertyChange）。
+    /// </summary>
+    void OnPropertyChanged(EntityObj entity, string name, object? oldValue, object? newValue) { }
+
+    /// <summary>
+    /// 全局共享数据变更时调用（ScriptHost.SetGlobal 触发）。
+    /// 对标 KBE KBEngine.globalData 的订阅式协作，替代 tick 轮询。
+    /// 注意：脚本实例按实体类型共享，本回调会对该类型下的每个实体各调用一次。
+    /// </summary>
+    void OnGlobalChanged(EntityObj entity, string key, object? value) { }
 }
 
 /// <summary>
@@ -37,4 +50,6 @@ public abstract class EntityScriptBase : IEntityScript
     public virtual void OnDestroy(EntityObj entity) { }
     public virtual void OnTick(EntityObj entity, long frame) { }
     public virtual void OnMessage(EntityObj entity, string method, object?[] args) { }
+    public virtual void OnPropertyChanged(EntityObj entity, string name, object? oldValue, object? newValue) { }
+    public virtual void OnGlobalChanged(EntityObj entity, string key, object? value) { }
 }

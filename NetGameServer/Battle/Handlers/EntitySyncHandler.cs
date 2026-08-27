@@ -14,8 +14,10 @@ namespace Battle.Handlers
     /// <summary>
     /// 实体状态同步处理器（对标 KBE Witness）。
     /// 基于实体框架：客户端上报位置/朝向 → 更新实体属性（脏标记）→
-    /// 增量打包脏属性（PropertyCodec）→ 向视野内玩家广播 EntityDeltaSync；
+    /// 按同步权限分级增量打包脏属性（PropertyCodec）→ 向视野内玩家广播 EntityDeltaSync；
     /// 玩家进入时下发全量 EntitySnapshot。
+    /// 每 tick 的 Witness 广播（TickWitness）负责推送脚本/AI 驱动的属性变化
+    /// （NPC 巡逻、回血、冷却、掉落），无需客户端上报。
     /// </summary>
     public class EntitySyncHandler
     {
@@ -24,20 +26,6 @@ namespace Battle.Handlers
         public EntitySyncHandler(SceneManager sceneManager)
         {
             this.sceneManager = sceneManager;
-        }
-
-        /// <summary>从玩家所在场景移除实体；若场景使用 AOI 同时移除。</summary>
-        public void OnPlayerLeave(long sessionId)
-        {
-            var scene = sceneManager.GetSceneByPlayer(sessionId);
-            if (scene != null)
-            {
-                scene.EntityManager.RemoveEntity(sessionId);
-                if (scene.UseAoi && scene.AoiManager != null)
-                {
-                    scene.AoiManager.RemoveEntity(sessionId);
-                }
-            }
         }
 
         /// <summary>
@@ -60,82 +48,175 @@ namespace Battle.Handlers
             entity.Set("Position", new Float3(request.Position?.X ?? 0, request.Position?.Y ?? 0, request.Position?.Z ?? 0));
             entity.Set("Rotation", new Float3(request.Rotation?.X ?? 0, request.Rotation?.Y ?? 0, request.Rotation?.Z ?? 0));
 
-            // 取脏属性并增量打包
-            var dirty = entity.TakeDirtyProperties();
-            if (dirty.Length > 0)
+            if (!entity.IsDirty)
             {
-                byte[] props = PropertyCodec.SerializeChanges(entity, dirty);
-
-                if (scene.UseAoi && scene.AoiManager != null)
-                {
-                    // AOI 网格更新（跨格子时补发进出视野）
-                    bool moved = scene.AoiManager.AddOrUpdateEntity(sessionId, entity, out var oldGrid, out var newGrid);
-                    if (moved)
-                    {
-                        scene.AoiManager.CalculateGridDiff(oldGrid, newGrid, out var enterEntities, out var leaveEntities);
-
-                        if (leaveEntities.Count > 0)
-                        {
-                            var leaveNotif = new EntityLeaveViewNotification { EntityIds = new List<long> { sessionId } };
-                            byte[] leavePayload = Shared.Json.SerializeToUtf8Bytes(leaveNotif);
-                            foreach (var targetId in leaveEntities)
-                            {
-                                if (targetId == sessionId) continue;
-                                SendPacket(gatewaySession, targetId, GenIds.EntityLeaveViewNotify, leavePayload);
-                            }
-                        }
-
-                        if (enterEntities.Count > 0)
-                        {
-                            byte[] snapshot = PropertyCodec.SerializeAll(entity);
-                            foreach (var targetId in enterEntities)
-                            {
-                                if (targetId == sessionId) continue;
-                                SendSnapshot(gatewaySession, targetId, sessionId, snapshot);
-                            }
-                        }
-                    }
-
-                    // 向周边玩家广播增量
-                    var surrounding = scene.AoiManager.GetSurroundingEntities(newGrid.Item1, newGrid.Item2);
-                    BroadcastDelta(entity, dirty, props, surrounding, gatewaySession);
-                }
-                else
-                {
-                    // 小房间：向场景内所有玩家广播增量
-                    BroadcastDelta(entity, dirty, props, scene.EntityManager.GetAllSessionIds(), gatewaySession);
-                }
+                return Task.CompletedTask;
             }
+
+            // AOI 网格更新（跨格子时补发进出视野）
+            if (scene.UseAoi && scene.AoiManager != null)
+            {
+                UpdateAoiGrid(scene, entity);
+            }
+
+            // 按同步权限分级广播脏属性增量（Witness）
+            BroadcastDirty(entity, scene);
 
             return Task.CompletedTask;
         }
 
-        /// <summary>向目标玩家广播脏属性增量（对标 Witness 增量下发）。</summary>
-        private void BroadcastDelta(Framework.Entity.Entity entity, string[] dirty, byte[] props, IEnumerable<long> targetSessionIds, Network.ISession gatewaySession)
+        /// <summary>
+        /// 每 tick 的 Witness 广播（对标 KBE Witness 主循环）：
+        /// 脚本/AI 驱动的属性变化无需客户端上报即可增量广播给视野内玩家。
+        /// 由 BattleServerApp 的 TickEngine 驱动。
+        /// </summary>
+        public void TickWitness()
         {
-            var delta = new EntityDeltaSync
+            foreach (var scene in sceneManager.GetAllScenes())
             {
-                EntityId = entity.EntityId,
-                Props = props
-            };
-            byte[] payload = delta.Serialize();
-            foreach (var targetSessionId in targetSessionIds)
-            {
-                if (targetSessionId == entity.EntityId) continue;
-                SendPacket(gatewaySession, targetSessionId, GenIds.EntityDeltaSync, payload);
+                foreach (var entity in scene.EntityManager.GetAllEntities())
+                {
+                    if (!entity.IsDirty) continue;
+
+                    BroadcastDirty(entity, scene);
+
+                    // 脚本移动的实体（NPC 巡逻）需要同步 AOI 网格，保证视野正确
+                    if (scene.UseAoi && scene.AoiManager != null)
+                    {
+                        UpdateAoiGrid(scene, entity);
+                    }
+                }
             }
         }
 
-        /// <summary>向单个玩家发送全量快照。</summary>
-        private void SendSnapshot(Network.ISession gatewaySession, long targetSessionId, long entityId, byte[] props)
+        /// <summary>
+        /// 按同步权限分级广播脏属性（对标 KBE Witness 的 ALL_CLIENTS / OWN_CLIENT 分级）：
+        /// - AllClients / CellPublic → 视野内/场景内所有玩家
+        /// - OwnClient → 仅实体属主客户端（Entity.OwnerClientId）
+        /// </summary>
+        private void BroadcastDirty(Framework.Entity.Entity entity, BattleScene scene)
         {
-            var snapshot = new EntitySnapshot
+            var dirty = entity.TakeDirtyProperties();
+            if (dirty.Length == 0) return;
+
+            var allScopeNames = new List<string>(dirty.Length);
+            var ownScopeNames = new List<string>();
+
+            foreach (var name in dirty)
             {
-                EntityId = entityId,
-                Props = props
-            };
-            byte[] payload = snapshot.Serialize();
-            SendPacket(gatewaySession, targetSessionId, GenIds.EntitySnapshot, payload);
+                if (!entity.Def.TryGetProperty(name, out var prop)) continue;
+                if (prop.SyncScope == EntitySyncScope.OwnClient)
+                {
+                    ownScopeNames.Add(name);
+                }
+                else
+                {
+                    allScopeNames.Add(name);
+                }
+            }
+
+            if (allScopeNames.Count > 0)
+            {
+                byte[] props = PropertyCodec.SerializeChanges(entity, allScopeNames);
+                BroadcastToTargets(entity, props, GetBroadcastTargets(scene, entity));
+            }
+
+            if (ownScopeNames.Count > 0 && entity.OwnerClientId > 0)
+            {
+                byte[] props = PropertyCodec.SerializeChanges(entity, ownScopeNames);
+                BroadcastToTargets(entity, props, new List<long> { entity.OwnerClientId });
+            }
+        }
+
+        /// <summary>
+        /// 计算广播目标：AOI 场景取周边九宫格内玩家，小房间取场景内全部玩家。
+        /// 属主（Entity.OwnerClientId，含实体自身）始终可见自身状态——受击掉血、冷却、背包等
+        /// 变更必须回发属主客户端（对标 KBE：owner 永远在自身 witness 内）。
+        /// </summary>
+        private List<long> GetBroadcastTargets(BattleScene scene, Framework.Entity.Entity entity)
+        {
+            var players = GetPlayerSet(scene);
+            var result = new List<long>();
+            if (entity.OwnerClientId > 0 && players.Contains(entity.OwnerClientId))
+            {
+                result.Add(entity.OwnerClientId);
+            }
+
+            if (scene.UseAoi && scene.AoiManager != null)
+            {
+                var pos = entity.Get<Framework.Entity.Float3>("Position");
+                var (gx, gz) = scene.AoiManager.GetGridCoordinate(pos);
+                foreach (var id in scene.AoiManager.GetSurroundingEntities(gx, gz))
+                {
+                    if (id != entity.EntityId && players.Contains(id) && !result.Contains(id)) result.Add(id);
+                }
+                return result;
+            }
+
+            foreach (var id in players)
+            {
+                if (id != entity.EntityId && !result.Contains(id)) result.Add(id);
+            }
+            return result;
+        }
+
+        /// <summary>向目标客户端发送增量（每个目标经其网关会话定向投递，网关会话未知则跳过）。</summary>
+        private void BroadcastToTargets(Framework.Entity.Entity entity, byte[] props, List<long> targetIds)
+        {
+            if (targetIds.Count == 0) return;
+            var delta = new EntityDeltaSync { EntityId = entity.EntityId, Props = props };
+            byte[] payload = delta.Serialize();
+            foreach (var targetId in targetIds)
+            {
+                var gatewaySession = BattleServerApp.GetGatewaySessionByClient(targetId);
+                if (gatewaySession == null) continue;
+                SendPacket(gatewaySession, targetId, GenIds.EntityDeltaSync, payload);
+            }
+        }
+
+        /// <summary>场景内玩家会话集合（广播目标只允许玩家；NPC/玩法实体不参与收包）。</summary>
+        private HashSet<long> GetPlayerSet(BattleScene scene) => new(sceneManager.GetPlayerSessionIds(scene.SceneId));
+
+        /// <summary>实体 AOI 网格更新：跨格子时向受影响玩家补发进入快照/离开通知（目标仅限玩家）。</summary>
+        private void UpdateAoiGrid(BattleScene scene, Framework.Entity.Entity entity)
+        {
+            var aoi = scene.AoiManager;
+            if (aoi == null) return;
+
+            bool moved = aoi.AddOrUpdateEntity(entity.EntityId, entity, out var oldGrid, out var newGrid);
+            if (!moved) return;
+
+            var players = GetPlayerSet(scene);
+            aoi.CalculateGridDiff(oldGrid, newGrid, out var enterEntities, out var leaveEntities);
+
+            if (leaveEntities.Count > 0)
+            {
+                var leaveNotif = new EntityLeaveViewNotification { EntityIds = new List<long> { entity.EntityId } };
+                byte[] leavePayload = Shared.Json.SerializeToUtf8Bytes(leaveNotif);
+                foreach (var targetId in leaveEntities)
+                {
+                    if (targetId == entity.EntityId || !players.Contains(targetId)) continue;
+                    var gatewaySession = BattleServerApp.GetGatewaySessionByClient(targetId);
+                    if (gatewaySession != null)
+                    {
+                        SendPacket(gatewaySession, targetId, GenIds.EntityLeaveViewNotify, leavePayload);
+                    }
+                }
+            }
+
+            if (enterEntities.Count > 0)
+            {
+                byte[] snapshot = PropertyCodec.SerializeAll(entity);
+                foreach (var targetId in enterEntities)
+                {
+                    if (targetId == entity.EntityId || !players.Contains(targetId)) continue;
+                    var gatewaySession = BattleServerApp.GetGatewaySessionByClient(targetId);
+                    if (gatewaySession != null)
+                    {
+                        SendSnapshot(gatewaySession, targetId, entity.EntityId, snapshot);
+                    }
+                }
+            }
         }
 
         /// <summary>玩家进入场景：创建实体、加入 AOI、下发全量快照给周边玩家。</summary>
@@ -194,6 +275,7 @@ namespace Battle.Handlers
             var scene = sceneManager.GetSceneByPlayer(sessionId);
             if (scene == null) return;
 
+            var players = GetPlayerSet(scene);
             var targetIds = new List<long>();
 
             if (scene.UseAoi && scene.AoiManager != null)
@@ -203,7 +285,10 @@ namespace Battle.Handlers
                 {
                     var position = entity.Get<Float3>("Position");
                     var grid = scene.AoiManager.GetGridCoordinate(position);
-                    targetIds = scene.AoiManager.GetSurroundingEntities(grid.Item1, grid.Item2);
+                    foreach (var id in scene.AoiManager.GetSurroundingEntities(grid.Item1, grid.Item2))
+                    {
+                        if (id != sessionId && players.Contains(id)) targetIds.Add(id);
+                    }
                 }
 
                 scene.AoiManager.RemoveEntity(sessionId);
@@ -211,7 +296,7 @@ namespace Battle.Handlers
             }
             else
             {
-                targetIds = scene.EntityManager.GetAllSessionIds().Where(id => id != sessionId).ToList();
+                targetIds = players.Where(id => id != sessionId).ToList();
                 scene.EntityManager.RemoveEntity(sessionId);
             }
 
@@ -223,26 +308,29 @@ namespace Battle.Handlers
                 byte[] leavePayload = Shared.Json.SerializeToUtf8Bytes(leaveNotif);
                 foreach (var targetId in targetIds)
                 {
-                    if (targetId == sessionId) continue;
                     SendPacket(gatewaySession, targetId, GenIds.EntityLeaveViewNotify, leavePayload);
                 }
             }
         }
 
-        /// <summary>组装 [MsgId(4)][Payload(带 __targetSessionId 路由元数据)] 并发送。</summary>
+        /// <summary>组装 [MsgId(4)][Payload(带 __targetSessionId 路由元数据)] 并零拷贝发送。</summary>
         private void SendPacket(Network.ISession gatewaySession, long targetSessionId, int msgId, byte[] payload)
         {
             byte[] routedPayload = Shared.RouteMetadata.AttachTargetSessionId(payload, targetSessionId);
             byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
-            try
+            Network.PacketSender.Send(gatewaySession, packet, totalLength);
+        }
+
+        /// <summary>向单个玩家发送全量快照。</summary>
+        private void SendSnapshot(Network.ISession gatewaySession, long targetSessionId, long entityId, byte[] props)
+        {
+            var snapshot = new EntitySnapshot
             {
-                gatewaySession.Send(packet.AsSpan(0, totalLength).ToArray());
-            }
-            finally
-            {
-                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
-            }
+                EntityId = entityId,
+                Props = props
+            };
+            byte[] payload = snapshot.Serialize();
+            SendPacket(gatewaySession, targetSessionId, GenIds.EntitySnapshot, payload);
         }
     }
 }
-

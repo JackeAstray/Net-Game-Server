@@ -328,7 +328,7 @@ namespace DB
                     }
                 }
 
-                Shared.Log.Info($"DB <- Client 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{data.Length - 4}");
+                Shared.Log.Debug("DB <- Client 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint!, msgId, data.Length, data.Length - 4);
 
                 // 新协议分发优先：提取 RequestId 路由元数据后，交由强类型分发器（MemoryPack/JSON 双格式）。
                 ReadOnlyMemory<byte> payload = data.Slice(4);

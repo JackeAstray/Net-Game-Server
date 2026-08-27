@@ -102,7 +102,7 @@ namespace Center
                     }
                 }
 
-                Log.Info($"Center <- Node 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{payloadLength}");
+                Log.Debug("Center <- Node 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint, msgId, data.Length, payloadLength);
                 byte[] payload = data.Slice(4).ToArray();
 
                 long originalSessionId = 0;
@@ -159,9 +159,9 @@ namespace Center
                 {
                     try
                     {
-                        Log.Info($"Center 开始处理消息 MsgId:{msgId} SessionId:{session.SessionId} OriginalSessionId:{originalSessionId} PayloadLength:{payload.Length}");
+                        Log.Debug("Center 开始处理消息 MsgId:{MsgId} SessionId:{SessionId} OriginalSessionId:{OriginalSessionId} PayloadLength:{PayloadLength}", msgId, session.SessionId, originalSessionId, payload.Length);
                         await handlerAction(payload, session, originalSessionId);
-                        Log.Info($"Center 完成处理消息 MsgId:{msgId} SessionId:{session.SessionId} OriginalSessionId:{originalSessionId}");
+                        Log.Debug("Center 完成处理消息 MsgId:{MsgId} SessionId:{SessionId} OriginalSessionId:{OriginalSessionId}", msgId, session.SessionId, originalSessionId);
                     }
                     catch (Exception ex)
                     {

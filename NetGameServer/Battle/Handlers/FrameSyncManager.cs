@@ -12,7 +12,8 @@ namespace Battle.Handlers;
 /// <summary>
 /// 帧同步管理器（对标 KBE 的 gameUpdateHertz 逻辑 tick）：
 /// - 客户端通过 BattleFrameSync(40003) 上报输入（入队）
-/// - TickEngine 每帧聚合每个场景的玩家输入，生成统一的帧数据广播给场景内玩家
+/// - TickEngine 每帧按**场景独立推进帧号**，聚合该场景玩家输入，生成权威帧广播给场景内玩家；
+///   无输入也广播空帧（确定性帧同步：客户端可对齐服务端帧节奏与帧号）
 /// 协议（客户端视角）：
 ///   上行：BattleFrameSync { FrameId, Inputs: [PlayerInput] }（客户端预测帧上报）
 ///   下行：BattleFrameSync { FrameId, Inputs: [PlayerInput { InputId=玩家SessionId, ... }] }（服务端权威帧）
@@ -25,10 +26,8 @@ public sealed class FrameSyncManager
     /// <summary>场景 -> 玩家输入队列（收包线程入队，tick 线程消费）</summary>
     private readonly ConcurrentDictionary<string, ConcurrentQueue<(long sessionId, PlayerInput input)>> inputQueues = new();
 
-    /// <summary>服务端当前帧号</summary>
-    private long serverFrame;
-
-    public long CurrentFrame => Volatile.Read(ref serverFrame);
+    /// <summary>场景 -> 服务端帧号（每场景独立推进，多场景互不干扰）</summary>
+    private readonly ConcurrentDictionary<string, long> sceneFrames = new();
 
     public FrameSyncManager(SceneManager sceneManager, TickEngine tickEngine)
     {
@@ -38,7 +37,7 @@ public sealed class FrameSyncManager
     }
 
     /// <summary>
-    /// 客户端上报输入（由 MessageRouter 调用）。
+    /// 客户端上报输入（由 MessageRouter 调用；消息队列模式下在 tick 线程执行）。
     /// </summary>
     public void EnqueueInput(long clientSessionId, BattleFrameSync request)
     {
@@ -56,44 +55,42 @@ public sealed class FrameSyncManager
     }
 
     /// <summary>
-    /// tick 回调：聚合各场景输入并广播权威帧。
+    /// tick 回调：所有有玩家的场景统一推进帧号并广播权威帧（无输入时广播空帧）。
     /// </summary>
     private void OnTick(long frame)
     {
-        foreach (var pair in inputQueues)
+        foreach (var scene in sceneManager.GetAllScenes())
         {
-            string sceneId = pair.Key;
-            var queue = pair.Value;
-            var scene = sceneManager.GetScene(sceneId);
-            if (scene == null)
+            var sessionIds = sceneManager.GetPlayerSessionIds(scene.SceneId);
+            if (sessionIds.Length == 0)
             {
-                continue;
+                continue; // 无玩家不广播
             }
+
+            // 场景独立帧号：从 1 开始递增
+            long sceneFrame = sceneFrames.AddOrUpdate(scene.SceneId, 1, (_, v) => v + 1);
 
             // 聚合本帧所有玩家输入
             var inputs = new List<PlayerInput>();
-            while (queue.TryDequeue(out var entry))
+            if (inputQueues.TryGetValue(scene.SceneId, out var queue))
             {
-                var input = entry.input;
-                input.InputId = (int)entry.sessionId; // 用玩家会话ID标识输入来源
-                inputs.Add(input);
+                while (queue.TryDequeue(out var entry))
+                {
+                    var input = entry.input;
+                    input.InputId = entry.sessionId; // 用玩家会话ID标识输入来源（long 全量，不截断）
+                    inputs.Add(input);
+                }
             }
 
-            if (inputs.Count == 0)
-            {
-                continue; // 无输入不广播（可改为心跳帧）
-            }
-
-            long currentFrame = Interlocked.Increment(ref serverFrame);
             var frameMsg = new BattleFrameSync
             {
-                FrameId = (int)currentFrame,
+                FrameId = (int)sceneFrame,
                 Inputs = inputs
             };
             byte[] payload = frameMsg.Serialize();
 
             // 广播给场景内所有玩家（帧同步是全局广播，无需 AOI）
-            foreach (var sessionId in scene.EntityManager.GetAllSessionIds())
+            foreach (var sessionId in sessionIds)
             {
                 SendFramePacket(sessionId, payload);
             }

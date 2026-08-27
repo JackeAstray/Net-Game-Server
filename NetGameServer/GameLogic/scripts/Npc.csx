@@ -11,13 +11,15 @@ public class NpcScript : EntityScriptBase
 {
     public override string EntityType => "Npc";
 
-    private readonly Random random = new(42);
+    private Random random = new(42);
     private int tickCount;
     private float baseX;
     private bool isDead;
 
     public override void OnCreate(Framework.Entity.Entity entity)
     {
+        // 按实体 ID 派生随机种子：避免所有 NPC 出生坐标完全一致（固定种子问题）
+        random = new Random((int)(entity.EntityId & 0x7FFFFFFF));
         baseX = random.Next(-100, 100);
         entity.Set("Hp", 50);
         entity.Set("MaxHp", 50);

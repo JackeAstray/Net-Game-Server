@@ -15,6 +15,9 @@ namespace Battle.Handlers
         /// </summary>
         private readonly ConcurrentDictionary<string, BattleScene> scenes = new();
 
+        /// <summary>场景创建事件（宿主用于生成场景级玩法实体、注册脚本实体管理器等）。</summary>
+        public event Action<BattleScene>? SceneCreated;
+
         /// <summary>
         /// 玩家会话 Id 到所在场景 Id 的映射。
         /// 用于快速根据玩家路由到其所在场景进行消息处理。
@@ -24,12 +27,33 @@ namespace Battle.Handlers
         /// <summary>
         /// 根据场景配置获取已有场景或创建新场景。
         /// 如果指定 SceneId 的场景已存在则返回该场景，否则创建并返回新的 BattleScene 实例。
+        /// 新场景创建后会触发 SceneCreated 事件（场景级玩法实体生成钩子）。
         /// </summary>
         /// <param name="config">用于创建场景的配置信息，必须包含 SceneId。</param>
         /// <returns>对应的 BattleScene 实例。</returns>
         public BattleScene GetOrCreateScene(SceneConfig config)
         {
-            return scenes.GetOrAdd(config.SceneId, _ => new BattleScene(config));
+            return scenes.GetOrAdd(config.SceneId, id =>
+            {
+                var scene = new BattleScene(config);
+                SceneCreated?.Invoke(scene);
+                return scene;
+            });
+        }
+
+        /// <summary>
+        /// 根据实体 ID 查找其所在场景（跨场景实体路由/脚本动作分发用）。
+        /// </summary>
+        public BattleScene? FindSceneByEntityId(long entityId)
+        {
+            foreach (var scene in scenes.Values)
+            {
+                if (scene.EntityManager.GetEntity(entityId) != null)
+                {
+                    return scene;
+                }
+            }
+            return null;
         }
 
         /// <summary>

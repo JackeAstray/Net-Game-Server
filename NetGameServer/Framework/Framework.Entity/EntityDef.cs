@@ -16,7 +16,26 @@ public enum EntityPropertyType : byte
 }
 
 /// <summary>
-/// 实体属性描述：名称 + 类型。
+/// 属性同步权限分级（对标 KBE Witness 的 ALL_CLIENTS / OWN_CLIENT / CELL_PUBLIC / CELL_PRIVATE）：
+/// 决定脏属性增量广播时哪些客户端可见，避免隐私属性（冷却、背包、任务内部状态）泄露给无关玩家。
+/// </summary>
+public enum EntitySyncScope : byte
+{
+    /// <summary>广播给所有视野内客户端（默认）。</summary>
+    AllClients = 0,
+
+    /// <summary>仅广播给实体属主客户端（Entity.OwnerClientId）。</summary>
+    OwnClient = 1,
+
+    /// <summary>同空间（cell）内所有客户端可见（与 AllClients 同为公开，预留区分语义）。</summary>
+    CellPublic = 2,
+
+    /// <summary>仅服务端内部使用，不参与客户端广播（等价 SyncToClient=false）。</summary>
+    CellPrivate = 3,
+}
+
+/// <summary>
+/// 实体属性描述：名称 + 类型 + 同步权限。
 /// 由 EntityDef 持有，驱动属性的二进制编解码（对齐 KBE PropertyDescription）。
 /// </summary>
 public sealed class EntityProperty
@@ -26,6 +45,9 @@ public sealed class EntityProperty
 
     /// <summary>该属性是否参与脏标记增量同步（对标 KBE 的 client 可见属性）。</summary>
     public bool SyncToClient { get; init; } = true;
+
+    /// <summary>同步权限分级（默认 AllClients）。</summary>
+    public EntitySyncScope SyncScope { get; init; } = EntitySyncScope.AllClients;
 
     public override string ToString() => $"{Name}:{Type}";
 }
@@ -49,6 +71,9 @@ public sealed class EntityDef
 
     public EntityDef Add(string name, EntityPropertyType type, bool syncToClient = true)
         => Add(new EntityProperty { Name = name, Type = type, SyncToClient = syncToClient });
+
+    public EntityDef Add(string name, EntityPropertyType type, bool syncToClient, EntitySyncScope scope)
+        => Add(new EntityProperty { Name = name, Type = type, SyncToClient = syncToClient, SyncScope = scope });
 
     public bool TryGetProperty(string name, out EntityProperty property) => properties.TryGetValue(name, out property!);
 

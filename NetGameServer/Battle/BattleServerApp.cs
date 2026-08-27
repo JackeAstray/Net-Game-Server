@@ -19,8 +19,13 @@ namespace Battle
         private static Framework.Entity.EntityPersistenceService? persistService;
         private static System.Threading.CancellationTokenSource? centerHeartbeatCts;
         private static Battle.Handlers.SceneManager? sceneManager;
+        private static Framework.Tick.TickEngine? tickEngine;
+        private static Battle.Handlers.EntitySyncHandler? entitySyncHandler;
         private static TcpClientWrapper? centerClient;
         public static string CurrentNodeId { get; private set; } = string.Empty;
+
+        /// <summary>挂起玩家（断线重连）：clientSessionId -> 挂起截止时间（Ticks）。</summary>
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, long> suspendedPlayers = new();
 
         /// <summary>通知游戏逻辑脚本：实体创建（加入场景）。</summary>
         public static void NotifyEntityCreated(Framework.Entity.Entity entity)
@@ -37,6 +42,8 @@ namespace Battle
         /// <summary>
         /// 崩溃恢复：按持久化数据重建玩家实体并恢复属性（对标 KBE restore_entity_handler）。
         /// 返回恢复的实体列表（加入场景前由调用方绑定）。
+        /// 注意：这是全量恢复接口（启动/运维用），玩家加入路径请使用 <see cref="LoadPersistedPlayer"/> 单条加载，
+        /// 避免每次加入都扫描全部存档文件。
         /// </summary>
         public static List<Framework.Entity.Entity> RestorePersistedPlayers()
         {
@@ -45,6 +52,161 @@ namespace Battle
                 return new List<Framework.Entity.Entity>();
             }
             return persistService.RestoreAll("Player");
+        }
+
+        /// <summary>
+        /// 按玩家会话 ID 单条加载持久化实体（O(1) 文件访问）。
+        /// 玩家加入房间时使用，替代全量目录扫描；无存档时返回 null。
+        /// </summary>
+        public static Framework.Entity.Entity? LoadPersistedPlayer(long clientSessionId)
+        {
+            try
+            {
+                return persistService?.LoadEntityById("Player", clientSessionId);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, $"玩家实体持久化加载失败 EntityId:{clientSessionId}");
+                return null;
+            }
+        }
+
+        private static long gameplayEntitySeq;
+
+        /// <summary>玩法实体 ID 分配（高位基址，避免与网关会话 ID 冲突）。</summary>
+        private static long NextGameplayEntityId() => (1L << 40) + System.Threading.Interlocked.Increment(ref gameplayEntitySeq);
+
+        /// <summary>
+        /// 场景创建时生成场景级玩法实体（Npc 巡逻 / Quest 任务）：
+        /// 实体骨架入场景管理器 + AOI 登记 + 通知脚本 OnCreate 初始化属性。
+        /// 使 GameLogic/scripts 的玩法脚本在生产运行时真正生效（此前脚本只在测试套件中验证）。
+        /// </summary>
+        public static void SpawnSceneGameplayEntities(Battle.Handlers.BattleScene scene)
+        {
+            if (scene == null) return;
+            for (int i = 0; i < 3; i++)
+            {
+                RegisterSceneEntity(scene, Battle.Entities.GameplayEntityDefs.Npc.CreateEntity(NextGameplayEntityId()));
+            }
+            RegisterSceneEntity(scene, Battle.Entities.GameplayEntityDefs.Quest.CreateEntity(NextGameplayEntityId()));
+            Log.Info($"场景玩法实体已生成 SceneId:{scene.SceneId}");
+        }
+
+        /// <summary>玩家加入时生成玩家私有玩法实体（Skill / Item），绑定属主（OWN_CLIENT 定向同步）。</summary>
+        public static void SpawnPlayerGameplayEntities(Battle.Handlers.BattleScene scene, long clientSessionId)
+        {
+            if (scene == null) return;
+            var skill = Battle.Entities.GameplayEntityDefs.Skill.CreateEntity(NextGameplayEntityId());
+            skill.OwnerClientId = clientSessionId;
+            RegisterSceneEntity(scene, skill);
+
+            var item = Battle.Entities.GameplayEntityDefs.Item.CreateEntity(NextGameplayEntityId());
+            item.OwnerClientId = clientSessionId;
+            RegisterSceneEntity(scene, item);
+        }
+
+        private static void RegisterSceneEntity(Battle.Handlers.BattleScene scene, Framework.Entity.Entity entity)
+        {
+            scene.EntityManager.AddOrUpdateEntity(entity.EntityId, entity);
+            if (scene.UseAoi && scene.AoiManager != null)
+            {
+                scene.AoiManager.AddOrUpdateEntity(entity.EntityId, entity, out _, out _);
+            }
+            NotifyEntityCreated(entity);
+        }
+
+        /// <summary>分发通用实体脚本动作（客户端 ScriptAction 消息 → 脚本 OnMessage）。</summary>
+        public static void DispatchEntityScriptAction(long entityId, string method, object?[] args)
+        {
+            try
+            {
+                var scene = sceneManager?.FindSceneByEntityId(entityId);
+                var entity = scene?.EntityManager.GetEntity(entityId);
+                if (entity == null)
+                {
+                    Log.Warning($"实体脚本动作未找到目标实体 EntityId:{entityId} Method:{method}");
+                    return;
+                }
+                scriptHost?.DispatchMessage(entity, method, args);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, $"实体脚本动作分发异常 EntityId:{entityId} Method:{method}");
+            }
+        }
+
+        /// <summary>
+        /// 玩家断线挂起（对标 KBE 断线恢复）：实体保留在场景/AOI（其他玩家看到冻结化身），
+        /// 宽限期（ReconnectGraceSeconds，默认 30s）内客户端重连（PlayerSessionResume）即恢复在线；
+        /// 超时未恢复则完整离场。返回 true 表示已挂起。
+        /// </summary>
+        public static bool SuspendPlayerOnDisconnect(Battle.Handlers.BattleScene scene, long clientSessionId, Network.ISession gatewaySession)
+        {
+            if (scene == null || clientSessionId <= 0) return false;
+            var entity = scene.EntityManager.GetEntity(clientSessionId);
+            if (entity == null) return false;
+
+            int grace = ConfigHelper.GetConfig<int>("ReconnectGraceSeconds");
+            if (grace <= 0) return false; // 配置 <= 0：关闭重连，立即离场
+
+            // 断线即存档（崩溃/重连超时后仍可恢复）
+            PersistPlayer(entity);
+            suspendedPlayers[clientSessionId] = DateTime.UtcNow.AddSeconds(grace).Ticks;
+
+            tickEngine?.AddTimer(grace * 1000, () =>
+            {
+                // 宽限期结束仍未重连：完整离场
+                if (suspendedPlayers.TryRemove(clientSessionId, out _))
+                {
+                    var sc = sceneManager?.GetScene(scene.SceneId);
+                    if (sc != null)
+                    {
+                        var gw = GetGatewaySessionByClient(clientSessionId);
+                        LeaveScene(sc, clientSessionId, gw ?? gatewaySession);
+                        Log.Info($"玩家 {clientSessionId} 重连超时，实体已离场");
+                    }
+                }
+            });
+            Log.Info($"玩家 {clientSessionId} 断线，实体挂起 {grace}s 等待重连");
+            return true;
+        }
+
+        /// <summary>重连恢复：取消挂起，实体恢复在线（实体与场景席位全程保留）。</summary>
+        public static void ResumePlayer(long clientSessionId)
+        {
+            if (suspendedPlayers.TryRemove(clientSessionId, out _))
+            {
+                Log.Info($"玩家 {clientSessionId} 重连成功，实体恢复在线");
+            }
+        }
+
+        /// <summary>
+        /// 完整离场：持久化 + 销毁脚本实体 + 移除场景/AOI + 通知周边 + 解绑 + 同步 Center。
+        /// 断线挂起超时与显式离场共用。
+        /// </summary>
+        public static void LeaveScene(Battle.Handlers.BattleScene scene, long clientSessionId, Network.ISession? gatewaySession)
+        {
+            var entity = scene.EntityManager.GetEntity(clientSessionId);
+            if (entity != null)
+            {
+                PersistPlayer(entity);
+                NotifyEntityDestroyed(entity);
+            }
+
+            if (gatewaySession != null)
+            {
+                entitySyncHandler?.OnPlayerLeave(clientSessionId, gatewaySession);
+            }
+            else
+            {
+                // 无可用网关会话（连接已断）：直接移除实体与 AOI、解绑
+                scene.EntityManager.RemoveEntity(clientSessionId);
+                scene.AoiManager?.RemoveEntity(clientSessionId);
+                sceneManager?.UnbindPlayer(clientSessionId);
+            }
+
+            SyncRoomPlayerCount(scene.SceneId);
+            SyncRoomMemberLeave(scene.SceneId, clientSessionId);
         }
 
         /// <summary>持久化保存玩家实体（离开/下线时调用）。</summary>
@@ -62,6 +224,112 @@ namespace Battle
 
         /// <summary>客户端会话 -> 网关会话 映射（帧同步广播用；收包时登记，断开时清除）</summary>
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, Network.ISession> clientGatewaySessions = new();
+
+        // ===== 单线程消息队列（对标 KBE mailbox）=====
+        // 收包线程只入队，TickEngine 主循环串行消费 —— 实体/场景状态只在 tick 线程被读写，
+        // 彻底消除"声称单线程、实际并发写 Entity.values"的数据竞争（见 KBE-Gap-Review 三-1）。
+
+        /// <summary>入站消息（payload 已剥离路由元数据）。</summary>
+        private readonly struct InboundMessage
+        {
+            public readonly Network.ISession Session;
+            public readonly int MsgId;
+            public readonly byte[] Payload;
+            public readonly long OriginalSessionId;
+
+            public InboundMessage(Network.ISession session, int msgId, byte[] payload, long originalSessionId)
+            {
+                Session = session;
+                MsgId = msgId;
+                Payload = payload;
+                OriginalSessionId = originalSessionId;
+            }
+        }
+
+        private static readonly System.Collections.Concurrent.ConcurrentQueue<InboundMessage> inboundQueue = new();
+        private static long queuedInboundCount;
+
+        /// <summary>队列上限：超过则丢弃新消息并告警（防止无界增长；正常流量远低于此）。</summary>
+        private const int MaxInboundQueued = 16384;
+
+        /// <summary>入队入站消息（收包线程调用；不阻塞）。</summary>
+        private static void EnqueueInbound(Network.ISession session, int msgId, byte[] payload, long originalSessionId)
+        {
+            if (System.Threading.Interlocked.Read(ref queuedInboundCount) >= MaxInboundQueued)
+            {
+                Log.Warning($"Battle 入站消息队列已满，丢弃消息 MsgId:{msgId} SessionId:{session.SessionId}");
+                return;
+            }
+            inboundQueue.Enqueue(new InboundMessage(session, msgId, payload, originalSessionId));
+            System.Threading.Interlocked.Increment(ref queuedInboundCount);
+        }
+
+        /// <summary>tick 线程排空消息队列（每帧开头调用一次，串行处理全部入站消息）。</summary>
+        private static void DrainInboundMessages()
+        {
+            while (inboundQueue.TryDequeue(out var inbound))
+            {
+                System.Threading.Interlocked.Decrement(ref queuedInboundCount);
+                ProcessInboundMessage(inbound);
+            }
+        }
+
+        /// <summary>
+        /// 在 tick 线程内处理一条入站消息：新协议分发优先（强类型 + MemoryPack/JSON 双格式兼容），旧路由回退。
+        /// 所有 Battle 处理器均同步完成（Task.FromResult/CompletedTask），此处安全使用 GetResult 串行执行。
+        /// </summary>
+        private static void ProcessInboundMessage(InboundMessage inbound)
+        {
+            var session = inbound.Session;
+            int msgId = inbound.MsgId;
+            byte[] payload = inbound.Payload;
+            long originalSessionId = inbound.OriginalSessionId;
+
+            try
+            {
+                if (dispatcher != null && dispatcher.TryDispatch(new Battle.Handlers.BattleSessionContext(session, originalSessionId), msgId, payload).GetAwaiter().GetResult())
+                {
+                    Log.Debug("Battle 新协议分发完成 MsgId:{MsgId} ClientSessionId:{ClientSessionId}", msgId, originalSessionId);
+                    return;
+                }
+
+                if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
+                {
+                    Log.Debug("Battle 开始处理消息 MsgId:{MsgId} SessionId:{SessionId} OriginalSessionId:{OriginalSessionId} PayloadLength:{PayloadLength}", msgId, session.SessionId, originalSessionId, payload.Length);
+                    handlerAction(payload, session, originalSessionId).GetAwaiter().GetResult();
+                    Log.Debug("Battle 完成处理消息 MsgId:{MsgId} SessionId:{SessionId} OriginalSessionId:{OriginalSessionId}", msgId, session.SessionId, originalSessionId);
+                    return;
+                }
+
+                Log.Warning($"Battle 收到未知 MsgId: {msgId}");
+
+                // 旧协议兼容：客户端消息区间内的未知消息回错误响应（仅战斗加入等有明确回包的场景）
+                if (originalSessionId > 0 && msgId >= 40000 && msgId < 50000)
+                {
+                    int responseMsgId = msgId switch
+                    {
+                        MessageIds.BattleJoinReq => MessageIds.BattleJoinRes,
+                        _ => 0
+                    };
+
+                    if (responseMsgId > 0)
+                    {
+                        byte[] unknownPayload = Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Battle.BattleJoinResponse
+                        {
+                            Success = false,
+                            Message = $"未支持的战斗消息类型: {msgId}"
+                        });
+                        byte[] routedUnknownPayload = Shared.RouteMetadata.AttachTargetSessionId(unknownPayload, originalSessionId);
+                        byte[] unknownPacket = PacketBuilder.BuildPacket(responseMsgId, routedUnknownPayload, out int unknownLength);
+                        Network.PacketSender.Send(session, unknownPacket, unknownLength);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"Battle 处理消息 ({msgId}) 发生异常: {ex}");
+            }
+        }
 
         /// <summary>根据客户端会话 ID 查找其网关会话（用于定向回包）。</summary>
         public static Network.ISession? GetGatewaySessionByClient(long clientSessionId)
@@ -103,6 +371,7 @@ namespace Battle
             int tickHertz = ConfigHelper.GetConfig<int>("BattleTickHertz") == 0 ? 20 : ConfigHelper.GetConfig<int>("BattleTickHertz");
             var tickEngine = new Framework.Tick.TickEngine(tickHertz);
             tickEngine.Start();
+            BattleServerApp.tickEngine = tickEngine;
 
             // 实体备份服务（对标 KBE backuper 平滑分摊 + archiver 落盘）
             string backupFile = ConfigHelper.GetConfig<string>("BackupFilePath")
@@ -117,20 +386,6 @@ namespace Battle
             var scriptHost = new Framework.Scripting.ScriptHost(scriptsDir);
             scriptHost.Start();
             BattleServerApp.scriptHost = scriptHost;
-            // tick 引擎驱动脚本 OnTick（游戏逻辑获得确定性帧驱动）
-            tickEngine.OnTick += frame =>
-            {
-                if (sceneManager != null)
-                {
-                    foreach (var scene in sceneManager.GetAllScenes())
-                    {
-                        scriptHost.TickAll(scene.EntityManager, frame);
-                        backupService.AddManager(scene.EntityManager);
-                    }
-                    // 按实体量平滑分摊备份（对标 KBE backuper：每 tick 只备份部分实体）
-                    backupService.Tick();
-                }
-            };
 
             // 实体持久化服务（对标 KBE dbmgr entity_table 自动存取 + restore_entity_handler 崩溃恢复）
             string persistDir = ConfigHelper.GetConfig<string>("EntityPersistDir")
@@ -142,7 +397,40 @@ namespace Battle
             BattleServerApp.persistService = persistService;
 
             sceneManager = new Battle.Handlers.SceneManager();
+            // 场景创建：注册脚本实体管理器（全局数据事件用）+ 生成场景级玩法实体（Npc/Quest）
+            sceneManager.SceneCreated += scene =>
+            {
+                scriptHost.RegisterEntityManager(scene.EntityManager);
+                SpawnSceneGameplayEntities(scene);
+            };
             var entitySyncHandler = new Battle.Handlers.EntitySyncHandler(sceneManager);
+            BattleServerApp.entitySyncHandler = entitySyncHandler;
+
+            // tick 引擎驱动（对标 KBE 主循环，单线程串行）：
+            // 入站消息排空（mailbox）→ 脚本 OnTick → 备份平滑分摊 → Witness 增量广播
+            tickEngine.OnTick += frame =>
+            {
+                DrainInboundMessages();
+
+                if (sceneManager != null)
+                {
+                    foreach (var scene in sceneManager.GetAllScenes())
+                    {
+                        scriptHost.TickAll(scene.EntityManager, frame);
+                        backupService.AddManager(scene.EntityManager);
+                    }
+                    // 按实体量平滑分摊备份（对标 KBE backuper：每 tick 只备份部分实体）
+                    backupService.Tick();
+                    // 脚本/AI 驱动的属性变化增量广播（NPC 巡逻、回血、冷却、掉落）
+                    entitySyncHandler.TickWitness();
+                }
+
+                // 性能 Profile（对标 KBE perf）：每 100 tick（5 秒 @20Hz）输出 tick 统计
+                if (frame % 100 == 0)
+                {
+                    Log.Info($"tick 统计: last={tickEngine.LastTickMs}ms avg={tickEngine.AvgTickMs}ms max={tickEngine.MaxTickMs}ms 阈值={tickEngine.SlowTickThresholdMs}ms 入站队列={System.Threading.Interlocked.Read(ref queuedInboundCount)}");
+                }
+            };
             var roomHandler = new Battle.Handlers.RoomHandler(sceneManager, entitySyncHandler);
             var battleMainHandler = new Battle.Handlers.BattleMainHandler(sceneManager);
 
@@ -155,14 +443,7 @@ namespace Battle
                 {
                     byte[] routedPayload = Shared.RouteMetadata.AttachTargetSessionId(payload, targetSessionId);
                     byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
-                    try
-                    {
-                        gatewaySession.Send(packet.AsSpan(0, totalLength).ToArray());
-                    }
-                    finally
-                    {
-                        System.Buffers.ArrayPool<byte>.Shared.Return(packet);
-                    }
+                    Network.PacketSender.Send(gatewaySession, packet, totalLength);
                 }
             });
 
@@ -196,7 +477,9 @@ namespace Battle
                 Log.Info($"节点/网关从战斗服断开，原因: {reason}");
             };
 
-            tcpServer.OnDataReceived += async (session, data) =>
+            // 统一收包管线（单线程语义）：认证与路由元数据解析在收包线程完成，
+            // 业务消息一律入队，由 TickEngine 主循环串行消费（对标 KBE mailbox）。
+            tcpServer.OnDataReceived += (session, data) =>
             {
                 try
                 {
@@ -235,7 +518,7 @@ namespace Battle
                         }
                     }
 
-                    Log.Info($"Battle <- Gateway/Node 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{payloadLength}");
+                    Log.Debug("Battle <- Gateway/Node 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint, msgId, data.Length, payloadLength);
                     byte[] payload = data.Slice(4).ToArray();
 
                     long originalSessionId = 0;
@@ -245,59 +528,11 @@ namespace Battle
                         payload = cleanPayload;
                         // 登记客户端会话 -> 网关会话 绑定（帧同步广播用）
                         BindClientGateway(originalSessionId, session);
-                        Log.Debug($"Battle 路由元数据解析成功 ClientSessionId:{originalSessionId} MsgId:{msgId}");
+                        Log.Debug("Battle 路由元数据解析成功 ClientSessionId:{ClientSessionId} MsgId:{MsgId}", originalSessionId, msgId);
                     }
 
-                    // 新协议分发优先（强类型 + MemoryPack/JSON 双格式兼容）
-                    if (dispatcher != null && await dispatcher.TryDispatch(new Battle.Handlers.BattleSessionContext(session, originalSessionId), msgId, payload))
-                    {
-                        Log.Debug($"Battle 新协议分发完成 MsgId:{msgId} ClientSessionId:{originalSessionId}");
-                    }
-                    else if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
-                    {
-                        try
-                        {
-                            Log.Info($"Battle 开始处理消息 MsgId:{msgId} SessionId:{session.SessionId} OriginalSessionId:{originalSessionId} PayloadLength:{payload.Length}");
-                            await handlerAction(payload, session, originalSessionId);
-                            Log.Info($"Battle 完成处理消息 MsgId:{msgId} SessionId:{session.SessionId} OriginalSessionId:{originalSessionId}");
-                        }
-                        catch (Exception ex)
-                        {
-                            Log.Error($"Battle 处理消息 ({msgId}) 发生异常: {ex}");
-                        }
-                    }
-                    else
-                    {
-                        Log.Warning($"Battle 收到未知 MsgId: {msgId}");
-
-                        if (originalSessionId > 0 && msgId >= 40000 && msgId < 50000)
-                        {
-                            int responseMsgId = msgId switch
-                            {
-                                MessageIds.BattleJoinReq => MessageIds.BattleJoinRes,
-                                _ => 0
-                            };
-
-                            if (responseMsgId > 0)
-                            {
-                                byte[] unknownPayload = Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Battle.BattleJoinResponse
-                                {
-                                    Success = false,
-                                    Message = $"未支持的战斗消息类型: {msgId}"
-                                });
-                                byte[] routedUnknownPayload = Shared.RouteMetadata.AttachTargetSessionId(unknownPayload, originalSessionId);
-                                byte[] unknownPacket = PacketBuilder.BuildPacket(responseMsgId, routedUnknownPayload, out int unknownLength);
-                                try
-                                {
-                                    session.Send(unknownPacket.AsSpan(0, unknownLength).ToArray());
-                                }
-                                finally
-                                {
-                                    System.Buffers.ArrayPool<byte>.Shared.Return(unknownPacket);
-                                }
-                            }
-                        }
-                    }
+                    // 业务消息入队，tick 线程串行处理（实体/场景状态只在主循环读写）
+                    EnqueueInbound(session, msgId, payload, originalSessionId);
                 }
                 catch (Exception ex)
                 {
@@ -358,7 +593,8 @@ namespace Battle
                 centerHeartbeatCts?.Cancel();
                 Log.Warning($"与 Center 服务器断开连接: {reason}");
             };
-            centerClient.OnDataReceived += async (session, data) =>
+            // Center 下发消息同样入队：与客户端消息共用同一 tick 线程串行处理，保证场景/实体状态单线程语义
+            centerClient.OnDataReceived += (session, data) =>
             {
                 try
                 {
@@ -370,26 +606,10 @@ namespace Battle
 
                     int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
                     int payloadLength = data.Length - 4;
-                    Log.Info($"Battle <- Center 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{payloadLength}");
+                    Log.Debug("Battle <- Center 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint, msgId, data.Length, payloadLength);
                     byte[] payload = data.Slice(4).ToArray();
 
-                    if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
-                    {
-                        try
-                        {
-                            Log.Info($"Battle 开始处理 Center 消息 MsgId:{msgId} SessionId:{session.SessionId} PayloadLength:{payload.Length}");
-                            await handlerAction(payload, session, 0);
-                            Log.Info($"Battle 完成处理 Center 消息 MsgId:{msgId} SessionId:{session.SessionId}");
-                        }
-                        catch (Exception ex)
-                        {
-                            Log.Error($"Battle 处理 Center 下发消息 ({msgId}) 发生异常: {ex}");
-                        }
-                    }
-                    else
-                    {
-                        Log.Warning($"Battle 收到未处理的 Center MsgId: {msgId}");
-                    }
+                    EnqueueInbound(session, msgId, payload, 0);
                 }
                 catch (Exception ex)
                 {
@@ -415,15 +635,11 @@ namespace Battle
             byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterRoomPlayerCountSyncReq, payload, out int totalLength);
             try
             {
-                centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
+                Network.PacketSender.Send(centerClient, packet, totalLength);
             }
             catch (Exception ex)
             {
                 Log.Error($"Battle 同步房间人数失败 RoomId:{roomId} Exception:{ex}");
-            }
-            finally
-            {
-                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
             }
         }
 
@@ -443,15 +659,11 @@ namespace Battle
             byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterRoomMemberLeaveSyncReq, payload, out int totalLength);
             try
             {
-                centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
+                Network.PacketSender.Send(centerClient, packet, totalLength);
             }
             catch (Exception ex)
             {
                 Log.Error($"Battle 同步房间成员退出失败 RoomId:{roomId} ClientSessionId:{clientSessionId} Exception:{ex}");
-            }
-            finally
-            {
-                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
             }
         }
 
@@ -484,15 +696,11 @@ namespace Battle
             byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterRegisterNodeReq, payload, out int totalLength);
             try
             {
-                centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
+                Network.PacketSender.Send(centerClient, packet, totalLength);
             }
             catch (Exception ex)
             {
                 Log.Error($"Battle 向 Center 注册节点失败 NodeId:{nodeId} Exception:{ex}");
-            }
-            finally
-            {
-                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
             }
         }
 
@@ -519,15 +727,11 @@ namespace Battle
             byte[] packet = PacketBuilder.BuildPacket(MessageIds.CenterNodeStatusReq, payload, out int totalLength);
             try
             {
-                centerClient.Send(packet.AsSpan(0, totalLength).ToArray());
+                Network.PacketSender.Send(centerClient, packet, totalLength);
             }
             catch (Exception ex)
             {
                 Log.Error($"Battle 向 Center 上报节点状态失败 NodeId:{nodeId} Exception:{ex}");
-            }
-            finally
-            {
-                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
             }
         }
 

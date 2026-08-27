@@ -39,10 +39,21 @@ public sealed class EntityBackupService : IDisposable
         taskQueue = new OrderedTaskQueue("EntityBackup");
     }
 
-    /// <summary>注册实体管理器（可注册多个，统一备份）。</summary>
+    /// <summary>
+    /// 注册实体管理器（可注册多个，统一备份）。
+    /// 幂等：同一管理器重复注册会被忽略，防止调用方在每 tick 循环内注册导致列表无限增长
+    /// （曾存在 BattleServerApp.OnTick 每 tick 每场景调用本方法的泄漏；现在重复调用无副作用，
+    /// 且新场景创建后仍会被自动纳入备份）。
+    /// </summary>
     public EntityBackupService AddManager(EntityManager manager)
     {
-        managers.Add(manager);
+        lock (managers)
+        {
+            if (!managers.Contains(manager))
+            {
+                managers.Add(manager);
+            }
+        }
         return this;
     }
 

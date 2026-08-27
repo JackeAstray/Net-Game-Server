@@ -31,7 +31,7 @@ public partial class EntityState
 [MemoryPackable]
 public partial class PlayerInput
 {
-    public int InputId { get; set; } = default;
+    public long InputId { get; set; } = default;
     public int Buttons { get; set; } = default;
     public float MoveX { get; set; } = default;
     public float MoveY { get; set; } = default;
@@ -108,6 +108,21 @@ public partial class BattleLeaveRoomResult : IGameMessage
     public bool Success { get; set; } = default;
     public string RoomId { get; set; } = string.Empty;
     public string Message { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+public partial class ScriptAction : IGameMessage
+{
+    public const int MsgId = 40006;
+    public const string TargetServer = "Battle";
+    int IGameMessage.MessageId => MsgId;
+    /// <summary>序列化为 MemoryPack 二进制负载（不含帧头）。</summary>
+    public byte[] Serialize() => MemoryPackSerializer.Serialize(this);
+    /// <summary>从二进制负载反序列化。</summary>
+    public static ScriptAction? Deserialize(ReadOnlySpan<byte> payload) => MemoryPackSerializer.Deserialize<ScriptAction>(payload);
+    public long EntityId { get; set; } = default;
+    public string Method { get; set; } = string.Empty;
+    public List<int> Args { get; set; } = new();
 }
 
 [MemoryPackable]
@@ -2214,6 +2229,19 @@ public partial class PlayerDisconnect : IGameMessage
     public byte[] Serialize() => MemoryPackSerializer.Serialize(this);
     /// <summary>从二进制负载反序列化。</summary>
     public static PlayerDisconnect? Deserialize(ReadOnlySpan<byte> payload) => MemoryPackSerializer.Deserialize<PlayerDisconnect>(payload);
+    public long ClientSessionId { get; set; } = default;
+}
+
+[MemoryPackable]
+public partial class PlayerSessionResume : IGameMessage
+{
+    public const int MsgId = 10014;
+    public const string TargetServer = "Battle";
+    int IGameMessage.MessageId => MsgId;
+    /// <summary>序列化为 MemoryPack 二进制负载（不含帧头）。</summary>
+    public byte[] Serialize() => MemoryPackSerializer.Serialize(this);
+    /// <summary>从二进制负载反序列化。</summary>
+    public static PlayerSessionResume? Deserialize(ReadOnlySpan<byte> payload) => MemoryPackSerializer.Deserialize<PlayerSessionResume>(payload);
     public long ClientSessionId { get; set; } = default;
 }
 

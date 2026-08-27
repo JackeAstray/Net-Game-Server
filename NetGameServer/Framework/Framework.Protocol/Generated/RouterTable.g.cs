@@ -19,6 +19,7 @@ public static class RouterTable
         [40003] = new MessageRouteInfo(40003, "BattleFrameSync", "Battle", typeof(BattleFrameSync), false),
         [40004] = new MessageRouteInfo(40004, "BattleLeaveRoom", "Battle", typeof(BattleLeaveRoom), false),
         [40005] = new MessageRouteInfo(40005, "BattleLeaveRoomResult", "Battle", typeof(BattleLeaveRoomResult), false),
+        [40006] = new MessageRouteInfo(40006, "ScriptAction", "Battle", typeof(ScriptAction), false),
         [40101] = new MessageRouteInfo(40101, "EntitySync", "Battle", typeof(EntitySync), false),
         [40102] = new MessageRouteInfo(40102, "EntityEnterViewNotify", "Battle", typeof(EntityEnterViewNotify), false),
         [40103] = new MessageRouteInfo(40103, "EntityLeaveViewNotify", "Battle", typeof(EntityLeaveViewNotify), false),
@@ -156,6 +157,7 @@ public static class RouterTable
         [10012] = new MessageRouteInfo(10012, "FindPasswordWithCode", "Login", typeof(FindPasswordWithCode), false),
         [10013] = new MessageRouteInfo(10013, "FindPasswordWithCodeResult", "Login", typeof(FindPasswordWithCodeResult), false),
         [10000] = new MessageRouteInfo(10000, "PlayerDisconnect", "All", typeof(PlayerDisconnect), true),
+        [10014] = new MessageRouteInfo(10014, "PlayerSessionResume", "Battle", typeof(PlayerSessionResume), true),
     };
 
     /// <summary>根据 MsgId 查询目标服务器；未定义时返回 null。</summary>

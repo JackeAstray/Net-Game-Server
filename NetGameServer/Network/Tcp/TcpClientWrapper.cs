@@ -132,6 +132,22 @@ public class TcpClientWrapper : INetworkClient
         session.Send(data);
     }
 
+    /// <summary>
+    /// 零拷贝发送：直接接管 ArrayPool 缓冲（写入完成后自动归还），调用方不得再 Return。
+    /// 无可用会话时缓冲会被归还并丢弃。
+    /// </summary>
+    public void SendFromPool(byte[] pooledBuffer, int count)
+    {
+        if (session == null)
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(pooledBuffer);
+            Shared.Log.Warning($"[TcpClientWrapper] 发送失败（池化缓冲已归还），当前无可用会话 Host:{host} Port:{port} DataLength:{count}");
+            return;
+        }
+
+        session.SendFromPool(pooledBuffer, count);
+    }
+
     public void Stop()
     {
         Shared.Log.Info($"[TcpClientWrapper] 停止客户端 Host:{host} Port:{port}");

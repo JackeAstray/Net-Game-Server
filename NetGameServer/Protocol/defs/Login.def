@@ -87,4 +87,9 @@
     <Field name="ClientSessionId" type="int64" />
   </Message>
 
+  <!-- 玩家断线重连恢复（网关 -> Battle，内部消息）：实体从挂起转在线 -->
+  <Message id="10014" name="PlayerSessionResume" target="Battle" internal="true">
+    <Field name="ClientSessionId" type="int64" />
+  </Message>
+
 </Protocol>

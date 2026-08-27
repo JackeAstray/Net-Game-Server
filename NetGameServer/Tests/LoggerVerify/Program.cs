@@ -11,6 +11,10 @@ var received = new List<(string level, string node, string msg)>();
 server.LogReceived += (level, node, msg) => received.Add((level, node, msg));
 server.Start();
 
+// 1.5 配置全局日志级别（真实服务器由各 Program.cs 的 Log.Configure 完成；
+// 级别门控要求 Logger 已配置，否则 IsEnabled 恒为 false，LogSink 不会触发）
+Framework.Core.Log.Configure(enableConsoleLog: false, logFilePath: Path.Combine(Path.GetTempPath(), $"loggertest_{Guid.NewGuid():N}.log"));
+
 // 2. RemoteLogClient 上报（模拟 Battle 服务器日志）
 var client = new RemoteLogClient("Battle-test-node", "127.0.0.1", loggerPort);
 client.Start();

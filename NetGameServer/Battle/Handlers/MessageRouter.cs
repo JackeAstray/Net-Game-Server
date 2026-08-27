@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Shared.Messages;
 using Shared.Messages.Battle;
@@ -123,14 +124,7 @@ namespace Battle.Handlers
                         var res = await battleMainHandler.HandleCreateSceneRequestAsync(req);
                         byte[] resPayload = Shared.Json.SerializeToUtf8Bytes(res);
                         byte[] packet = Network.Routing.PacketBuilder.BuildPacket(MessageIds.CenterCreateSceneRes, resPayload, out int totalLength);
-                        try
-                        {
-                            session.Send(packet.AsSpan(0, totalLength).ToArray());
-                        }
-                        finally
-                        {
-                            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
-                        }
+                        Network.PacketSender.Send(session, packet, totalLength);
                     }
                     else
                     {
@@ -153,14 +147,7 @@ namespace Battle.Handlers
                         var res = await battleMainHandler.HandleDestroySceneRequestAsync(req);
                         byte[] resPayload = Shared.Json.SerializeToUtf8Bytes(res);
                         byte[] packet = Network.Routing.PacketBuilder.BuildPacket(MessageIds.CenterDestroySceneRes, resPayload, out int totalLength);
-                        try
-                        {
-                            session.Send(packet.AsSpan(0, totalLength).ToArray());
-                        }
-                        finally
-                        {
-                            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
-                        }
+                        Network.PacketSender.Send(session, packet, totalLength);
                     }
                     else
                     {
@@ -263,6 +250,24 @@ namespace Battle.Handlers
                 },
                 jsonFallback: true);
 
+            // 通用实体脚本动作：客户端按实体 ID 调用脚本 OnMessage
+            // （如 TakeDamage / CastSkill / Pickup / UseItem / QueryProgress，参数为 int32 列表）
+            dispatcher.RegisterSync<Framework.Protocol.Generated.ScriptAction>(
+                (ctx, msg) =>
+                {
+                    var args = (msg.Args ?? new List<int>()).Select(a => (object)a).ToArray();
+                    Battle.BattleServerApp.DispatchEntityScriptAction(msg.EntityId, msg.Method, args);
+                },
+                jsonFallback: true);
+
+            // 断线重连恢复（网关内部消息）：取消实体挂起，恢复在线（对标 KBE 断线恢复）
+            dispatcher.RegisterSync<Framework.Protocol.Generated.PlayerSessionResume>(
+                (ctx, msg) =>
+                {
+                    Battle.BattleServerApp.ResumePlayer(ctx.ClientSessionId);
+                },
+                jsonFallback: true);
+
             return dispatcher;
         }
 
@@ -277,20 +282,16 @@ namespace Battle.Handlers
         /// <param name="response">要序列化并发送的响应对象。</param>
         private static void SendToGateway<T>(Network.ISession gatewaySession, long clientSessionId, int msgId, T response)
         {
-            byte[] responsePayload = Shared.Json.SerializeToUtf8Bytes(response);
-            byte[] routedPayload = Shared.RouteMetadata.AttachTargetSessionId(responsePayload, clientSessionId);
+            byte[] payload = Shared.Json.SerializeToUtf8Bytes(response);
+            byte[] routedPayload = Shared.RouteMetadata.AttachTargetSessionId(payload, clientSessionId);
             byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
             try
             {
-                gatewaySession.Send(packet.AsSpan(0, totalLength).ToArray());
+                Network.PacketSender.Send(gatewaySession, packet, totalLength);
             }
             catch (Exception ex)
             {
                 Shared.Log.Error($"Battle 向网关发送响应失败 MsgId:{msgId} ClientSessionId:{clientSessionId} Exception:{ex}");
-            }
-            finally
-            {
-                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
             }
         }
     }

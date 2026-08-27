@@ -19,6 +19,37 @@ public sealed class TickEngine
     private volatile bool running;
     private long frame;
 
+    // 性能 Profile（对标 KBE perf 统计）：tick 耗时统计 + 慢 tick 告警
+    private long lastTickMs;
+    private long maxTickMs;
+    private long totalTickMs;
+    private long tickCount;
+    private long lastSlowWarnTick;
+    private int slowTickThresholdMs = 200;
+
+    /// <summary>慢 tick 告警阈值（毫秒，默认 200；启动前设置）。</summary>
+    public int SlowTickThresholdMs
+    {
+        get => slowTickThresholdMs;
+        set => slowTickThresholdMs = Math.Max(1, value);
+    }
+
+    /// <summary>最近一次 tick 耗时（毫秒）。</summary>
+    public long LastTickMs => Interlocked.Read(ref lastTickMs);
+
+    /// <summary>自启动以来最大 tick 耗时（毫秒）。</summary>
+    public long MaxTickMs => Interlocked.Read(ref maxTickMs);
+
+    /// <summary>自启动以来平均 tick 耗时（毫秒）。</summary>
+    public long AvgTickMs
+    {
+        get
+        {
+            long count = Interlocked.Read(ref tickCount);
+            return count == 0 ? 0 : Interlocked.Read(ref totalTickMs) / count;
+        }
+    }
+
     // 定时器（由主线程独占访问，无需锁）
     private readonly PriorityQueue<(long dueTick, long seq, TimerHandle handle), long> timers = new();
     private long timerSeq;
@@ -102,7 +133,30 @@ public sealed class TickEngine
         while (running)
         {
             long f = Interlocked.Increment(ref frame);
+            long started = Environment.TickCount64;
             TickOnce(f);
+            long elapsed = Environment.TickCount64 - started;
+
+            // 耗时统计
+            Interlocked.Exchange(ref lastTickMs, elapsed);
+            Interlocked.Add(ref totalTickMs, elapsed);
+            Interlocked.Increment(ref tickCount);
+            long max = Interlocked.Read(ref maxTickMs);
+            while (elapsed > max && Interlocked.CompareExchange(ref maxTickMs, elapsed, max) != max)
+            {
+                max = Interlocked.Read(ref maxTickMs);
+            }
+
+            // 慢 tick 告警（节流：5 秒最多一次，避免刷屏）
+            if (elapsed > slowTickThresholdMs)
+            {
+                long now = Environment.TickCount64;
+                long last = Volatile.Read(ref lastSlowWarnTick);
+                if (now - last > 5000 && Interlocked.CompareExchange(ref lastSlowWarnTick, now, last) == last)
+                {
+                    Log.Warn($"TickEngine 慢 tick 帧号:{f} 耗时:{elapsed}ms 阈值:{slowTickThresholdMs}ms avg:{AvgTickMs}ms max:{MaxTickMs}ms");
+                }
+            }
 
             next += intervalMs;
             long delay = next - Environment.TickCount64;

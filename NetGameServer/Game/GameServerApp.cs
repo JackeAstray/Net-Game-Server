@@ -111,7 +111,13 @@ namespace Game
                     }
 
                     var payloadPreview = data.Slice(4);
-                    Log.Info($"Game 接收到客户端数据 Session:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{payloadLength} RawHexPreview:{BuildHexPreview(payloadPreview)} Utf8Preview:{BuildUtf8Preview(payloadPreview)}");
+                    // 每包日志降级为 Debug 并带级别守卫：仅在调试模式启用时构造十六进制/UTF8 预览（该预览构造开销大，不能进热路径）
+                    if (Log.IsDebugEnabled)
+                    {
+                        Log.Debug("Game 接收到客户端数据 Session:{Session} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} RawHexPreview:{RawHexPreview} Utf8Preview:{Utf8Preview}",
+                            session.SessionId, session.RemoteEndPoint, msgId, data.Length, payloadLength,
+                            BuildHexPreview(payloadPreview), BuildUtf8Preview(payloadPreview));
+                    }
 
                     byte[] payload = payloadPreview.ToArray();
 
@@ -326,7 +332,7 @@ namespace Game
                     int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
                     var payload = data.Slice(4);
 
-                    Log.Info($"Game <- DB 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{payload.Length}");
+                    Log.Debug("Game <- DB 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint, msgId, data.Length, payload.Length);
 
                     bool handled = Handlers.FriendHandler.TryHandleDbResponse(session, msgId, payload);
                     if (!handled)
@@ -395,7 +401,7 @@ namespace Game
                     }
 
                     int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
-                    Log.Info($"Game <- Center 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{data.Length - 4}");
+                    Log.Debug("Game <- Center 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint, msgId, data.Length, data.Length - 4);
                 }
                 catch (Exception ex)
                 {

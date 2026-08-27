@@ -242,5 +242,46 @@ namespace Gateway.Managers
         {
             return clientSessions.Count;
         }
+
+        /// <summary>所有客户端会话（空闲超时扫描等用）。</summary>
+        public IEnumerable<Network.ISession> GetAllSessions()
+        {
+            return clientSessions.Values;
+        }
+
+        /// <summary>
+        /// 断线重连：把新会话的身份绑定（userId/uid/nickname）迁移到旧会话 ID 上，旧 ID 保留
+        /// （后端业务服按旧 ID 续接挂起的实体），新会话 ID 注销。返回 true 表示迁移成功。
+        /// </summary>
+        public bool ResumeSession(long newSessionId, long oldSessionId)
+        {
+            if (newSessionId <= 0 || oldSessionId <= 0 || newSessionId == oldSessionId)
+            {
+                return false;
+            }
+            if (!clientSessions.TryGetValue(newSessionId, out var session))
+            {
+                return false;
+            }
+
+            if (sessionUsers.TryRemove(newSessionId, out int userId))
+            {
+                sessionUsers[oldSessionId] = userId;
+            }
+            if (sessionUids.TryRemove(newSessionId, out string? uid))
+            {
+                sessionUids[oldSessionId] = uid;
+                uidSessions[uid] = oldSessionId;
+            }
+            if (sessionNicknames.TryRemove(newSessionId, out string? nickname))
+            {
+                sessionNicknames[oldSessionId] = nickname;
+            }
+
+            clientSessions.TryRemove(newSessionId, out _);
+            clientSessions[oldSessionId] = session;
+            Shared.Log.Info($"Gateway 断线重连：会话 {newSessionId} 恢复为 {oldSessionId} Remote:{session.RemoteEndPoint}");
+            return true;
+        }
     }
 }

@@ -10,7 +10,7 @@ namespace Gateway
     {
         static async Task Main(string[] args)
         {
-            Log.Configure(true, "Logs/Gateway.log");
+            Log.Configure(true, "Logs/Gateway.log", ConfigHelper.GetConfig<string>("Logging:MinimumLevel") ?? "Information");
 
             // 远程日志上报（配置 LoggerHost/LoggerPort 后生效，对标 KBE logger 聚合）
             RemoteLog.Initialize($"Gateway-{ConfigHelper.GetConfig<string>("GatewayHost") ?? "127.0.0.1"}:{ConfigHelper.GetConfig<int>("GatewayPort")}");

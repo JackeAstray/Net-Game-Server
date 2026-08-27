@@ -14,6 +14,8 @@ public static class MessageIds
     public const int BattleLeaveRoom = 40004;
     /// <summary>40005 BattleLeaveRoomResult -> Battle</summary>
     public const int BattleLeaveRoomResult = 40005;
+    /// <summary>40006 ScriptAction -> Battle</summary>
+    public const int ScriptAction = 40006;
     /// <summary>40101 EntitySync -> Battle</summary>
     public const int EntitySync = 40101;
     /// <summary>40102 EntityEnterViewNotify -> Battle</summary>
@@ -288,4 +290,6 @@ public static class MessageIds
     public const int FindPasswordWithCodeResult = 10013;
     /// <summary>10000 PlayerDisconnect -> All [internal]</summary>
     public const int PlayerDisconnect = 10000;
+    /// <summary>10014 PlayerSessionResume -> Battle [internal]</summary>
+    public const int PlayerSessionResume = 10014;
 }

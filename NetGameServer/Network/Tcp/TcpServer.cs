@@ -92,6 +92,7 @@ public class TcpServer : INetworkServer
                     int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
                     if (bytesRead == 0) break;
 
+                    session.LastActivityTime = DateTime.UtcNow; // 心跳/空闲超时检测用
                     Shared.Log.Debug($"[TcpServer] 接收原始字节 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Bytes:{bytesRead}");
                     packetReader.Append(buffer.AsSpan(0, bytesRead));
                     int packetCount = 0;

@@ -33,6 +33,13 @@
     <Field name="Message" type="string" />
   </Message>
 
+  <!-- 通用实体脚本动作：客户端按实体 ID 调用脚本 OnMessage（如 TakeDamage / CastSkill / Pickup / UseItem） -->
+  <Message id="40006" name="ScriptAction" target="Battle">
+    <Field name="EntityId" type="int64" />
+    <Field name="Method" type="string" />
+    <Field name="Args" type="list:int32" />
+  </Message>
+
   <!-- ==== 实体同步 40100-40199 ==== -->
   <Message id="40101" name="EntitySync" target="Battle">
     <Field name="Position" type="Vector3" />
@@ -82,7 +89,7 @@
   </Struct>
 
   <Struct name="PlayerInput">
-    <Field name="InputId" type="int32" />
+    <Field name="InputId" type="int64" />
     <Field name="Buttons" type="int32" />
     <Field name="MoveX" type="float" />
     <Field name="MoveY" type="float" />

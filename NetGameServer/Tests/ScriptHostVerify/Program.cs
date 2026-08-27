@@ -8,8 +8,8 @@ Framework.Core.Log.Configure(true, Path.Combine(AppContext.BaseDirectory, "logs"
 string scriptsDir = Path.Combine(AppContext.BaseDirectory, "scripts");
 Directory.CreateDirectory(scriptsDir);
 
-// 实体定义（与脚本中 Avatar 一致）
-var avatarDef = new Framework.Entity.EntityDef { Name = "Avatar" }
+// 实体定义（与脚本中 Player 一致：Avatar.csx 现绑定 Player 实体类型，玩家加入场景即生效）
+var avatarDef = new Framework.Entity.EntityDef { Name = "Player" }
     .Add("Nickname", Framework.Entity.EntityPropertyType.String)
     .Add("Position", Framework.Entity.EntityPropertyType.Float3)
     .Add("Hp", Framework.Entity.EntityPropertyType.Int32)
@@ -24,9 +24,10 @@ manager.AddOrUpdateEntity(1001, avatar);
 string scriptsDir0 = scriptsDir;
 var host = new ScriptHost(scriptsDir);
 host.Start();
+host.RegisterEntityManager(manager); // 注册实体管理器（全局数据事件遍历用）
 
-var script = host.GetScript("Avatar");
-Console.WriteLine($"脚本加载: Avatar={script != null} (期望 True)");
+var script = host.GetScript("Player");
+Console.WriteLine($"脚本加载: Player={script != null} (期望 True)");
 if (script == null) return 1;
 
 // 2. 实体创建事件
@@ -62,7 +63,7 @@ File.WriteAllText(scriptFile, modified);
 await Task.Delay(1500); // 等待文件监听 + 防抖 + 重编译
 
 // 重新获取脚本实例（热更新后应为新实例）并验证新逻辑
-var newScript = host.GetScript("Avatar");
+var newScript = host.GetScript("Player");
 Console.WriteLine($"热更新: 实例已替换={!ReferenceEquals(script, newScript)} (期望 True)");
 if (ReferenceEquals(script, newScript)) return 1;
 
@@ -80,12 +81,12 @@ File.WriteAllText(scriptFile, original);
 await Task.Delay(1500);
 
 // 6. 错误隔离验证：写入编译错误脚本，应保留旧实例
-var lastGoodScript = host.GetScript("Avatar");
+var lastGoodScript = host.GetScript("Player");
 string broken = original + "\nthis is not valid csharp {{{";
 File.WriteAllText(scriptFile, broken);
 await Task.Delay(300); // 等待 watcher 防抖窗口（期间可能触发一次重载）
 host.ReloadAll();       // 确定性重新加载：broken 编译失败 → 保留旧实例
-var afterBroken = host.GetScript("Avatar");
+var afterBroken = host.GetScript("Player");
 bool hasError = host.LastLoadErrors.ContainsKey("Avatar");
 Console.WriteLine($"错误隔离: 保留旧实例={ReferenceEquals(lastGoodScript, afterBroken)} 记录错误={hasError} (期望 True/True)");
 if (!ReferenceEquals(lastGoodScript, afterBroken) || !hasError) return 1;
@@ -148,27 +149,22 @@ if (questScript == null) return 1;
 host.NotifyCreate(quest);
 if (quest.Get<int>("MaxHp") != 20) { Console.WriteLine("!! Quest OnCreate 未设置目标"); return 1; }
 
-// 模拟第二只 Npc 死亡：经验达到阈值 → Quest tick 检测到完成
+// 模拟第二只 Npc 死亡：经验达到阈值 → Quest 通过全局数据事件立即完成（事件驱动，无需 tick 轮询）
 host.DispatchMessage(npc, "TakeDamage", new object?[] { 100 });
-// 注意：第二只 Npc 已死亡，直接再次击杀同实体无效果——改为通过全局数据直接设置（简化）
 // 重新创建一只 Npc 击杀以累计经验
 var npc2 = npcDef.CreateEntity(3002);
 manager.AddOrUpdateEntity(3002, npc2);
 host.NotifyCreate(npc2);
 host.DispatchMessage(npc2, "TakeDamage", new object?[] { 100 });
 
-// 驱动 tick 让 Quest 脚本检测到全局数据变化（5 tick 轮询 + 判定）
-for (long f = 1; f <= 20; f++)
-{
-    host.TickAll(manager, f);
-}
+// 事件驱动验证：Quest.OnGlobalChanged 在 SetGlobal 时立即触发，无需驱动 tick
 bool questCompleted = host.GetGlobal("QuestCompleted") is bool qc && qc;
-Console.WriteLine($"Quest 完成: {questCompleted} (期望 True，经验 40>=20)");
+Console.WriteLine($"Quest 完成: {questCompleted} (期望 True，经验 40>=20，事件驱动)");
 if (!questCompleted) return 1;
 
 // 查询进度消息
 host.DispatchMessage(quest, "QueryProgress", Array.Empty<object?>());
-Console.WriteLine("三脚本协作（Npc→全局数据→Quest）验证 OK");
+Console.WriteLine("三脚本协作（Npc→全局数据→Quest 事件驱动）验证 OK");
 
 // 9. Skill 技能脚本验证（冷却管理 + 升级成长 + 全局伤害累计）
 var skillDef = new Framework.Entity.EntityDef { Name = "Skill" }
@@ -205,19 +201,15 @@ var skillTotal2b = host.GetGlobal("SkillTotalDamage");
 Console.WriteLine($"Skill 第二次释放: TotalDamage={skillTotal2b} (期望 20)");
 if (skillTotal2b is not int st2b || st2b != 20) return 1;
 
-// 再等 10 tick 冷却归零，第三次释放（累计 3 次）
+// 再等 10 tick 冷却归零，第三次释放（累计 3 次 → CastSkill 内立即升级 Lv.2，Casts 清零）
 for (long f = 1; f <= 10; f++) host.TickAll(manager, f);
 host.DispatchMessage(skill, "CastSkill", Array.Empty<object?>());
 var skillTotal3 = host.GetGlobal("SkillTotalDamage");
-Console.WriteLine($"Skill 三次释放: TotalDamage={skillTotal3} Casts={skill.Get<int>("Casts")} (期望 30/3)");
-if (skillTotal3 is not int st3 || st3 != 30 || skill.Get<int>("Casts") != 3) return 1;
-
-// 5 tick 后升级检查触发：Lv.2，伤害基数翻倍
-for (long f = 1; f <= 5; f++) host.TickAll(manager, f);
 int skillLevel = skill.Get<int>("Level");
+int skillCasts = skill.Get<int>("Casts");
 var skillLevelGlobal = host.GetGlobal("SkillLevel");
-Console.WriteLine($"Skill 升级: Level={skillLevel} 全局SkillLevel={skillLevelGlobal} (期望 2/2)");
-if (skillLevel != 2 || skillLevelGlobal is not int slg || slg != 2) return 1;
+Console.WriteLine($"Skill 三次释放: TotalDamage={skillTotal3} Level={skillLevel} Casts={skillCasts} 全局SkillLevel={skillLevelGlobal} (期望 30/2/0/2，升级事件驱动)");
+if (skillTotal3 is not int st3 || st3 != 30 || skillLevel != 2 || skillCasts != 0 || skillLevelGlobal is not int slg || slg != 2) return 1;
 
 // Lv.2 释放伤害 20 → 累计 50（先等冷却归零）
 for (long f = 1; f <= 10; f++) host.TickAll(manager, f);

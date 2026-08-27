@@ -16,6 +16,7 @@
   <Project Path="Tests/ProtocolVerify/ProtocolVerify.csproj" />
   <Project Path="Tests/ScriptHostVerify/ScriptHostVerify.csproj" />
   <Project Path="Tests/LoggerVerify/LoggerVerify.csproj" />
+  <Project Path="Tests/NetworkVerify/NetworkVerify.csproj" />
   <Project Path="Bots/Bots.csproj" />
   <Project Path="Logger/Logger.csproj" />
 </Solution>

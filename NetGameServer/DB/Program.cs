@@ -10,7 +10,7 @@ namespace DB
 
         static async Task Main(string[] args)
         {
-            Log.Configure(true, "Logs/DB.log");
+            Log.Configure(true, "Logs/DB.log", ConfigHelper.GetConfig<string>("Logging:MinimumLevel") ?? "Information");
 
             // 远程日志上报（配置 LoggerHost/LoggerPort 后生效，对标 KBE logger 聚合）
             Shared.RemoteLog.Initialize($"DB-{ConfigHelper.GetConfig<string>("DBHost") ?? "127.0.0.1"}:{ConfigHelper.GetConfig<int>("DBPort")}");

@@ -10,7 +10,7 @@ namespace Battle
     {
         static async Task Main(string[] args)
         {
-            Log.Configure(true, "Logs/Battle.log");
+            Log.Configure(true, "Logs/Battle.log", ConfigHelper.GetConfig<string>("Logging:MinimumLevel") ?? "Information");
             Log.Info("战斗/房间服务器(Battle Server)正在启动...");
 
             // 远程日志上报（配置 LoggerHost/LoggerPort 后生效，对标 KBE logger 聚合）

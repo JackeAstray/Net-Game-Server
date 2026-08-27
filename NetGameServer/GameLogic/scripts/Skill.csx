@@ -2,8 +2,10 @@
 // 展示玩法脚本的典型技能机制（全部写在 .csx 里，框架零改动，保存即热更新）：
 // - 主动释放：OnMessage("CastSkill") 检查冷却 → 造成伤害（基础值 × 技能等级 × 全局倍率）
 // - 冷却管理：OnTick 逐 tick 递减 CooldownRemaining，冷却中拒绝释放
-// - 成长系统：累计释放 3 次自动升级，升级后伤害提升
+// - 成长系统：累计释放达标**立即**升级（事件驱动，无需轮询），升级后伤害提升
 // - 全局数据：SkillTotalDamage 累计总伤害 / SkillLevel 当前等级，供其他脚本（Quest 类）消费
+// - 同步权限：Level 公开广播；CooldownRemaining 为属主私有（OWN_CLIENT）；Casts 服务端内部
+// 客户端通过 ScriptAction(40006) 消息调用 CastSkill / QueryState。
 
 using System;
 using Framework.Entity;
@@ -17,8 +19,6 @@ public class SkillScript : EntityScriptBase
     private const int CooldownTicks = 10; // 冷却 10 tick（0.5 秒 @20Hz）
     private const int CastsToLevelUp = 3; // 释放 3 次升 1 级
 
-    private int tickCount;
-
     public override void OnCreate(Framework.Entity.Entity entity)
     {
         entity.Set("Level", 1);
@@ -29,25 +29,10 @@ public class SkillScript : EntityScriptBase
 
     public override void OnTick(Framework.Entity.Entity entity, long frame)
     {
-        tickCount++;
         int cooldown = entity.Get<int>("CooldownRemaining");
         if (cooldown > 0)
         {
             entity.Set("CooldownRemaining", cooldown - 1);
-        }
-
-        // 每 5 tick 检查升级：累计释放次数达标 → 升级并清零计数
-        if (tickCount % 5 == 0)
-        {
-            int casts = entity.Get<int>("Casts");
-            if (casts >= CastsToLevelUp)
-            {
-                int level = entity.Get<int>("Level") + 1;
-                entity.Set("Level", level);
-                entity.Set("Casts", 0);
-                Framework.Scripting.ScriptHost.Current?.SetGlobal("SkillLevel", level);
-                Console.WriteLine($"[脚本] Skill {entity.EntityId} 升级到 Lv.{level}，伤害提升！");
-            }
         }
     }
 
@@ -73,9 +58,20 @@ public class SkillScript : EntityScriptBase
             int total = totalRaw is int t ? t : 0;
             Framework.Scripting.ScriptHost.Current?.SetGlobal("SkillTotalDamage", total + damage);
 
-            entity.Set("Casts", entity.Get<int>("Casts") + 1);
+            // 成长：释放计数达标立即升级（事件驱动，替代每 5 tick 轮询检查）
+            int casts = entity.Get<int>("Casts") + 1;
+            entity.Set("Casts", casts);
+            if (casts >= CastsToLevelUp)
+            {
+                level = entity.Get<int>("Level") + 1;
+                entity.Set("Level", level);
+                entity.Set("Casts", 0);
+                Framework.Scripting.ScriptHost.Current?.SetGlobal("SkillLevel", level);
+                Console.WriteLine($"[脚本] Skill {entity.EntityId} 升级到 Lv.{level}，伤害提升！");
+            }
+
             entity.Set("CooldownRemaining", CooldownTicks);
-            Console.WriteLine($"[脚本] Skill {entity.EntityId} 释放技能！Lv.{level} 造成 {damage} 伤害（累计 {total + damage}），进入冷却");
+            Console.WriteLine($"[脚本] Skill {entity.EntityId} 释放技能！Lv.{entity.Get<int>("Level")} 造成 {damage} 伤害（累计 {total + damage}），进入冷却");
         }
         else if (method == "QueryState")
         {

@@ -107,7 +107,7 @@ namespace Login
 
                 int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(packetData.AsSpan(0, 4));
                 int payloadLength = packetData.Length - 4;
-                Shared.Log.Info($"Login -> Gateway 准备回包 MsgId:{msgId} ClientSessionId:{clientSessionId} PacketLength:{packetData.Length} PayloadLength:{payloadLength}");
+                Shared.Log.Debug("Login -> Gateway 准备回包 MsgId:{MsgId} ClientSessionId:{ClientSessionId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", msgId, clientSessionId, packetData.Length, payloadLength);
                 byte[] payload = packetData.AsSpan(4).ToArray();
                 byte[] routedPayload = Shared.RouteMetadata.AttachClientSessionId(payload, clientSessionId);
                 byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
@@ -118,7 +118,7 @@ namespace Login
                 {
                     if (activeGatewaySessions.TryGetValue(gatewaySessionId, out var targetGatewaySession))
                     {
-                        Shared.Log.Info($"Login -> Gateway 定向发送成功 MsgId:{msgId} ClientSessionId:{clientSessionId} GatewaySessionId:{gatewaySessionId} OutboundLength:{outbound.Length}");
+                        Shared.Log.Debug("Login -> Gateway 定向发送成功 MsgId:{MsgId} ClientSessionId:{ClientSessionId} GatewaySessionId:{GatewaySessionId} OutboundLength:{OutboundLength}", msgId, clientSessionId, gatewaySessionId, outbound.Length);
                         targetGatewaySession.Send(outbound);
                         return;
                     }
@@ -191,7 +191,7 @@ namespace Login
                     Shared.Log.Warning($"Login 收到无认证过滤器连接的消息 MsgId:{msgId} SessionId:{session.SessionId}（过渡期兼容模式）");
                 }
 
-                Shared.Log.Info($"Login <- Gateway 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{payloadLength}");
+                Shared.Log.Debug("Login <- Gateway 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint, msgId, data.Length, payloadLength);
                 byte[] payload = data.Slice(4).ToArray();
 
                 if (!Shared.RouteMetadata.TryExtractClientSessionId(payload, out long clientSessionId, out var cleanPayload))
@@ -212,19 +212,19 @@ namespace Login
                     {
                         if (msgId == MessageIds.PlayerDisconnectNotif)
                         {
-                            Shared.Log.Info($"Login 收到玩家断线通知，清理绑定 ClientSessionId:{clientSessionId}");
+                            Shared.Log.Debug("Login 收到玩家断线通知，清理绑定 ClientSessionId:{ClientSessionId}", clientSessionId);
                             RemoveClientGatewayBinding(clientSessionId);
                         }
                     }
                     else if (messageHandlers.TryGetValue(msgId, out var handler))
                     {
-                        Shared.Log.Info($"Login 开始处理消息 MsgId:{msgId} ClientSessionId:{clientSessionId} PayloadLength:{cleanPayload.Length}");
+                        Shared.Log.Debug("Login 开始处理消息 MsgId:{MsgId} ClientSessionId:{ClientSessionId} PayloadLength:{PayloadLength}", msgId, clientSessionId, cleanPayload.Length);
                         await handler(cleanPayload, session, clientSessionId);
-                        Shared.Log.Info($"Login 完成处理消息 MsgId:{msgId} ClientSessionId:{clientSessionId}");
+                        Shared.Log.Debug("Login 完成处理消息 MsgId:{MsgId} ClientSessionId:{ClientSessionId}", msgId, clientSessionId);
 
                         if (msgId == MessageIds.PlayerDisconnectNotif)
                         {
-                            Shared.Log.Info($"Login 收到玩家断线通知，清理绑定 ClientSessionId:{clientSessionId}");
+                            Shared.Log.Debug("Login 收到玩家断线通知，清理绑定 ClientSessionId:{ClientSessionId}", clientSessionId);
                             RemoveClientGatewayBinding(clientSessionId);
                         }
                     }
@@ -372,7 +372,7 @@ namespace Login
 
                 int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
                 int payloadLength = data.Length - 4;
-                Shared.Log.Info($"Login <- DB 收到消息 MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{payloadLength} Remote:{session.RemoteEndPoint}");
+                Shared.Log.Debug("Login <- DB 收到消息 MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} Remote:{Remote}", msgId, data.Length, payloadLength, session.RemoteEndPoint);
                 byte[] payload = data.Slice(4).ToArray();
 
                 if (Shared.RouteMetadata.TryExtractRequestId(payload, out long requestId, out var cleanPayload)
@@ -380,7 +380,7 @@ namespace Login
                 {
                     try
                     {
-                        Shared.Log.Info($"Login <- DB 命中待处理请求 RequestId:{requestId} MsgId:{msgId} PayloadLength:{cleanPayload.Length}");
+                        Shared.Log.Debug("Login <- DB 命中待处理请求 RequestId:{RequestId} MsgId:{MsgId} PayloadLength:{PayloadLength}", requestId, msgId, cleanPayload.Length);
                         tcs.TrySetResult(cleanPayload);
                     }
                     catch (Exception ex)
@@ -467,7 +467,7 @@ namespace Login
                 }
 
                 int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
-                Shared.Log.Info($"Login <- Center 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{data.Length - 4}");
+                Shared.Log.Debug("Login <- Center 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint, msgId, data.Length, data.Length - 4);
             };
             _ = centerClient.ConnectAsync();
         }

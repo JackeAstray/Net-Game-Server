@@ -23,6 +23,8 @@ public sealed class ScriptHost : IDisposable
     private readonly ConcurrentDictionary<string, IEntityScript> scripts = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, Exception> lastLoadErrors = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, object?> globalData = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<EntityManagerObj, byte> entityManagers = new();
+    private readonly ConcurrentDictionary<long, Action<string, object?, object?>> propertyHandlers = new();
     private FileSystemWatcher? watcher;
     private readonly object compileGate = new();
 
@@ -36,14 +38,29 @@ public sealed class ScriptHost : IDisposable
     /// 全局共享数据（对标 KBE KBEngine.globalData）：
     /// 脚本之间通过键值对共享状态（配置、全局开关、跨实体数据），
     /// 框架侧可通过 SetGlobal/GetGlobal 读写。
+    /// 写入会触发各脚本的 OnGlobalChanged 回调（事件驱动协作，替代轮询）。
     /// </summary>
     public object? GetGlobal(string key) => globalData.TryGetValue(key, out var v) ? v : null;
 
-    /// <summary>设置全局共享数据（脚本/框架均可调用）。</summary>
-    public void SetGlobal(string key, object? value) => globalData[key] = value;
+    /// <summary>设置全局共享数据（脚本/框架均可调用），并广播 OnGlobalChanged 事件。</summary>
+    public void SetGlobal(string key, object? value)
+    {
+        globalData[key] = value;
+        NotifyGlobalChanged(key, value);
+    }
 
     /// <summary>全局数据键集合。</summary>
     public IEnumerable<string> GlobalKeys => globalData.Keys;
+
+    /// <summary>
+    /// 注册实体管理器（供全局数据变更通知按类型遍历实体，如 Quest 任务实体）。
+    /// 宿主（服务器/测试）在创建实体管理器后调用；同一管理器重复注册无副作用。
+    /// </summary>
+    public ScriptHost RegisterEntityManager(EntityManagerObj manager)
+    {
+        entityManagers[manager] = 0;
+        return this;
+    }
 
     public ScriptHost(string scriptsDir)
     {
@@ -77,14 +94,13 @@ public sealed class ScriptHost : IDisposable
         return script;
     }
 
-    /// <summary>向实体分发 tick 事件（由 TickEngine 驱动，遍历所有脚本）。</summary>
+    /// <summary>向实体分发 tick 事件（由 TickEngine 驱动；按实体类型索引直达，O(该类型实体数)）。</summary>
     public void TickAll(EntityManagerObj manager, long frame)
     {
         foreach (var script in scripts.Values)
         {
-            foreach (var entity in manager.GetAllEntities())
+            foreach (var entity in manager.GetAllEntitiesByType(script.EntityType))
             {
-                if (!string.Equals(entity.TypeName, script.EntityType, StringComparison.Ordinal)) continue;
                 try
                 {
                     script.OnTick(entity, frame);
@@ -116,21 +132,63 @@ public sealed class ScriptHost : IDisposable
         }
     }
 
-    /// <summary>实体创建时通知脚本。</summary>
+    /// <summary>实体创建时通知脚本（并订阅实体属性变更事件）。</summary>
     public void NotifyCreate(EntityObj entity)
     {
         if (scripts.TryGetValue(entity.TypeName, out var script))
         {
+            Action<string, object?, object?> handler = (name, oldValue, newValue) =>
+            {
+                try
+                {
+                    script.OnPropertyChanged(entity, name, oldValue, newValue);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, $"脚本 {script.EntityType} OnPropertyChanged 异常 EntityId:{entity.EntityId} Prop:{name}");
+                }
+            };
+            propertyHandlers[entity.EntityId] = handler;
+            entity.PropertyChanged += handler;
             script.OnCreate(entity);
         }
     }
 
-    /// <summary>实体销毁时通知脚本。</summary>
+    /// <summary>实体销毁时通知脚本（并退订属性变更事件）。</summary>
     public void NotifyDestroy(EntityObj entity)
     {
+        if (propertyHandlers.TryRemove(entity.EntityId, out var handler))
+        {
+            entity.PropertyChanged -= handler;
+        }
         if (scripts.TryGetValue(entity.TypeName, out var script))
         {
             script.OnDestroy(entity);
+        }
+    }
+
+    /// <summary>
+    /// 全局数据变更通知：对每个脚本按其绑定的实体类型直达遍历（类型索引），逐个调用 OnGlobalChanged。
+    /// 脚本实例按实体类型共享，因此回调需要实体参数（事件可能影响同类型的多个实体）。
+    /// </summary>
+    private void NotifyGlobalChanged(string key, object? value)
+    {
+        foreach (var script in scripts.Values)
+        {
+            foreach (var manager in entityManagers.Keys)
+            {
+                foreach (var entity in manager.GetAllEntitiesByType(script.EntityType))
+                {
+                    try
+                    {
+                        script.OnGlobalChanged(entity, key, value);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error(ex, $"脚本 {script.EntityType} OnGlobalChanged 异常 EntityId:{entity.EntityId} Key:{key}");
+                    }
+                }
+            }
         }
     }
 
@@ -213,6 +271,10 @@ public sealed class ScriptHost : IDisposable
 
             string typeName = instance.EntityType;
             scripts[typeName] = instance;
+            // 错误簿记键与失败登记保持一致：失败时按文件名登记（编译失败时拿不到类型名），
+            // 成功时按文件名清除；同时兼容按类型名登记的旧键（文件名 ≠ 类型名时也能正确清除）。
+            var loadedFileName = Path.GetFileNameWithoutExtension(filePath);
+            lastLoadErrors.TryRemove(loadedFileName, out _);
             lastLoadErrors.TryRemove(typeName, out _);
             Log.Info($"脚本加载成功: {typeName} <- {Path.GetFileName(filePath)}");
             ScriptLoaded?.Invoke(typeName, instance);

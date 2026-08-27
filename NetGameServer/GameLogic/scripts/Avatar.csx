@@ -2,6 +2,8 @@
 // 展示玩法脚本的基础模式：实体创建初始化 → 每 tick 逻辑（回血）→ 消息响应（受伤）。
 // 伤害结算读取全局数据 DamageMultiplier（框架/其他脚本可调整倍率，无需改本脚本）。
 // 实体属性由 EntityDef 声明（见 Battle/Entities/PlayerEntityDef.cs 的字段）。
+// 本脚本绑定 Player 实体类型（EntityType => "Player"），玩家加入场景后由框架自动生效：
+// 客户端通过 ScriptAction(40006) 消息调用 TakeDamage（args=[伤害]）。
 // 所有逻辑只写在这一个 .csx 里，框架零改动，保存即热更新。
 
 using System;
@@ -10,7 +12,7 @@ using Framework.Scripting;
 
 public class AvatarScript : EntityScriptBase
 {
-    public override string EntityType => "Avatar";
+    public override string EntityType => "Player";
 
     private int tickCount;
 

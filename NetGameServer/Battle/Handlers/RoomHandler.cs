@@ -69,12 +69,12 @@ namespace Battle.Handlers
                 // 基于实体框架创建玩家实体（属性脏标记 + 增量同步）
                 var newPlayerEntity = Battle.Entities.PlayerEntityDef.Create(clientSessionId);
 
-                // 崩溃恢复：若存在持久化数据，恢复玩家属性（对标 KBE restore_entity_handler）
+                // 崩溃恢复：若存在持久化数据，恢复玩家属性（对标 KBE restore_entity_handler）。
+                // 单条加载（O(1)），替代全量目录扫描——玩家量大时加入路径不再随存档数线性变慢。
                 bool recovered = false;
                 try
                 {
-                    var persisted = Battle.BattleServerApp.RestorePersistedPlayers()
-                        .FirstOrDefault(e => e.EntityId == clientSessionId);
+                    var persisted = Battle.BattleServerApp.LoadPersistedPlayer(clientSessionId);
                     if (persisted != null)
                     {
                         newPlayerEntity = persisted;
@@ -87,8 +87,14 @@ namespace Battle.Handlers
                     Shared.Log.Warning($"玩家实体恢复失败，使用默认属性 ClientSessionId:{clientSessionId} Exception:{ex.Message}");
                 }
 
+                // 玩家实体绑定属主（OWN_CLIENT 权限属性的定向广播用）
+                newPlayerEntity.OwnerClientId = clientSessionId;
+
                 // 通知游戏逻辑脚本：实体创建（脚本可覆写初始属性/绑定玩法）
                 Battle.BattleServerApp.NotifyEntityCreated(newPlayerEntity);
+
+                // 玩家私有玩法实体（Skill/Item）：生成并绑定属主（对标 KBE 脚本 createEntity）
+                Battle.BattleServerApp.SpawnPlayerGameplayEntities(scene, clientSessionId);
 
                 // 触发进入事件，进行数据广播（全量快照 + AOI 登记）
                 entitySyncHandler.OnPlayerEnter(clientSessionId, newPlayerEntity, gatewaySession);
@@ -156,33 +162,27 @@ namespace Battle.Handlers
         }
 
         /// <summary>
-        /// 处理客户端断开连接：根据会话 ID 从场景解绑玩家并执行离开或清理逻辑。
+        /// 处理客户端断开连接：优先走"断线挂起"（实体保留，宽限期内可重连恢复），
+        /// 未启用重连或宽限超时后完整离场。
         /// </summary>
-        /// <remarks>如果玩家仍在场景内，调用 OnPlayerLeave 触发离开同步；否则解除玩家与场景的绑定并记录信息日志。</remarks>
-        /// <param name="clientSessionId">断开连接的玩家会话 ID。</param>
-        /// <param name="gatewaySession">对应的网关会话（实现 Network.ISession），用于执行离场通知和清理操作。</param>
         public void HandleDisconnect(long clientSessionId, Network.ISession gatewaySession)
         {
             var scene = sceneManager.GetSceneByPlayer(clientSessionId);
-            if (scene != null)
-            {
-                string roomId = scene.SceneId;
-                var entity = scene.EntityManager.GetEntity(clientSessionId);
-                if (entity != null)
-                {
-                    // 断开时持久化保存（崩溃/断线后可恢复）
-                    Battle.BattleServerApp.PersistPlayer(entity);
-                    Battle.BattleServerApp.NotifyEntityDestroyed(entity);
-                }
-                entitySyncHandler.OnPlayerLeave(clientSessionId, gatewaySession);
-                Battle.BattleServerApp.SyncRoomPlayerCount(roomId);
-                Battle.BattleServerApp.SyncRoomMemberLeave(roomId, clientSessionId);
-            }
-            else
+            if (scene == null)
             {
                 sceneManager.UnbindPlayer(clientSessionId);
+                Shared.Log.Info($"玩家 {clientSessionId} 已从场景解绑并清理");
+                return;
             }
 
+            // 断线重连（对标 KBE 断线恢复）：实体挂起保留宽限期，重连后无缝续接
+            if (Battle.BattleServerApp.SuspendPlayerOnDisconnect(scene, clientSessionId, gatewaySession))
+            {
+                return;
+            }
+
+            // 无重连支持（配置关闭）：完整离场
+            Battle.BattleServerApp.LeaveScene(scene, clientSessionId, gatewaySession);
             Shared.Log.Info($"玩家 {clientSessionId} 已从场景解绑并清理");
         }
     }

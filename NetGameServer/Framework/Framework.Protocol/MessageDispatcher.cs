@@ -34,6 +34,14 @@ public sealed class MessageDispatcher
 {
     private readonly Dictionary<int, HandlerEntry> handlers = new();
     private readonly object gate = new();
+    private int slowHandlerThresholdMs = 200;
+
+    /// <summary>慢消息处理告警阈值（毫秒，默认 200）。</summary>
+    public int SlowHandlerThresholdMs
+    {
+        get => slowHandlerThresholdMs;
+        set => slowHandlerThresholdMs = Math.Max(1, value);
+    }
 
     private sealed record HandlerEntry(Func<ReadOnlyMemory<byte>, IGameMessage> Deserializer, Func<ISessionContext, IGameMessage, Task> Handler);
 
@@ -144,8 +152,16 @@ public sealed class MessageDispatcher
 
         try
         {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             IGameMessage msg = entry.Deserializer(payload);
             await entry.Handler(session, msg);
+            sw.Stop();
+
+            // 慢消息 Profile（对标 KBE 消息耗时统计）：超过阈值告警
+            if (sw.ElapsedMilliseconds > slowHandlerThresholdMs)
+            {
+                Framework.Core.Log.Warn($"慢消息处理 MsgId:{msgId} 耗时:{sw.ElapsedMilliseconds}ms 阈值:{slowHandlerThresholdMs}ms");
+            }
             return true;
         }
         catch (Exception ex)

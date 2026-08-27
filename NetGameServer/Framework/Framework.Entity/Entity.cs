@@ -27,6 +27,18 @@ public sealed class Entity
     /// <summary>当前是否有未同步的脏属性。</summary>
     public bool IsDirty => dirty.Count > 0;
 
+    /// <summary>
+    /// 所属客户端会话 ID（0 = 无属主）。
+    /// 用于 OWN_CLIENT 权限属性的定向广播与归属判定（对标 KBE 实体属主）。
+    /// </summary>
+    public long OwnerClientId { get; set; }
+
+    /// <summary>
+    /// 属性变更事件（Entity.Set 触发；SetSilent 不触发）。
+    /// 参数：属性名、旧值、新值。供脚本层事件总线（OnPropertyChanged）消费，替代轮询。
+    /// </summary>
+    public event Action<string, object?, object?>? PropertyChanged;
+
     internal Entity(EntityDef def, long entityId)
     {
         this.def = def;
@@ -76,6 +88,9 @@ public sealed class Entity
                 dirty.Add(name);
             }
         }
+
+        // 属性变更事件（脚本层 OnPropertyChanged 回调，对标 KBE onPropertyChange）
+        PropertyChanged?.Invoke(name, old, value);
     }
 
     /// <summary>

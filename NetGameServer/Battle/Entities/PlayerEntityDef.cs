@@ -15,7 +15,8 @@ public static class PlayerEntityDef
         .Add("Hp", EntityPropertyType.Int32)
         .Add("MaxHp", EntityPropertyType.Int32)
         .Add("Score", EntityPropertyType.Int32)
-        .Add("Equipment", EntityPropertyType.Int32List);
+        // 背包/装备为玩家私有：仅广播给属主客户端（对标 KBE OWN_CLIENT）
+        .Add("Equipment", EntityPropertyType.Int32List, syncToClient: true, scope: EntitySyncScope.OwnClient);
 
     /// <summary>获取玩家实体定义（单例）。</summary>
     public static EntityDef Def => Instance;
