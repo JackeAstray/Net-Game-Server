@@ -277,8 +277,18 @@ namespace DB
                 await Handlers.DbQueryHandler.HandleFriendApplyRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.DbHandleFriendApplyRequest>(cleanPayload), requestId);
             });
 
-            // 简单的会话事件日志，用于监控连接与流量，实际部署时可扩展鉴权或限流逻辑
-            tcpServer.OnSessionConnected += session => Shared.Log.Info($"DB <- Client 已连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+            // 内部连接认证：业务服务（Login/Game）连接必须先通过认证握手（InternalAuth），密钥共享。
+            string authSecret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            var clientAuthFilters = new System.Collections.Concurrent.ConcurrentDictionary<long, Framework.Core.Security.InternalAuthFilter>();
+
+            // 简单的会话事件日志，用于监控连接与流量；同时登记认证过滤器。
+            tcpServer.OnSessionConnected += session =>
+            {
+                Shared.Log.Info($"DB <- Client 已连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                clientAuthFilters[session.SessionId] = new Framework.Core.Security.InternalAuthFilter(authSecret, $"DB-{ConfigHelper.GetConfig<string>("DBHost") ?? "127.0.0.1"}:{port}");
+            };
+
+            // 统一收包管线：先认证，再分发。
             tcpServer.OnDataReceived += (session, data) =>
             {
                 if (data.Length < 4)
@@ -288,12 +298,42 @@ namespace DB
                 }
 
                 int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+
+                // 内部连接认证：未认证连接只接受认证握手消息。
+                if (clientAuthFilters.TryGetValue(session.SessionId, out var authFilter))
+                {
+                    if (!authFilter.IsAuthenticated)
+                    {
+                        if (Framework.Core.Security.InternalAuthFilter.IsAuthMessage(msgId))
+                        {
+                            byte[] authPayload = data.Slice(4).ToArray();
+                            if (authFilter.TryAuthenticate(authPayload))
+                            {
+                                Shared.Log.Info($"DB <- Client 认证成功 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                            }
+                            else
+                            {
+                                Shared.Log.Warning($"DB <- Client 认证失败，断开连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                                session.Close();
+                                return;
+                            }
+                            return; // 认证握手不进入业务分发
+                        }
+
+                        Shared.Log.Warning($"DB 拒绝未认证连接的业务消息 MsgId:{msgId} SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                        return;
+                    }
+                }
+
                 Shared.Log.Info($"DB <- Client 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{data.Length - 4}");
+                router.DispatchData(session, data);
             };
 
-            // 将路由器绑定到 TcpServer，使其负责分发收到的消息
-            router.BindServer(tcpServer);
-            tcpServer.OnSessionDisconnected += (session, reason) => Shared.Log.Info($"DB <- Client 断开连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Reason:{reason}");
+            tcpServer.OnSessionDisconnected += (session, reason) =>
+            {
+                clientAuthFilters.TryRemove(session.SessionId, out _);
+                Shared.Log.Info($"DB <- Client 断开连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Reason:{reason}");
+            };
 
             // 启动监听并记录启动信息
             await tcpServer.StartAsync(port);

@@ -10,7 +10,7 @@ namespace Login.Handlers
     /// 消息路由器，负责将来自 Gateway 的消息分发到对应的处理函数。
     /// 包含构建消息处理器字典的逻辑，以及将处理结果回写给 Gateway 的辅助方法。
     /// </summary>
-    public static class MessageRouter
+    public static partial class MessageRouter
     {
         /// <summary>
         /// 构建消息处理器映射（MsgId -> 处理函数）。

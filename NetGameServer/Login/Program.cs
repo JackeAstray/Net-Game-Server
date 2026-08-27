@@ -1,4 +1,4 @@
-﻿using Network;
+using Network;
 using Network.Tcp;
 using Shared;
 using Serilog;
@@ -16,6 +16,9 @@ namespace Login
         static async Task Main(string[] args)
         {
             Log.Configure(true, "Logs/Login.log");
+
+            // 远程日志上报（配置 LoggerHost/LoggerPort 后生效，对标 KBE logger 聚合）
+            Shared.RemoteLog.Initialize($"Login-{ConfigHelper.GetConfig<string>("LoginHost") ?? "127.0.0.1"}:{ConfigHelper.GetConfig<int>("LoginPort")}");
             Log.Info("登录服务器正在启动...");
 
             await LoginServerApp.StartNetworkAsync();

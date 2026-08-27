@@ -1,0 +1,321 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Center/调度服务器协议定义（匹配/房间/节点管理）
+    id 范围：30000-39999 客户端消息；90000-90999 内部节点通信
+-->
+<Protocol name="Center" version="1">
+
+  <!-- ==== 匹配 ==== -->
+  <Message id="30001" name="CenterMatch" target="Center" reply="30002">
+    <Field name="CategoryId" type="string" />
+  </Message>
+
+  <Message id="30002" name="CenterMatchResult" target="Center">
+    <Field name="Success" type="bool" />
+    <Field name="RoomId" type="string" />
+    <Field name="BattleNodeId" type="string" />
+    <Field name="SceneId" type="string" />
+    <Field name="SceneType" type="string" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <!-- ==== 房间 ==== -->
+  <Message id="30003" name="CenterCreateRoom" target="Center" reply="30004">
+    <Field name="SceneType" type="string" />
+    <Field name="IsPrivate" type="bool" />
+    <Field name="RoomName" type="string" />
+    <Field name="Password" type="string" />
+    <Field name="MaxPlayers" type="int32" />
+  </Message>
+
+  <Message id="30004" name="CenterCreateRoomResult" target="Center">
+    <Field name="Success" type="bool" />
+    <Field name="RoomId" type="string" />
+    <Field name="RoomName" type="string" />
+    <Field name="BattleNodeId" type="string" />
+    <Field name="SceneId" type="string" />
+    <Field name="HasPassword" type="bool" />
+    <Field name="MaxPlayers" type="int32" />
+    <Field name="CurrentPlayers" type="int32" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="30005" name="CenterListRooms" target="Center" reply="30006">
+    <Field name="SceneType" type="string" />
+    <Field name="IncludePrivate" type="bool" />
+  </Message>
+
+  <Message id="30006" name="CenterListRoomsResult" target="Center">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+    <Field name="Rooms" type="list:RoomInfo" />
+  </Message>
+
+  <Message id="30007" name="CenterJoinRoom" target="Center" reply="30008">
+    <Field name="RoomId" type="string" />
+    <Field name="Password" type="string" />
+  </Message>
+
+  <Message id="30008" name="CenterJoinRoomResult" target="Center">
+    <Field name="Success" type="bool" />
+    <Field name="RoomId" type="string" />
+    <Field name="RoomName" type="string" />
+    <Field name="BattleNodeId" type="string" />
+    <Field name="SceneId" type="string" />
+    <Field name="SceneType" type="string" />
+    <Field name="HasPassword" type="bool" />
+    <Field name="MaxPlayers" type="int32" />
+    <Field name="CurrentPlayers" type="int32" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="30009" name="CenterCloseRoom" target="Center" reply="30010">
+    <Field name="RoomId" type="string" />
+  </Message>
+
+  <Message id="30010" name="CenterCloseRoomResult" target="Center">
+    <Field name="Success" type="bool" />
+    <Field name="RoomId" type="string" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="30011" name="RoomClosedNotify" target="Center">
+    <Field name="RoomId" type="string" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="30012" name="CenterUpdateRoomSettings" target="Center" reply="30013">
+    <Field name="RoomId" type="string" />
+    <Field name="SceneType" type="string" />
+    <Field name="RoomName" type="string" />
+    <Field name="Password" type="string" />
+    <Field name="MaxPlayers" type="int32" />
+    <Field name="IsPrivate" type="bool" />
+    <Field name="CustomRules" type="map:string,string" />
+  </Message>
+
+  <Message id="30013" name="CenterUpdateRoomSettingsResult" target="Center">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="30014" name="RoomSettingsChangedNotify" target="Center">
+    <Field name="RoomId" type="string" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="30015" name="CenterStartRoomGame" target="Center" reply="30016">
+    <Field name="RoomId" type="string" />
+  </Message>
+
+  <Message id="30016" name="CenterStartRoomGameResult" target="Center">
+    <Field name="Success" type="bool" />
+    <Field name="RoomId" type="string" />
+    <Field name="BattleNodeId" type="string" />
+    <Field name="SceneId" type="string" />
+    <Field name="SceneType" type="string" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="30017" name="RoomGameStartedNotify" target="Center">
+    <Field name="RoomId" type="string" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="30018" name="RoomMemberList" target="Center" reply="30019">
+    <Field name="RoomId" type="string" />
+  </Message>
+
+  <Message id="30019" name="RoomMemberListResult" target="Center">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+    <Field name="Room" type="RoomInfo" />
+  </Message>
+
+  <Message id="30020" name="RoomMemberListChangedNotify" target="Center">
+    <Field name="RoomId" type="string" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="30021" name="RoomReady" target="Center" reply="30022">
+    <Field name="RoomId" type="string" />
+    <Field name="IsReady" type="bool" />
+  </Message>
+
+  <Message id="30022" name="RoomReadyResult" target="Center">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="30023" name="RoomReadyChangedNotify" target="Center">
+    <Field name="RoomId" type="string" />
+    <Field name="UserId" type="int32" />
+    <Field name="IsReady" type="bool" />
+  </Message>
+
+  <Message id="30024" name="RoomTransferOwner" target="Center" reply="30025">
+    <Field name="RoomId" type="string" />
+    <Field name="TargetUserId" type="int32" />
+  </Message>
+
+  <Message id="30025" name="RoomTransferOwnerResult" target="Center">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="30026" name="RoomOwnerChangedNotify" target="Center">
+    <Field name="RoomId" type="string" />
+    <Field name="NewOwnerUserId" type="int32" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="30027" name="RoomKickMember" target="Center" reply="30028">
+    <Field name="RoomId" type="string" />
+    <Field name="TargetUserId" type="int32" />
+  </Message>
+
+  <Message id="30028" name="RoomKickMemberResult" target="Center">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="30029" name="RoomKickedNotify" target="Center">
+    <Field name="RoomId" type="string" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="30030" name="CenterRoomChat" target="Center" reply="30031">
+    <Field name="RoomId" type="string" />
+    <Field name="Content" type="string" />
+  </Message>
+
+  <Message id="30031" name="CenterRoomChatResult" target="Center">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="30032" name="CenterRoomChatNotify" target="Center">
+    <Field name="RoomId" type="string" />
+    <Field name="SenderUserId" type="int32" />
+    <Field name="SenderNickname" type="string" />
+    <Field name="Content" type="string" />
+    <Field name="SendTime" type="int64" />
+  </Message>
+
+  <Message id="30033" name="CenterLeaveRoom" target="Center" reply="30034">
+    <Field name="RoomId" type="string" />
+  </Message>
+
+  <Message id="30034" name="CenterLeaveRoomResult" target="Center">
+    <Field name="Success" type="bool" />
+    <Field name="RoomId" type="string" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <!-- ==== 内部节点通信 90000-90999 ==== -->
+  <Message id="90001" name="CenterRegisterNode" target="Center" internal="true">
+    <Field name="NodeId" type="string" />
+    <Field name="NodeType" type="string" />
+    <Field name="Host" type="string" />
+    <Field name="Port" type="int32" />
+    <Field name="CurrentLoad" type="int32" />
+    <Field name="Timestamp" type="int64" />
+    <Field name="Signature" type="string" />
+  </Message>
+
+  <Message id="90002" name="CenterRegisterNodeResult" target="Center" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="90003" name="CenterCreateScene" target="Battle" internal="true" reply="90004">
+    <Field name="RoomId" type="string" />
+    <Field name="RoomName" type="string" />
+    <Field name="SceneType" type="string" />
+    <Field name="IsPrivate" type="bool" />
+    <Field name="MaxPlayers" type="int32" />
+  </Message>
+
+  <Message id="90004" name="CenterCreateSceneResult" target="Center" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="RoomId" type="string" />
+    <Field name="SceneId" type="string" />
+    <Field name="BattleNodeId" type="string" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="90005" name="CenterNodeStatus" target="Center" internal="true">
+    <Field name="NodeId" type="string" />
+    <Field name="CurrentLoad" type="int32" />
+    <Field name="Timestamp" type="int64" />
+    <Field name="Signature" type="string" />
+  </Message>
+
+  <Message id="90006" name="CenterDestroyScene" target="Battle" internal="true" reply="90007">
+    <Field name="RoomId" type="string" />
+  </Message>
+
+  <Message id="90007" name="CenterDestroySceneResult" target="Center" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="RoomId" type="string" />
+    <Field name="Message" type="string" />
+    <Field name="AffectedSessionIds" type="list:int64" />
+  </Message>
+
+  <Message id="90008" name="CenterRoomPlayerCountSync" target="Center" internal="true">
+    <Field name="RoomId" type="string" />
+    <Field name="CurrentPlayers" type="int32" />
+  </Message>
+
+  <Message id="90010" name="CenterRoomMemberLeaveSync" target="Center" internal="true">
+    <Field name="RoomId" type="string" />
+    <Field name="ClientSessionId" type="int64" />
+  </Message>
+
+  <!-- ==== 内部连接认证握手（服务间连接建立后第一包） ==== -->
+  <Message id="90999" name="InternalAuth" target="All" internal="true">
+    <Field name="NodeId" type="string" />
+    <Field name="Timestamp" type="int64" />
+    <Field name="Signature" type="string" />
+  </Message>
+
+  <!-- ==== 跨进程实体远程调用（对标 KBE EntityCall/Mailbox） ==== -->
+  <Message id="91001" name="EntityRemoteCall" target="All" internal="true">
+    <Field name="TargetNodeId" type="string" />
+    <Field name="EntityId" type="int64" />
+    <Field name="MethodName" type="string" />
+    <Field name="Args" type="bytes" />
+  </Message>
+
+  <Message id="91002" name="EntityRemoteCallResult" target="All" internal="true">
+    <Field name="EntityId" type="int64" />
+    <Field name="MethodName" type="string" />
+    <Field name="Success" type="bool" />
+    <Field name="Result" type="bytes" />
+  </Message>
+
+  <!-- ==== 房间数据结构 ==== -->
+  <Struct name="RoomMemberInfo">
+    <Field name="UserId" type="int32" />
+    <Field name="ClientSessionId" type="int64" />
+    <Field name="IsOwner" type="bool" />
+    <Field name="IsReady" type="bool" />
+    <Field name="DisplayName" type="string" />
+  </Struct>
+
+  <Struct name="RoomInfo">
+    <Field name="RoomId" type="string" />
+    <Field name="RoomName" type="string" />
+    <Field name="SceneId" type="string" />
+    <Field name="SceneType" type="string" />
+    <Field name="BattleNodeId" type="string" />
+    <Field name="OwnerUserId" type="int32" />
+    <Field name="IsPrivate" type="bool" />
+    <Field name="HasPassword" type="bool" />
+    <Field name="MaxPlayers" type="int32" />
+    <Field name="CurrentPlayers" type="int32" />
+    <Field name="RoomStatus" type="string" />
+    <Field name="CreatedAtUtc" type="int64" />
+  </Struct>
+
+</Protocol>

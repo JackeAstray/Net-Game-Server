@@ -19,36 +19,30 @@ public static class RouteMetadata
     private const int BinaryMetadataFooterSize = 8;
 
     /// <summary>
-    /// 向 JSON 载荷中附加或更新客户端会话标识字段，并返回更新后的 UTF-8 字节数组。
+    /// 向载荷中附加或更新客户端会话标识字段，并返回更新后的字节数组。
+    /// 使用二进制尾部元数据块（零拷贝 body，性能优于 JSON 内嵌）。
     /// </summary>
-    /// <param name="payload">原始 JSON 载荷字节。</param>
-    /// <param name="clientSessionId">客户端会话标识。</param>
-    /// <returns>包含客户端会话标识字段的新载荷字节数组；若载荷非 JSON 对象则返回原始副本。</returns>
     public static byte[] AttachClientSessionId(ReadOnlyMemory<byte> payload, long clientSessionId)
     {
-        return UpsertLongField(payload, ClientSessionIdField, clientSessionId);
+        return Framework.Protocol.BinaryRouteMetadata.AttachLong(payload.Span, ClientSessionIdField, clientSessionId);
     }
 
     /// <summary>
-    /// 向 JSON 载荷中附加或更新目标会话标识字段，并返回更新后的 UTF-8 字节数组。
+    /// 向载荷中附加或更新目标会话标识字段，并返回更新后的字节数组。
+    /// 使用二进制尾部元数据块。
     /// </summary>
-    /// <param name="payload">原始 JSON 载荷字节。</param>
-    /// <param name="targetSessionId">目标会话标识。</param>
-    /// <returns>包含目标会话标识字段的新载荷字节数组；若载荷非 JSON 对象则返回原始副本。</returns>
     public static byte[] AttachTargetSessionId(ReadOnlyMemory<byte> payload, long targetSessionId)
     {
-        return UpsertLongField(payload, TargetSessionIdField, targetSessionId);
+        return Framework.Protocol.BinaryRouteMetadata.AttachLong(payload.Span, TargetSessionIdField, targetSessionId);
     }
 
     /// <summary>
-    /// 向 JSON 载荷中附加或更新广播标记字段，并返回更新后的 UTF-8 字节数组。
+    /// 向载荷中附加或更新广播标记字段，并返回更新后的字节数组。
+    /// 使用二进制尾部元数据块。
     /// </summary>
-    /// <param name="payload">原始 JSON 载荷字节。</param>
-    /// <param name="broadcast">是否广播。</param>
-    /// <returns>包含广播标记字段的新载荷字节数组；若载荷非 JSON 对象则返回原始副本。</returns>
     public static byte[] AttachBroadcast(ReadOnlyMemory<byte> payload, bool broadcast)
     {
-        return UpsertBoolField(payload, BroadcastField, broadcast);
+        return Framework.Protocol.BinaryRouteMetadata.AttachBool(payload.Span, BroadcastField, broadcast);
     }
 
 
@@ -86,6 +80,14 @@ public static class RouteMetadata
     /// <returns>成功提取到布尔类型的 BroadcastField 并生成去除该字段的载荷时为 true；否则为 false。</returns>
     public static bool TryExtractBroadcast(ReadOnlyMemory<byte> payload, out bool broadcast, out byte[] cleanPayload)
     {
+        // 新格式：二进制尾部元数据
+        if (Framework.Protocol.BinaryRouteMetadata.TryExtractBool(payload.Span, BroadcastField, out broadcast, out var binaryClean))
+        {
+            cleanPayload = binaryClean;
+            return true;
+        }
+
+        // 旧格式：JSON 对象字段
         if (TryParseObject(payload, out var obj))
         {
             JToken? token = obj[BroadcastField];
@@ -116,22 +118,22 @@ public static class RouteMetadata
     /// <returns>包含请求标识字段的新字节数组。</returns>
     public static byte[] AttachRequestId(ReadOnlyMemory<byte> payload, long requestId)
     {
-        return UpsertLongField(payload, RequestIdField, requestId);
+        return Framework.Protocol.BinaryRouteMetadata.AttachLong(payload.Span, RequestIdField, requestId);
     }
 
     public static byte[] AttachUserId(ReadOnlyMemory<byte> payload, int userId)
     {
-        return UpsertLongField(payload, UserIdField, userId);
+        return Framework.Protocol.BinaryRouteMetadata.AttachLong(payload.Span, UserIdField, userId);
     }
 
     public static byte[] AttachUid(ReadOnlyMemory<byte> payload, string uid)
     {
-        return UpsertStringField(payload, UidField, uid);
+        return Framework.Protocol.BinaryRouteMetadata.AttachString(payload.Span, UidField, uid);
     }
 
     public static byte[] AttachNickname(ReadOnlyMemory<byte> payload, string nickname)
     {
-        return UpsertStringField(payload, NicknameField, nickname);
+        return Framework.Protocol.BinaryRouteMetadata.AttachString(payload.Span, NicknameField, nickname);
     }
 
     /// <summary>
@@ -165,16 +167,19 @@ public static class RouteMetadata
     }
 
     /// <summary>
-    /// 解析 JSON 有效载荷并尝试将指定字段的数值提取为 long；成功时移除该字段并返回移除后的有效载荷副本。
+    /// 解析负载并尝试将指定字段的数值提取为 long；成功时移除该字段并返回移除后的负载副本。
+    /// 优先二进制尾部元数据（新格式，零拷贝 body），失败回退 JSON 对象字段（旧格式兼容）。
     /// </summary>
-    /// <remarks>使用 TryParseObject 解析 JSON 并通过 Newtonsoft.Json 读取和移除字段；cleanPayload 通过 UTF-8 编码生成。</remarks>
-    /// <param name="payload">包含 JSON 对象的只读字节序列（UTF-8 编码）。</param>
-    /// <param name="fieldName">要提取并移除的字段名。</param>
-    /// <param name="value">当返回 true 时为提取到的 long 值；失败时为 0。</param>
-    /// <param name="cleanPayload">当返回 true 时为移除字段后的 JSON 的 UTF-8 字节数组；失败时为原始有效载荷的副本。</param>
-    /// <returns>若字段存在且其类型为整数或浮点数且已成功转换为 long，则返回 true；否则返回 false。</returns>
     private static bool TryExtractLongField(ReadOnlyMemory<byte> payload, string fieldName, out long value, out byte[] cleanPayload)
     {
+        // 新格式：二进制尾部元数据
+        if (Framework.Protocol.BinaryRouteMetadata.TryExtractLong(payload.Span, fieldName, out value, out var binaryClean))
+        {
+            cleanPayload = binaryClean;
+            return true;
+        }
+
+        // 旧格式：JSON 对象字段
         if (TryParseObject(payload, out var obj))
         {
             JToken? token = obj[fieldName];
@@ -278,6 +283,14 @@ public static class RouteMetadata
 
     private static bool TryExtractStringField(ReadOnlyMemory<byte> payload, string fieldName, out string value, out byte[] cleanPayload)
     {
+        // 新格式：二进制尾部元数据
+        if (Framework.Protocol.BinaryRouteMetadata.TryExtractString(payload.Span, fieldName, out value, out var binaryClean))
+        {
+            cleanPayload = binaryClean;
+            return true;
+        }
+
+        // 旧格式：JSON 对象字段
         if (TryParseObject(payload, out var obj))
         {
             JToken? token = obj[fieldName];

@@ -2,13 +2,14 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
-using Shared.Messages.Battle;
+using Framework.Entity;
 
 namespace Battle.Handlers
 {
     /// <summary>
     /// 基于九宫格（Grid）的空间分区 AOI（Area of Interest）管理系统。
     /// 负责将大地图划分成网格，高效查询实体周围可见的网格与实体。
+    /// 实体使用新实体框架（Framework.Entity.Entity），位置从 "Position" 属性读取。
     /// </summary>
     public class GridAoiManager
     {
@@ -16,7 +17,7 @@ namespace Battle.Handlers
         public float GridSize { get; }
 
         // 所有实体的状态存储
-        private readonly ConcurrentDictionary<long, EntityState> entities = new();
+        private readonly ConcurrentDictionary<long, Framework.Entity.Entity> entities = new();
 
         // 网格索引: (GridX, GridY) -> 该网格内所有实体的 SessionId 集合
         private readonly ConcurrentDictionary<(int, int), ConcurrentDictionary<long, byte>> grids = new();
@@ -29,9 +30,7 @@ namespace Battle.Handlers
         /// <summary>
         /// 获取给定世界坐标对应的网格坐标 (GridX, GridY)。使用向下取整确保坐标正确划分到网格中。
         /// </summary>
-        /// <param name="position">世界坐标</param>
-        /// <returns>网格坐标 (GridX, GridY)</returns>
-        public (int, int) GetGridCoordinate(Vector3 position)
+        public (int, int) GetGridCoordinate(Float3 position)
         {
             int gx = (int)Math.Floor(position.X / GridSize);
             int gz = (int)Math.Floor(position.Z / GridSize);
@@ -39,22 +38,20 @@ namespace Battle.Handlers
         }
 
         /// <summary>
-        /// 添加或更新实体的状态信息，并根据新旧位置更新网格索引。
+        /// 添加或更新实体，并根据新旧位置更新网格索引。
         /// </summary>
-        /// <param name="sessionId">实体的会话ID</param>
-        /// <param name="state">实体的状态信息</param>
-        /// <param name="oldGrid">输出参数，表示实体的旧网格坐标</param>
-        /// <param name="newGrid">输出参数，表示实体的新网格坐标</param>
         /// <returns>如果实体的网格发生变化，则返回 true；否则返回 false</returns>
-        public bool AddOrUpdateEntity(long sessionId, EntityState state, out (int, int) oldGrid, out (int, int) newGrid)
+        public bool AddOrUpdateEntity(long sessionId, Framework.Entity.Entity entity, out (int, int) oldGrid, out (int, int) newGrid)
         {
+            Float3 position = entity.Get<Float3>("Position");
             oldGrid = (0, 0);
-            newGrid = GetGridCoordinate(state.Position);
+            newGrid = GetGridCoordinate(position);
             bool isGridChanged = false;
 
-            if (entities.TryGetValue(sessionId, out var oldState))
+            if (entities.TryGetValue(sessionId, out var oldEntity))
             {
-                oldGrid = GetGridCoordinate(oldState.Position);
+                Float3 oldPosition = oldEntity.Get<Float3>("Position");
+                oldGrid = GetGridCoordinate(oldPosition);
                 if (oldGrid != newGrid)
                 {
                     isGridChanged = true;
@@ -74,7 +71,7 @@ namespace Battle.Handlers
             }
 
             // 更新实体信息
-            entities[sessionId] = state;
+            entities[sessionId] = entity;
 
             // 添加到新网格
             if (isGridChanged)
@@ -89,12 +86,12 @@ namespace Battle.Handlers
         /// <summary>
         /// 移除实体及其所在的网格信息。
         /// </summary>
-        /// <param name="sessionId">实体的会话ID</param>
         public void RemoveEntity(long sessionId)
         {
-            if (entities.TryRemove(sessionId, out var state))
+            if (entities.TryRemove(sessionId, out var entity))
             {
-                var gridCoord = GetGridCoordinate(state.Position);
+                Float3 position = entity.Get<Float3>("Position");
+                var gridCoord = GetGridCoordinate(position);
                 if (grids.TryGetValue(gridCoord, out var gridSet))
                 {
                     gridSet.TryRemove(sessionId, out _);
@@ -105,23 +102,19 @@ namespace Battle.Handlers
         /// <summary>
         /// 获取实体的状态信息。
         /// </summary>
-        /// <param name="sessionId">实体的会话ID </param>
-        /// <returns>实体的状态信息，如果不存在则返回 null</returns>
-        public EntityState? GetEntity(long sessionId)
+        public Framework.Entity.Entity? GetEntity(long sessionId)
         {
-            if (entities.TryGetValue(sessionId, out var state))
+            if (entities.TryGetValue(sessionId, out var entity))
             {
-                return state;
+                return entity;
             }
             return null;
         }
 
         /// <summary>
         /// 获取所有实体的状态信息列表（用于调试或全局查询）。
-        /// 注意：在实际生产环境中，频繁调用可能会有性能问题，需谨慎使用。
         /// </summary>
-        /// <returns></returns>
-        public IEnumerable<EntityState> GetAllEntities()
+        public IEnumerable<Framework.Entity.Entity> GetAllEntities()
         {
             return entities.Values;
         }
@@ -129,9 +122,6 @@ namespace Battle.Handlers
         /// <summary>
         /// 获取指定网格周围九宫格范围内的所有实体 SessionId 列表。
         /// </summary>
-        /// <param name="gridX">网格的 X 坐标</param>
-        /// <param name="gridZ">网格的 Z 坐标</param>
-        /// <returns>指定网格周围九宫格范围内的所有实体 SessionId 列表</returns>
         public List<long> GetSurroundingEntities(int gridX, int gridZ)
         {
             var result = new List<long>();
@@ -151,10 +141,6 @@ namespace Battle.Handlers
         /// <summary>
         /// 计算从旧网格到新网格的差异，返回进入视野的实体列表和离开视野的实体列表。
         /// </summary>
-        /// <param name="oldGrid">旧网格坐标</param>
-        /// <param name="newGrid">新网格坐标</param>
-        /// <param name="enterEntities">进入视野的实体列表</param>
-        /// <param name="leaveEntities">离开视野的实体列表</param>
         public void CalculateGridDiff((int x, int z) oldGrid, (int x, int z) newGrid, out List<long> enterEntities, out List<long> leaveEntities)
         {
             var oldSurroundings = new HashSet<(int, int)>();

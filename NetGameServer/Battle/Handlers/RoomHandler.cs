@@ -66,19 +66,14 @@ namespace Battle.Handlers
                 // 将玩家绑定到该场景
                 sceneManager.BindPlayerToScene(clientSessionId, request.RoomId);
 
-                var newPlayerState = new EntityState
-                {
-                    EntityId = clientSessionId,
-                    Nickname = $"Player_{clientSessionId % 1000}",
-                    Hp = 100,
-                    MaxHp = 100,
-                    Score = 0,
-                    Position = new Vector3(0, 0, 0),
-                    Rotation = new Vector3(0, 0, 0)
-                };
+                // 基于实体框架创建玩家实体（属性脏标记 + 增量同步）
+                var newPlayerEntity = Battle.Entities.PlayerEntityDef.Create(clientSessionId);
 
-                // 触发进入事件，进行数据广播
-                entitySyncHandler.OnPlayerEnter(clientSessionId, newPlayerState, gatewaySession);
+                // 通知游戏逻辑脚本：实体创建（脚本可覆写初始属性/绑定玩法）
+                Battle.BattleServerApp.NotifyEntityCreated(newPlayerEntity);
+
+                // 触发进入事件，进行数据广播（全量快照 + AOI 登记）
+                entitySyncHandler.OnPlayerEnter(clientSessionId, newPlayerEntity, gatewaySession);
                 Battle.BattleServerApp.SyncRoomPlayerCount(request.RoomId);
 
                 return Task.FromResult(new BattleJoinResponse
@@ -146,6 +141,11 @@ namespace Battle.Handlers
             if (scene != null)
             {
                 string roomId = scene.SceneId;
+                var entity = scene.EntityManager.GetEntity(clientSessionId);
+                if (entity != null)
+                {
+                    Battle.BattleServerApp.NotifyEntityDestroyed(entity);
+                }
                 entitySyncHandler.OnPlayerLeave(clientSessionId, gatewaySession);
                 Battle.BattleServerApp.SyncRoomPlayerCount(roomId);
                 Battle.BattleServerApp.SyncRoomMemberLeave(roomId, clientSessionId);

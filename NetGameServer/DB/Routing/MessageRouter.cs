@@ -10,6 +10,13 @@ namespace DB.Routing
         private readonly ConcurrentDictionary<int, Func<ISession, ReadOnlyMemory<byte>, Task>> handlers = new();
 
         /// <summary>
+        /// 按会话保序的任务队列（对标 KBE Buffered_DBTasks）：
+        /// 同一调用方（Login/Game 连接）的 DB 请求严格按序执行，不同调用方并发执行。
+        /// 避免"先写后读"乱序与同一实体的并发写冲突。
+        /// </summary>
+        private readonly Framework.Core.OrderedTaskQueue taskQueue = new("DBRouter");
+
+        /// <summary>
         /// 绑定服务器：将消息路由器绑定到网络服务器的事件上，以便在接收到数据时能够正确地处理消息。
         /// </summary>
         /// <param name="server"></param>
@@ -18,6 +25,11 @@ namespace DB.Routing
             server.OnDataReceived -= HandleRawData;
             server.OnDataReceived += HandleRawData;
         }
+
+        /// <summary>
+        /// 对外暴露的分发入口（供认证管线在验证通过后调用）。
+        /// </summary>
+        public void DispatchData(ISession session, ReadOnlyMemory<byte> data) => HandleRawData(session, data);
 
         /// <summary>
         /// 注册消息处理函数：将消息 ID 与对应的处理函数关联起来。
@@ -31,12 +43,10 @@ namespace DB.Routing
 
         /// <summary>
         /// 异步解析原始数据库协议数据，读取小端序的消息 ID（前 4 字节）与可选请求 ID，并将剩余负载转发给已注册的消息处理器。
+        /// DB 请求通过 OrderedTaskQueue 按会话保序执行（对标 KBE Buffered_DBTasks），
+        /// 同一调用方的请求严格串行、不同调用方并发，避免乱序与并发写冲突。
         /// </summary>
-        /// <remarks>当数据长度不足 4 字节或消息 ID 未注册时记录错误。会尝试从负载中提取请求 ID；若提取成功，会用带有该请求 ID 的 RequestContextSession
-        /// 调用处理器。内部捕获并记录处理器或解析过程中的异常，不会将异常抛出给调用者。</remarks>
-        /// <param name="session">用于创建请求上下文的会话对象，作为消息处理器的目标会话。</param>
-        /// <param name="data">包含消息 ID（前 4 字节，小端序）后接有效负载的原始字节序列。</param>
-        private async void HandleRawData(ISession session, ReadOnlyMemory<byte> data)
+        private void HandleRawData(ISession session, ReadOnlyMemory<byte> data)
         {
             try
             {
@@ -58,15 +68,19 @@ namespace DB.Routing
 
                 if (handlers.TryGetValue(msgId, out var handler))
                 {
-                    try
+                    // 按会话 ID 保序入队（同一连接先写后读不乱序；不同连接并发执行）
+                    _ = taskQueue.EnqueueAsync(session.SessionId, async () =>
                     {
-                        var targetSession = new RequestContextSession(session, requestId);
-                        await handler(targetSession, payload);
-                    }
-                    catch (Exception ex)
-                    {
-                        Shared.Log.Error($"[MessageRouter] MsgId {msgId} 处理异常: {ex}");
-                    }
+                        try
+                        {
+                            var targetSession = new RequestContextSession(session, requestId);
+                            await handler(targetSession, payload);
+                        }
+                        catch (Exception ex)
+                        {
+                            Shared.Log.Error($"[MessageRouter] MsgId {msgId} 处理异常: {ex}");
+                        }
+                    });
                 }
                 else
                 {

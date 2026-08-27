@@ -104,8 +104,9 @@ namespace Gateway
             // 读取配置端口，若配置为 0 或未配置则使用默认端口
             int port = ConfigHelper.GetConfig<int>("GatewayPort") == 0 ? 31300 : ConfigHelper.GetConfig<int>("GatewayPort");
 
-            // 创建各类型的监听服务器（TCP/UDP/KCP/WebSocket）
+            // 创建各类型的监听服务器（TCP/KCP/UDP/WebSocket）
             var tcpServer = new TcpServer();
+            var kcpServer = new Network.Kcp.KcpServer();
             var udpServer = new Network.Udp.UdpServer();
             var webSocketServer = new Network.WebSockets.WebSocketServer();
 
@@ -115,9 +116,14 @@ namespace Gateway
                 Shared.Log.Info($"客户端(TCP)已连接: {session.RemoteEndPoint} ID:{session.SessionId}");
                 Gateway.Managers.GatewaySessionManager.Instance.AddSession(session);
             };
+            kcpServer.OnSessionConnected += session =>
+            {
+                Shared.Log.Info($"客户端(KCP)已连接: {session.RemoteEndPoint} ID:{session.SessionId}");
+                Gateway.Managers.GatewaySessionManager.Instance.AddSession(session);
+            };
             udpServer.OnSessionConnected += session =>
             {
-                Shared.Log.Info($"客户端(UDP/KCP)已连接: {session.RemoteEndPoint} ID:{session.SessionId}");
+                Shared.Log.Info($"客户端(UDP)已连接: {session.RemoteEndPoint} ID:{session.SessionId}");
                 Gateway.Managers.GatewaySessionManager.Instance.AddSession(session);
             };
             webSocketServer.OnSessionConnected += session =>
@@ -194,6 +200,40 @@ namespace Gateway
                         byte[] outbound = wrapperMsg.AsSpan(0, routedLength).ToArray();
                         System.Buffers.ArrayPool<byte>.Shared.Return(wrapperMsg);
 
+                        // 配置化路由：优先查 Protogen 生成的路由表（Protocol/defs/*.def 为唯一事实来源），
+                        // 未定义的消息回退到旧区间路由（过渡期兼容）。
+                        string? targetServer = Framework.Protocol.Generated.RouterTable.GetTargetServer(msgId);
+                        if (targetServer != null)
+                        {
+                            var route = Framework.Protocol.Generated.RouterTable.Routes[msgId];
+                            if (route.IsInternal)
+                            {
+                                Shared.Log.Warning($"Gateway 拒绝客户端发送的内部消息 MsgId:{msgId}");
+                                return;
+                            }
+
+                            Shared.Log.Info($"Gateway 配置化路由客户端消息 MsgId:{msgId} ClientSessionId:{session.SessionId} Target:{targetServer} OutboundLength:{outbound.Length}");
+                            switch (targetServer)
+                            {
+                                case "Login":
+                                    loginSender.SendOrBuffer(outbound);
+                                    break;
+                                case "Game":
+                                    gameSender.SendOrBuffer(outbound);
+                                    break;
+                                case "Center":
+                                    centerSender.SendOrBuffer(outbound);
+                                    break;
+                                case "Battle":
+                                    battleSender.SendOrBuffer(outbound);
+                                    break;
+                                default:
+                                    Shared.Log.Warning($"Gateway: 未知的路由目标 TargetServer=>{targetServer} MsgId=>{msgId}");
+                                    break;
+                            }
+                            return;
+                        }
+
                         if (msgId >= 10000 && msgId < 20000)
                         {
                             Shared.Log.Info($"Gateway 路由客户端消息 -> Login MsgId:{msgId} ClientSessionId:{session.SessionId} BoundUserId:{boundUserId} OutboundLength:{outbound.Length}");
@@ -230,8 +270,9 @@ namespace Gateway
                 }
             };
 
-            // 将数据处理器注册到三种服务器上
+            // 将数据处理器注册到四种服务器上
             tcpServer.OnDataReceived += onDataReceived;
+            kcpServer.OnDataReceived += onDataReceived;
             udpServer.OnDataReceived += onDataReceived;
             webSocketServer.OnDataReceived += onDataReceived;
 
@@ -244,14 +285,16 @@ namespace Gateway
             };
 
             tcpServer.OnSessionDisconnected += onSessionDisconnected;
+            kcpServer.OnSessionDisconnected += onSessionDisconnected;
             udpServer.OnSessionDisconnected += onSessionDisconnected;
             webSocketServer.OnSessionDisconnected += onSessionDisconnected;
 
             await tcpServer.StartAsync(port);
-            await udpServer.StartAsync(port);
-            await webSocketServer.StartAsync(port + 1);
+            await kcpServer.StartAsync(port + 1);
+            await udpServer.StartAsync(port + 2);
+            await webSocketServer.StartAsync(port + 3);
 
-            Shared.Log.Info($"网关服务器已启动，监听 TCP 端口: {port}, UDP/KCP 端口: {port}, WebSocket 端口: {port + 1}");
+            Shared.Log.Info($"网关服务器已启动，监听 TCP 端口: {port}, KCP 端口: {port + 1}, UDP 端口: {port + 2}, WebSocket 端口: {port + 3}");
 
             AttachCenterNodeLifecycle(centerClient, port);
         }
@@ -260,14 +303,32 @@ namespace Gateway
         /// 建立并返回到后端 Login, Game, Center, Battle 服务器的 TCP 客户端包装器。
         /// - 读取配置的 Host/Port（支持默认值）。
         /// - 为每个后端客户端注册连接、断开、接收数据事件，负责将后端返回的数据解析并转发给相应的客户端会话。
+        /// - 连接建立后发送内部认证握手（InternalAuthFilter），未认证的连接将被后端拒绝业务消息。
         /// </summary>
         private static (TcpClientWrapper, TcpClientWrapper, TcpClientWrapper, TcpClientWrapper) ConnectToBackendServers()
         {
+            string sharedSecret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            string gatewayHost = ConfigHelper.GetConfig<string>("GatewayHost") ?? "127.0.0.1";
+            int gatewayPort = ConfigHelper.GetConfig<int>("GatewayPort") == 0 ? 31300 : ConfigHelper.GetConfig<int>("GatewayPort");
+            string gatewayNodeId = $"Gateway-{gatewayHost}:{gatewayPort}";
+
+            void SendAuthHandshake(TcpClientWrapper client)
+            {
+                var authFilter = new Framework.Core.Security.InternalAuthFilter(sharedSecret, gatewayNodeId);
+                byte[] authPacket = authFilter.BuildAuthPacket();
+                Shared.Log.Info($"Gateway 向后端发送内部认证握手 Length:{authPacket.Length}");
+                client.Send(authPacket);
+            }
+
             // 读取 Login 后端配置（支持默认端口）
             int loginPort = ConfigHelper.GetConfig<int>("LoginPort") == 0 ? 31302 : ConfigHelper.GetConfig<int>("LoginPort");
             string loginHost = ConfigHelper.GetConfig<string>("LoginHost") ?? "127.0.0.1";
             var loginClient = new TcpClientWrapper(loginHost, loginPort);
-            loginClient.OnConnected += session => Shared.Log.Info($"已连接到 Login 服务器 (Host:{loginHost} Port:{loginPort})");
+            loginClient.OnConnected += session =>
+            {
+                Shared.Log.Info($"已连接到 Login 服务器 (Host:{loginHost} Port:{loginPort})");
+                SendAuthHandshake(loginClient);
+            };
             loginClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"与 Login 服务器断开连接: {reason}");
             loginClient.OnDataReceived += (session, data) =>
             {
@@ -353,7 +414,11 @@ namespace Gateway
             int gamePort = ConfigHelper.GetConfig<int>("GamePort") == 0 ? 31304 : ConfigHelper.GetConfig<int>("GamePort");
             string gameHost = ConfigHelper.GetConfig<string>("GameHost") ?? "127.0.0.1";
             var gameClient = new TcpClientWrapper(gameHost, gamePort);
-            gameClient.OnConnected += session => Shared.Log.Info($"已连接到 Game 服务器 (Host:{gameHost} Port:{gamePort})");
+            gameClient.OnConnected += session =>
+            {
+                Shared.Log.Info($"已连接到 Game 服务器 (Host:{gameHost} Port:{gamePort})");
+                SendAuthHandshake(gameClient);
+            };
             gameClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"与 Game 服务器断开连接: {reason}");
             gameClient.OnDataReceived += (session, data) =>
             {
@@ -418,7 +483,11 @@ namespace Gateway
             int centerPort = ConfigHelper.GetConfig<int>("CenterPort") == 0 ? 31306 : ConfigHelper.GetConfig<int>("CenterPort");
             string centerHost = ConfigHelper.GetConfig<string>("CenterHost") ?? "127.0.0.1";
             var centerClient = new TcpClientWrapper(centerHost, centerPort);
-            centerClient.OnConnected += session => Shared.Log.Info($"已连接到 Center 服务器 (Host:{centerHost} Port:{centerPort})");
+            centerClient.OnConnected += session =>
+            {
+                Shared.Log.Info($"已连接到 Center 服务器 (Host:{centerHost} Port:{centerPort})");
+                SendAuthHandshake(centerClient);
+            };
             centerClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"与 Center 服务器断开连接: {reason}");
             centerClient.OnDataReceived += delegate (Network.ISession session, ReadOnlyMemory<byte> data)
             {
@@ -477,7 +546,11 @@ namespace Gateway
             int battlePort = ConfigHelper.GetConfig<int>("BattlePort") == 0 ? 31307 : ConfigHelper.GetConfig<int>("BattlePort");
             string battleHost = ConfigHelper.GetConfig<string>("BattleHost") ?? "127.0.0.1";
             var battleClient = new TcpClientWrapper(battleHost, battlePort);
-            battleClient.OnConnected += session => Shared.Log.Info($"已连接到 Battle 服务器 (Host:{battleHost} Port:{battlePort})");
+            battleClient.OnConnected += session =>
+            {
+                Shared.Log.Info($"已连接到 Battle 服务器 (Host:{battleHost} Port:{battlePort})");
+                SendAuthHandshake(battleClient);
+            };
             battleClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"与 Battle 服务器断开连接: {reason}");
             battleClient.OnDataReceived += delegate (Network.ISession session, ReadOnlyMemory<byte> data)
             {

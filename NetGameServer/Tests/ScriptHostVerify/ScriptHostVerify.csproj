@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>ScriptHostVerify</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Framework\Framework.Scripting\Framework.Scripting.csproj" />
+    <ProjectReference Include="..\..\Framework\Framework.Entity\Framework.Entity.csproj" />
+    <ProjectReference Include="..\..\Framework\Framework.Tick\Framework.Tick.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\GameLogic\scripts\*.csx" Link="scripts\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

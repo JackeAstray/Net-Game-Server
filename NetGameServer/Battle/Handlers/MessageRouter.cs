@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using Shared.Messages;
 using Shared.Messages.Battle;
+using GenFrameSync = Framework.Protocol.Generated.BattleFrameSync;
 
 namespace Battle.Handlers
 {
@@ -13,8 +14,9 @@ namespace Battle.Handlers
         /// </summary>
         /// <param name="roomHandler">房间处理器实例</param>
         /// <param name="entitySyncHandler">实体同步处理器实例</param>
+        /// <param name="frameSyncManager">帧同步管理器（可为 null，禁用帧同步）</param>
         /// <returns>消息处理器字典</returns>
-        public static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>> BuildHandlers(RoomHandler roomHandler, EntitySyncHandler entitySyncHandler, BattleMainHandler battleMainHandler)
+        public static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>> BuildHandlers(RoomHandler roomHandler, EntitySyncHandler entitySyncHandler, BattleMainHandler battleMainHandler, FrameSyncManager? frameSyncManager = null)
         {
             var handlers = new Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>();
 
@@ -58,6 +60,31 @@ namespace Battle.Handlers
                     Shared.Log.Error($"EntitySyncReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
                 }
             };
+
+            // 帧同步：客户端上报输入（若启用帧同步管理器）
+            if (frameSyncManager != null)
+            {
+                handlers[MessageIds.BattleFrameSync] = (payload, session, clientSessionId) =>
+                {
+                    try
+                    {
+                        var req = Shared.Json.DeserializeFromUtf8Bytes<GenFrameSync>(payload.Span);
+                        if (req != null)
+                        {
+                            frameSyncManager.EnqueueInput(clientSessionId, req);
+                        }
+                        else
+                        {
+                            Shared.Log.Warning($"BattleFrameSync 反序列化失败 ClientSessionId:{clientSessionId}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Shared.Log.Error($"BattleFrameSync 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
+                    }
+                    return Task.CompletedTask;
+                };
+            }
 
             handlers[MessageIds.BattleLeaveRoomReq] = async (payload, session, clientSessionId) =>
             {
@@ -147,6 +174,96 @@ namespace Battle.Handlers
             };
 
             return handlers;
+        }
+
+        /// <summary>
+        /// 构建基于 MessageDispatcher 的强类型处理器（对标 KBE 自动生成的处理器注册表）。
+        /// 使用生成的协议消息类 + MemoryPack 二进制序列化（JSON 兼容回退），
+        /// 彻底消灭手写 MsgId 分支与手动反序列化。
+        /// 返回 dispatcher，未注册的 MsgId 由调用方回退旧逻辑。
+        /// </summary>
+        public static Framework.Protocol.MessageDispatcher BuildDispatcher(
+            RoomHandler roomHandler,
+            EntitySyncHandler entitySyncHandler,
+            FrameSyncManager? frameSyncManager)
+        {
+            var dispatcher = new Framework.Protocol.MessageDispatcher();
+
+            // 加入房间（双格式兼容：旧客户端 JSON / 新客户端 MemoryPack）
+            dispatcher.RegisterSync<Framework.Protocol.Generated.BattleJoin>(
+                (ctx, msg) =>
+                {
+                    var req = new BattleJoinRequest
+                    {
+                        RoomId = msg.RoomId,
+                        SceneName = msg.SceneName,
+                        SceneType = msg.SceneType,
+                        MaxPlayers = msg.MaxPlayers,
+                        CustomRules = msg.CustomRules
+                    };
+                    var gatewaySession = ((BattleSessionContext)ctx).GatewaySession;
+                    var res = roomHandler.HandleJoinRequestAsync(ctx.ClientSessionId, req, gatewaySession).GetAwaiter().GetResult();
+                    var resMsg = new Framework.Protocol.Generated.BattleJoinResult
+                    {
+                        Success = res.Success,
+                        Message = res.Message
+                    };
+                    ctx.Send(resMsg);
+                },
+                jsonFallback: true);
+
+            // 离开房间
+            dispatcher.RegisterSync<Framework.Protocol.Generated.BattleLeaveRoom>(
+                (ctx, msg) =>
+                {
+                    var req = new BattleLeaveRoomRequest { RoomId = msg.RoomId };
+                    var gatewaySession = ((BattleSessionContext)ctx).GatewaySession;
+                    var res = roomHandler.HandleLeaveRoomRequestAsync(ctx.ClientSessionId, req, gatewaySession).GetAwaiter().GetResult();
+                    var resMsg = new Framework.Protocol.Generated.BattleLeaveRoomResult
+                    {
+                        Success = res.Success,
+                        RoomId = res.RoomId,
+                        Message = res.Message
+                    };
+                    ctx.Send(resMsg);
+                },
+                jsonFallback: true);
+
+            // 实体状态同步（位置/朝向上报 → 增量广播）
+            dispatcher.RegisterSync<Framework.Protocol.Generated.EntitySync>(
+                (ctx, msg) =>
+                {
+                    var req = new EntitySyncRequest
+                    {
+                        Position = new Vector3 { X = msg.Position?.X ?? 0, Y = msg.Position?.Y ?? 0, Z = msg.Position?.Z ?? 0 },
+                        Rotation = new Vector3 { X = msg.Rotation?.X ?? 0, Y = msg.Rotation?.Y ?? 0, Z = msg.Rotation?.Z ?? 0 }
+                    };
+                    var gatewaySession = ((BattleSessionContext)ctx).GatewaySession;
+                    entitySyncHandler.HandleEntitySyncRequestAsync(ctx.ClientSessionId, req, gatewaySession).GetAwaiter().GetResult();
+                },
+                jsonFallback: true);
+
+            // 帧同步输入上报（tick 引擎驱动）
+            if (frameSyncManager != null)
+            {
+                dispatcher.RegisterSync<Framework.Protocol.Generated.BattleFrameSync>(
+                    (ctx, msg) =>
+                    {
+                        frameSyncManager.EnqueueInput(ctx.ClientSessionId, msg);
+                    },
+                    jsonFallback: true);
+            }
+
+            // 玩家断线通知（网关内部消息）
+            dispatcher.RegisterSync<Framework.Protocol.Generated.PlayerDisconnect>(
+                (ctx, msg) =>
+                {
+                    var gatewaySession = ((BattleSessionContext)ctx).GatewaySession;
+                    roomHandler.HandleDisconnect(ctx.ClientSessionId, gatewaySession);
+                },
+                jsonFallback: true);
+
+            return dispatcher;
         }
 
         /// <summary>

@@ -46,7 +46,7 @@ namespace Game.Handlers
         /// </summary>
         /// <param name="session">发送请求的会话</param>
         /// <param name="request">发送聊天消息的请求对象</param>
-        private void HandleSendChatRequest(ISession session, SendChatRequest request)
+        public void HandleSendChatRequest(ISession session, SendChatRequest request)
         {
             int realSenderId = Game.Managers.PlayerSessionManager.Instance.GetUserIdBySessionId(session.SessionId);
             string realSenderUid = Game.Managers.PlayerSessionManager.Instance.GetUidBySessionId(session.SessionId);

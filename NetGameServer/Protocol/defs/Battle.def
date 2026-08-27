@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Battle/战斗服务器协议定义
+    id 范围：40000-49999 客户端消息；40100-40199 实体同步
+-->
+<Protocol name="Battle" version="1">
+
+  <Message id="40001" name="BattleJoin" target="Battle" reply="40002">
+    <Field name="RoomId" type="string" />
+    <Field name="SceneName" type="string" />
+    <Field name="SceneType" type="string" />
+    <Field name="MaxPlayers" type="int32" />
+    <Field name="CustomRules" type="map:string,string" />
+  </Message>
+
+  <Message id="40002" name="BattleJoinResult" target="Battle">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="40003" name="BattleFrameSync" target="Battle">
+    <Field name="FrameId" type="int32" />
+    <Field name="Inputs" type="list:PlayerInput" />
+  </Message>
+
+  <Message id="40004" name="BattleLeaveRoom" target="Battle" reply="40005">
+    <Field name="RoomId" type="string" />
+  </Message>
+
+  <Message id="40005" name="BattleLeaveRoomResult" target="Battle">
+    <Field name="Success" type="bool" />
+    <Field name="RoomId" type="string" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <!-- ==== 实体同步 40100-40199 ==== -->
+  <Message id="40101" name="EntitySync" target="Battle">
+    <Field name="Position" type="Vector3" />
+    <Field name="Rotation" type="Vector3" />
+  </Message>
+
+  <Message id="40102" name="EntityEnterViewNotify" target="Battle">
+    <Field name="Entities" type="list:EntityState" />
+  </Message>
+
+  <Message id="40103" name="EntityLeaveViewNotify" target="Battle">
+    <Field name="EntityIds" type="list:int64" />
+  </Message>
+
+  <Message id="40104" name="EntityStateUpdateNotify" target="Battle">
+    <Field name="State" type="EntityState" />
+  </Message>
+
+  <!-- 实体属性增量同步（对标 KBE Witness：只发送脏属性，Props 为 PropertyCodec 二进制块） -->
+  <Message id="40105" name="EntityDeltaSync" target="Battle">
+    <Field name="EntityId" type="int64" />
+    <Field name="Props" type="bytes" />
+  </Message>
+
+  <!-- 实体全量快照（玩家首次进入视野时下发） -->
+  <Message id="40106" name="EntitySnapshot" target="Battle">
+    <Field name="EntityId" type="int64" />
+    <Field name="Props" type="bytes" />
+  </Message>
+
+  <!-- ==== 战斗数据结构 ==== -->
+  <Struct name="Vector3">
+    <Field name="X" type="float" />
+    <Field name="Y" type="float" />
+    <Field name="Z" type="float" />
+  </Struct>
+
+  <Struct name="EntityState">
+    <Field name="EntityId" type="int64" />
+    <Field name="Nickname" type="string" />
+    <Field name="Position" type="Vector3" />
+    <Field name="Rotation" type="Vector3" />
+    <Field name="Hp" type="int32" />
+    <Field name="MaxHp" type="int32" />
+    <Field name="Score" type="int32" />
+    <Field name="Equipment" type="list:int32" />
+  </Struct>
+
+  <Struct name="PlayerInput">
+    <Field name="InputId" type="int32" />
+    <Field name="Buttons" type="int32" />
+    <Field name="MoveX" type="float" />
+    <Field name="MoveY" type="float" />
+  </Struct>
+
+</Protocol>

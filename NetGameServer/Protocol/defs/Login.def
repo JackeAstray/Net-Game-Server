@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    登录链路协议定义（KBE 风格 def 声明式协议）
+    id      : 全局唯一消息 ID（范围约定：10000-19999 登录链路）
+    name    : 生成的消息类型名（自动加 Request/Response 后缀）
+    target  : 消息路由目标服务器（Gateway 据此配置化转发）
+    reply   : 对应的响应消息 ID（便于生成器生成关联与校验）
+-->
+<Protocol name="Login" version="1">
+
+  <Message id="10001" name="Login" target="Login" reply="10002">
+    <Field name="Account" type="string" />
+    <Field name="Password" type="string" />
+  </Message>
+
+  <Message id="10002" name="LoginResult" target="Login">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+    <Field name="UserId" type="int32" />
+    <Field name="Token" type="string" />
+    <Field name="UniqueId" type="string" />
+    <Field name="Nickname" type="string" />
+    <Field name="Email" type="string" />
+    <Field name="LastLoginTime" type="int64" />
+    <Field name="LoginCount" type="int32" />
+    <Field name="IsAdmin" type="bool" />
+  </Message>
+
+  <Message id="10003" name="Register" target="Login" reply="10004">
+    <Field name="Account" type="string" />
+    <Field name="Password" type="string" />
+    <Field name="Nickname" type="string" />
+  </Message>
+
+  <Message id="10004" name="RegisterResult" target="Login">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="10005" name="Logout" target="Login" reply="10006">
+    <Field name="UserId" type="int32" />
+  </Message>
+
+  <Message id="10006" name="LogoutResult" target="Login">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="10007" name="ResetPassword" target="Login" reply="10008">
+    <Field name="Account" type="string" />
+    <Field name="OldPassword" type="string" />
+    <Field name="NewPassword" type="string" />
+  </Message>
+
+  <Message id="10008" name="ResetPasswordResult" target="Login">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="10009" name="UpdateNickname" target="Login" reply="10010">
+    <Field name="UserId" type="int32" />
+    <Field name="NewNickname" type="string" />
+  </Message>
+
+  <Message id="10010" name="UpdateNicknameResult" target="Login">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="10011" name="KickedOff" target="Login">
+    <Field name="Reason" type="string" />
+    <Field name="Time" type="int64" />
+  </Message>
+
+  <Message id="10012" name="FindPasswordWithCode" target="Login" reply="10013">
+    <Field name="Account" type="string" />
+    <Field name="Email" type="string" />
+  </Message>
+
+  <Message id="10013" name="FindPasswordWithCodeResult" target="Login">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <!-- 玩家断线通知（网关 -> 各业务服，内部消息） -->
+  <Message id="10000" name="PlayerDisconnect" target="All" internal="true">
+    <Field name="ClientSessionId" type="int64" />
+  </Message>
+
+</Protocol>

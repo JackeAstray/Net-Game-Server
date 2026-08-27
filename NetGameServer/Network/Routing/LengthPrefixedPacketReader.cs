@@ -3,7 +3,7 @@ using System.IO;
 
 namespace Network.Routing;
 
-internal sealed class LengthPrefixedPacketReader
+public sealed class LengthPrefixedPacketReader
 {
     private byte[] buffer;
     private int bufferedCount;

@@ -33,6 +33,10 @@ namespace Game
             // 从配置中读取端口，若未配置或为 0 则使用默认端口 31304
             int port = ConfigHelper.GetConfig<int>("GamePort") == 0 ? 31304 : ConfigHelper.GetConfig<int>("GamePort");
 
+            // 内部连接认证：网关连接必须先通过认证握手（InternalAuth），密钥与 Center 节点注册共用。
+            string authSecret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            var gatewayAuthFilters = new System.Collections.Concurrent.ConcurrentDictionary<long, Framework.Core.Security.InternalAuthFilter>();
+
             // 创建网络管理器，用于管理多个服务器实例
             var networkManager = new NetworkManager();
             // 创建 TCP 服务器实例以接收客户端连接
@@ -48,14 +52,26 @@ namespace Game
             var chatHandler = new Handlers.ChatHandler(networkManager);
             chatHandler.Register(router);
 
+            // 新协议分发器：强类型消息 + MemoryPack（JSON 兼容回退），消灭手写 switch
+            var gameDispatcher = Handlers.GameDispatcher.BuildDispatcher(chatHandler);
+
             // 注册好友处理器
             Handlers.FriendHandler.Register(router);
 
             // 当客户端建立连接时记录信息（可在此处加入鉴权或会话初始化逻辑）
-            tcpServer.OnSessionConnected += session => Log.Info($"客户端已连接: {session.RemoteEndPoint}");
+            tcpServer.OnSessionConnected += session =>
+            {
+                Log.Info($"客户端已连接: {session.RemoteEndPoint}");
+                gatewayAuthFilters[session.SessionId] = new Framework.Core.Security.InternalAuthFilter(authSecret, $"Game-{ConfigHelper.GetConfig<string>("GameHost") ?? "127.0.0.1"}:{port}");
+            };
+            tcpServer.OnSessionDisconnected += (session, reason) =>
+            {
+                gatewayAuthFilters.TryRemove(session.SessionId, out _);
+                Log.Info($"客户端断开连接，原因: {reason}");
+            };
 
             // 数据接收事件：统一协议 [MsgId][Payload]，路由元数据在 payload 内
-            tcpServer.OnDataReceived += (session, data) =>
+            tcpServer.OnDataReceived += async (session, data) =>
             {
                 try
                 {
@@ -67,6 +83,33 @@ namespace Game
 
                     int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
                     int payloadLength = data.Length - 4;
+
+                    // 内部连接认证：未认证连接只接受认证握手消息，其余业务消息一律拒绝。
+                    if (gatewayAuthFilters.TryGetValue(session.SessionId, out var authFilter))
+                    {
+                        if (!authFilter.IsAuthenticated)
+                        {
+                            if (Framework.Core.Security.InternalAuthFilter.IsAuthMessage(msgId))
+                            {
+                                byte[] authPayload = data.Slice(4).ToArray();
+                                if (authFilter.TryAuthenticate(authPayload))
+                                {
+                                    Log.Info($"Game <- Gateway 认证成功 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                                }
+                                else
+                                {
+                                    Log.Warning($"Game <- Gateway 认证失败，断开连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                                    session.Close();
+                                    return;
+                                }
+                                return; // 认证握手不进入业务分发
+                            }
+
+                            Log.Warning($"Game 拒绝未认证连接的业务消息 MsgId:{msgId} SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                            return;
+                        }
+                    }
+
                     var payloadPreview = data.Slice(4);
                     Log.Info($"Game 接收到客户端数据 Session:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{payloadLength} RawHexPreview:{BuildHexPreview(payloadPreview)} Utf8Preview:{BuildUtf8Preview(payloadPreview)}");
 
@@ -111,6 +154,14 @@ namespace Game
                     }
 
                     var clientSession = new Game.Network.ClientSessionWrapper(session, originalSessionId);
+                    // 新协议分发优先（强类型 + MemoryPack/JSON 双格式兼容）
+                    bool dispatched = await gameDispatcher.TryDispatch(
+                        new Game.Handlers.GameSessionContext(session, originalSessionId), msgId, cleanPayload);
+                    if (dispatched)
+                    {
+                        return;
+                    }
+
                     bool handled = router.TryRouteMessage(clientSession, msgId, cleanPayload);
                     if (!handled)
                     {
@@ -232,7 +283,6 @@ namespace Game
 
             // 客户端断开连接事件（记录原因）。这里可以添加清理会话状态或通知其他子系统的逻辑。
             tcpServer.OnSessionDisconnected += (session, reason) => Log.Info($"客户端断开连接，原因: {reason}");
-
             await tcpServer.StartAsync(port);
             Log.Info($"游戏服务器已启动，监听端口: {port}");
 
@@ -255,7 +305,12 @@ namespace Game
             DbClient = dbClient;
 
             // 成功连接到 DB 时记录日志（可在此处进行首次握手或认证）
-            dbClient.OnConnected += session => Log.Info($"已连接到 DB 服务器 (Host:{dbHost} Port:{dbPort})");
+            dbClient.OnConnected += session =>
+            {
+                Log.Info($"已连接到 DB 服务器 (Host:{dbHost} Port:{dbPort})");
+                // 内部连接认证：先发送认证握手，再发业务请求
+                dbClient.SendInternalAuthHandshake(ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret", $"Game-{ConfigHelper.GetConfig<string>("GameHost") ?? "127.0.0.1"}:{dbPort}");
+            };
             // 与 DB 断开时记录警告（可触发重试或告警机制）
             dbClient.OnDisconnected += (session, reason) => Log.Warning($"与 DB 服务器断开连接: {reason}");
             dbClient.OnDataReceived += (session, data) =>
@@ -300,6 +355,8 @@ namespace Game
             centerClient.OnConnected += session =>
             {
                 Log.Info($"已连接到 Center 服务器 (Host:{centerHost} Port:{centerPort})");
+                // 内部连接认证：先发送认证握手，再注册节点
+                centerClient.SendInternalAuthHandshake(ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret", nodeId);
                 SendRegisterNode(centerClient, nodeId, "Game", gameHost, port, GetCurrentLoad());
 
                 centerHeartbeatCts?.Cancel();

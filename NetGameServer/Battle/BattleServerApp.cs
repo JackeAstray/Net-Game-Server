@@ -14,10 +14,49 @@ namespace Battle
     public static class BattleServerApp
     {
         private static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>? handlers;
+        private static Framework.Protocol.MessageDispatcher? dispatcher;
+        private static Framework.Scripting.ScriptHost? scriptHost;
         private static System.Threading.CancellationTokenSource? centerHeartbeatCts;
         private static Battle.Handlers.SceneManager? sceneManager;
         private static TcpClientWrapper? centerClient;
         public static string CurrentNodeId { get; private set; } = string.Empty;
+
+        /// <summary>通知游戏逻辑脚本：实体创建（加入场景）。</summary>
+        public static void NotifyEntityCreated(Framework.Entity.Entity entity)
+        {
+            scriptHost?.NotifyCreate(entity);
+        }
+
+        /// <summary>通知游戏逻辑脚本：实体销毁（离开场景）。</summary>
+        public static void NotifyEntityDestroyed(Framework.Entity.Entity entity)
+        {
+            scriptHost?.NotifyDestroy(entity);
+        }
+
+        /// <summary>客户端会话 -> 网关会话 映射（帧同步广播用；收包时登记，断开时清除）</summary>
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, Network.ISession> clientGatewaySessions = new();
+
+        /// <summary>根据客户端会话 ID 查找其网关会话（用于定向回包）。</summary>
+        public static Network.ISession? GetGatewaySessionByClient(long clientSessionId)
+        {
+            clientGatewaySessions.TryGetValue(clientSessionId, out var session);
+            return session;
+        }
+
+        /// <summary>登记客户端会话 -> 网关会话 绑定。</summary>
+        public static void BindClientGateway(long clientSessionId, Network.ISession gatewaySession)
+        {
+            if (clientSessionId > 0 && gatewaySession != null)
+            {
+                clientGatewaySessions[clientSessionId] = gatewaySession;
+            }
+        }
+
+        /// <summary>解除客户端会话绑定。</summary>
+        public static void UnbindClientGateway(long clientSessionId)
+        {
+            clientGatewaySessions.TryRemove(clientSessionId, out _);
+        }
 
         /// <summary>
         /// 加载配置，构建场景与消息处理器，注册并启动战斗服务器的 TCP 网络，处理会话连接/断开与数据接收并分发内部消息，随后连接到中心服。
@@ -33,22 +72,91 @@ namespace Battle
 
             int port = ConfigHelper.GetConfig<int>("BattlePort") == 0 ? 31307 : ConfigHelper.GetConfig<int>("BattlePort");
 
+            // 单线程 tick 引擎（对标 KBE gameUpdateHertz，默认 20Hz）：驱动帧同步与定时逻辑
+            int tickHertz = ConfigHelper.GetConfig<int>("BattleTickHertz") == 0 ? 20 : ConfigHelper.GetConfig<int>("BattleTickHertz");
+            var tickEngine = new Framework.Tick.TickEngine(tickHertz);
+            tickEngine.Start();
+
+            // 实体备份服务（对标 KBE backuper 平滑分摊 + archiver 落盘）
+            string backupFile = ConfigHelper.GetConfig<string>("BackupFilePath")
+                ?? Path.Combine(AppContext.BaseDirectory, "backups", "entities.bin");
+            Directory.CreateDirectory(Path.GetDirectoryName(backupFile)!);
+            var backupService = new Framework.Entity.EntityBackupService(
+                backupFile,
+                periodInTicks: ConfigHelper.GetConfig<int>("BackupPeriodTicks") == 0 ? 100 : ConfigHelper.GetConfig<int>("BackupPeriodTicks"));
+
+            // 游戏逻辑脚本宿主（对标 KBE Python 脚本层）：玩法逻辑与底层框架物理分离，可热更新
+            string scriptsDir = ConfigHelper.GetConfig<string>("ScriptsDir") ?? Path.Combine(AppContext.BaseDirectory, "scripts");
+            var scriptHost = new Framework.Scripting.ScriptHost(scriptsDir);
+            scriptHost.Start();
+            BattleServerApp.scriptHost = scriptHost;
+            // tick 引擎驱动脚本 OnTick（游戏逻辑获得确定性帧驱动）
+            tickEngine.OnTick += frame =>
+            {
+                if (sceneManager != null)
+                {
+                    foreach (var scene in sceneManager.GetAllScenes())
+                    {
+                        scriptHost.TickAll(scene.EntityManager, frame);
+                        backupService.AddManager(scene.EntityManager);
+                    }
+                    // 按实体量平滑分摊备份（对标 KBE backuper：每 tick 只备份部分实体）
+                    backupService.Tick();
+                }
+            };
+
             sceneManager = new Battle.Handlers.SceneManager();
             var entitySyncHandler = new Battle.Handlers.EntitySyncHandler(sceneManager);
             var roomHandler = new Battle.Handlers.RoomHandler(sceneManager, entitySyncHandler);
             var battleMainHandler = new Battle.Handlers.BattleMainHandler(sceneManager);
 
-            handlers = Battle.Handlers.MessageRouter.BuildHandlers(roomHandler, entitySyncHandler, battleMainHandler);
+            // 帧同步管理器：客户端输入入队，tick 引擎聚合广播权威帧
+            var frameSyncManager = new Battle.Handlers.FrameSyncManager(sceneManager, tickEngine);
+            frameSyncManager.SetSendAction((targetSessionId, msgId, payload) =>
+            {
+                var gatewaySession = GetGatewaySessionByClient(targetSessionId);
+                if (gatewaySession != null)
+                {
+                    byte[] routedPayload = Shared.RouteMetadata.AttachTargetSessionId(payload, targetSessionId);
+                    byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
+                    try
+                    {
+                        gatewaySession.Send(packet.AsSpan(0, totalLength).ToArray());
+                    }
+                    finally
+                    {
+                        System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+                    }
+                }
+            });
+
+            // 新协议分发器：强类型消息 + MemoryPack（JSON 兼容回退），消灭手写 switch
+            dispatcher = Battle.Handlers.MessageRouter.BuildDispatcher(roomHandler, entitySyncHandler, frameSyncManager);
+            handlers = Battle.Handlers.MessageRouter.BuildHandlers(roomHandler, entitySyncHandler, battleMainHandler, frameSyncManager);
 
             var tcpServer = new TcpServer();
+
+            // 内部连接认证：网关/节点连接必须先通过认证握手（InternalAuth），密钥与 Center 节点注册共用。
+            string authSecret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            var gatewayAuthFilters = new System.Collections.Concurrent.ConcurrentDictionary<long, Framework.Core.Security.InternalAuthFilter>();
 
             tcpServer.OnSessionConnected += session =>
             {
                 Log.Info($"节点/网关已连接到战斗服: {session.RemoteEndPoint}");
+                gatewayAuthFilters[session.SessionId] = new Framework.Core.Security.InternalAuthFilter(authSecret, $"Battle-{ConfigHelper.GetConfig<string>("BattleHost") ?? "127.0.0.1"}:{port}");
             };
 
             tcpServer.OnSessionDisconnected += (session, reason) =>
             {
+                gatewayAuthFilters.TryRemove(session.SessionId, out _);
+                // 清除该网关会话下绑定的所有客户端会话（玩家断开/网关断开）
+                foreach (var pair in clientGatewaySessions)
+                {
+                    if (ReferenceEquals(pair.Value, session))
+                    {
+                        clientGatewaySessions.TryRemove(pair.Key, out _);
+                    }
+                }
                 Log.Info($"节点/网关从战斗服断开，原因: {reason}");
             };
 
@@ -64,6 +172,33 @@ namespace Battle
 
                     int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
                     int payloadLength = data.Length - 4;
+
+                    // 内部连接认证：未认证连接只接受认证握手消息。
+                    if (gatewayAuthFilters.TryGetValue(session.SessionId, out var authFilter))
+                    {
+                        if (!authFilter.IsAuthenticated)
+                        {
+                            if (Framework.Core.Security.InternalAuthFilter.IsAuthMessage(msgId))
+                            {
+                                byte[] authPayload = data.Slice(4).ToArray();
+                                if (authFilter.TryAuthenticate(authPayload))
+                                {
+                                    Log.Info($"Battle <- Gateway/Node 认证成功 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                                }
+                                else
+                                {
+                                    Log.Warning($"Battle <- Gateway/Node 认证失败，断开连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                                    session.Close();
+                                    return;
+                                }
+                                return;
+                            }
+
+                            Log.Warning($"Battle 拒绝未认证连接的业务消息 MsgId:{msgId} SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                            return;
+                        }
+                    }
+
                     Log.Info($"Battle <- Gateway/Node 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{payloadLength}");
                     byte[] payload = data.Slice(4).ToArray();
 
@@ -72,10 +207,17 @@ namespace Battle
                     {
                         originalSessionId = clientSessionId;
                         payload = cleanPayload;
+                        // 登记客户端会话 -> 网关会话 绑定（帧同步广播用）
+                        BindClientGateway(originalSessionId, session);
                         Log.Debug($"Battle 路由元数据解析成功 ClientSessionId:{originalSessionId} MsgId:{msgId}");
                     }
 
-                    if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
+                    // 新协议分发优先（强类型 + MemoryPack/JSON 双格式兼容）
+                    if (dispatcher != null && await dispatcher.TryDispatch(new Battle.Handlers.BattleSessionContext(session, originalSessionId), msgId, payload))
+                    {
+                        Log.Debug($"Battle 新协议分发完成 MsgId:{msgId} ClientSessionId:{originalSessionId}");
+                    }
+                    else if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
                     {
                         try
                         {
@@ -151,6 +293,8 @@ namespace Battle
             centerClient.OnConnected += session =>
             {
                 Log.Info($"已连接到 Center 服务器 (Host:{centerHost} Port:{centerPort})");
+                // 内部连接认证：先发送认证握手，再注册节点
+                centerClient.SendInternalAuthHandshake(ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret", nodeId);
                 SendRegisterNode(centerClient, nodeId, "Battle", battleHost, port, GetCurrentLoad());
 
                 centerHeartbeatCts?.Cancel();

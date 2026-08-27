@@ -18,6 +18,7 @@ namespace Login.Handlers
     public class LoginHandler
     {
         private readonly TcpClientWrapper dbClient;
+        private readonly Framework.Core.Security.TokenService tokenService;
 
         private static long sequenceId = 0;
         private const int MaxFailedAttempts = 5;
@@ -35,7 +36,20 @@ namespace Login.Handlers
         public LoginHandler(TcpClientWrapper dbClient)
         {
             this.dbClient = dbClient;
+            // 无状态签名 Token 服务：密钥从配置读取，缺省时使用随机密钥（重启后旧 Token 失效，保证安全性）。
+            string secret = Shared.ConfigHelper.GetConfig<string>("TokenSecret") ?? Guid.NewGuid().ToString("N");
+            tokenService = new Framework.Core.Security.TokenService(secret);
         }
+
+        /// <summary>
+        /// 生成登录 Token（HMAC-SHA256 签名，含用户身份与过期时间，无状态可验证）。
+        /// </summary>
+        public string IssueToken(int userId, string uid) => tokenService.Issue(userId, uid);
+
+        /// <summary>
+        /// 验证 Token。成功返回 (userId, uid, expires)；失败返回 null。
+        /// </summary>
+        public (int UserId, string Uid, long Expires)? VerifyToken(string? token) => tokenService.Verify(token);
 
         /// <summary>
         /// 异步处理登录请求：向 DB 服务发送验证请求并返回登录响应。
@@ -103,7 +117,8 @@ namespace Login.Handlers
                 Success = verifyResp?.Success ?? false,
                 Message = verifyResp?.Message ?? "服务器内部错误",
                 UserId = (int)(verifyResp?.UserId ?? 0),
-                Token = verifyResp?.Success == true ? Guid.NewGuid().ToString() : string.Empty,
+                // 真实签名 Token：HMAC-SHA256 无状态签发，替代原 Guid 占位符
+                Token = verifyResp?.Success == true ? IssueToken((int)verifyResp.UserId, verifyResp.UniqueId ?? string.Empty) : string.Empty,
                 UniqueId = verifyResp?.Success == true ? verifyResp.UniqueId ?? string.Empty : string.Empty,
                 Nickname = verifyResp?.Success == true ? verifyResp.Nickname ?? string.Empty : string.Empty,
                 Email = verifyResp?.Success == true ? verifyResp.Email ?? string.Empty : string.Empty,

@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    DB 服务器协议定义（内部服务通信）
+    id 范围：1000-1999
+-->
+<Protocol name="Db" version="1">
+
+  <Message id="1000" name="DbGetMaxUid" target="Db" internal="true" reply="1100" />
+  <Message id="1100" name="DbGetMaxUidResult" target="Db" internal="true">
+    <Field name="MaxUid" type="int64" />
+  </Message>
+
+  <Message id="1001" name="DbLoginVerify" target="Db" internal="true" reply="1101">
+    <Field name="Account" type="string" />
+    <Field name="Password" type="string" />
+  </Message>
+
+  <Message id="1101" name="DbLoginVerifyResult" target="Db" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+    <Field name="UserId" type="int64" />
+    <Field name="UniqueId" type="string" />
+    <Field name="Nickname" type="string" />
+    <Field name="Email" type="string" />
+    <Field name="LastLoginTime" type="int64" />
+    <Field name="LoginCount" type="int32" />
+    <Field name="IsAdmin" type="bool" />
+  </Message>
+
+  <Message id="1002" name="DbRegisterVerify" target="Db" internal="true" reply="1102">
+    <Field name="Account" type="string" />
+    <Field name="Password" type="string" />
+    <Field name="Nickname" type="string" />
+    <Field name="Uid" type="int64" />
+  </Message>
+
+  <Message id="1102" name="DbRegisterVerifyResult" target="Db" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="1003" name="DbAccountQuery" target="Db" internal="true" reply="1103">
+    <Field name="Account" type="string" />
+  </Message>
+
+  <Message id="1103" name="DbAccountQueryResult" target="Db" internal="true">
+    <Field name="Exists" type="bool" />
+    <Field name="IsOnline" type="bool" />
+    <Field name="IsLocked" type="bool" />
+    <Field name="IsAdmin" type="bool" />
+    <Field name="Email" type="string" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="1004" name="DbOnlineStats" target="Db" internal="true" reply="1104" />
+  <Message id="1104" name="DbOnlineStatsResult" target="Db" internal="true">
+    <Field name="OnlineCount" type="int32" />
+    <Field name="OfflineCount" type="int32" />
+    <Field name="TotalCount" type="int32" />
+  </Message>
+
+  <Message id="1005" name="DbUpdateOnlineState" target="Db" internal="true" reply="1105">
+    <Field name="UserId" type="int32" />
+    <Field name="IsOnline" type="bool" />
+  </Message>
+  <Message id="1105" name="DbUpdateOnlineStateResult" target="Db" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="1006" name="DbFriendAdd" target="Db" internal="true" reply="1106">
+    <Field name="UserId" type="int32" />
+    <Field name="FriendUserId" type="int32" />
+    <Field name="Remark" type="string" />
+  </Message>
+  <Message id="1106" name="DbFriendAddResult" target="Db" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="1007" name="DbFriendRemove" target="Db" internal="true" reply="1107">
+    <Field name="UserId" type="int32" />
+    <Field name="FriendUserId" type="int32" />
+  </Message>
+  <Message id="1107" name="DbFriendRemoveResult" target="Db" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="1008" name="DbFriendSetRemark" target="Db" internal="true" reply="1108">
+    <Field name="UserId" type="int32" />
+    <Field name="FriendUserId" type="int32" />
+    <Field name="Remark" type="string" />
+  </Message>
+  <Message id="1108" name="DbFriendSetRemarkResult" target="Db" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="1009" name="DbFriendGetList" target="Db" internal="true" reply="1109">
+    <Field name="UserId" type="int32" />
+  </Message>
+  <Message id="1109" name="DbFriendListResult" target="Db" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+    <Field name="Friends" type="list:DbFriendInfo" />
+  </Message>
+
+  <Message id="1010" name="DbChangePassword" target="Db" internal="true" reply="1110">
+    <Field name="Account" type="string" />
+    <Field name="OldPassword" type="string" />
+    <Field name="NewPassword" type="string" />
+  </Message>
+  <Message id="1110" name="DbChangePasswordResult" target="Db" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="1011" name="DbResetPasswordByEmail" target="Db" internal="true" reply="1111">
+    <Field name="Account" type="string" />
+    <Field name="Email" type="string" />
+    <Field name="TemporaryPassword" type="string" />
+  </Message>
+  <Message id="1111" name="DbResetPasswordByEmailResult" target="Db" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="1012" name="DbBlacklistAdd" target="Db" internal="true" reply="1112">
+    <Field name="UserId" type="int32" />
+    <Field name="BlockedUserId" type="int32" />
+  </Message>
+  <Message id="1112" name="DbBlacklistAddResult" target="Db" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="1013" name="DbBlacklistRemove" target="Db" internal="true" reply="1113">
+    <Field name="UserId" type="int32" />
+    <Field name="BlockedUserId" type="int32" />
+  </Message>
+  <Message id="1113" name="DbBlacklistRemoveResult" target="Db" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="1014" name="DbBlacklistGetList" target="Db" internal="true" reply="1114">
+    <Field name="UserId" type="int32" />
+  </Message>
+  <Message id="1114" name="DbBlacklistListResult" target="Db" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+    <Field name="Blacklists" type="list:DbBlacklistInfo" />
+  </Message>
+
+  <Message id="1015" name="DbResolveUserByUniqueId" target="Db" internal="true" reply="1115">
+    <Field name="UniqueId" type="string" />
+  </Message>
+  <Message id="1115" name="DbResolveUserByUniqueIdResult" target="Db" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+    <Field name="UserId" type="int32" />
+    <Field name="Nickname" type="string" />
+  </Message>
+
+  <Message id="1016" name="DbResolveUserByUserId" target="Db" internal="true" reply="1116">
+    <Field name="UserId" type="int32" />
+  </Message>
+  <Message id="1116" name="DbResolveUserByUserIdResult" target="Db" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+    <Field name="UniqueId" type="string" />
+    <Field name="Nickname" type="string" />
+  </Message>
+
+  <Message id="1017" name="DbFriendApplyCreate" target="Db" internal="true" reply="1117">
+    <Field name="RequesterUserId" type="int32" />
+    <Field name="ReceiverUserId" type="int32" />
+    <Field name="Message" type="string" />
+  </Message>
+  <Message id="1117" name="DbFriendApplyCreateResult" target="Db" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="1018" name="DbFriendApplyList" target="Db" internal="true" reply="1118">
+    <Field name="UserId" type="int32" />
+  </Message>
+  <Message id="1118" name="DbFriendApplyListResult" target="Db" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+    <Field name="Applies" type="list:DbFriendApplyInfo" />
+  </Message>
+
+  <Message id="1019" name="DbFriendApplyHandle" target="Db" internal="true" reply="1119">
+    <Field name="ApplyId" type="int64" />
+    <Field name="UserId" type="int32" />
+    <Field name="Accept" type="bool" />
+  </Message>
+  <Message id="1119" name="DbFriendApplyHandleResult" target="Db" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <!-- ==== DB 数据结构 ==== -->
+  <Struct name="DbFriendInfo">
+    <Field name="FriendUserId" type="int32" />
+    <Field name="FriendUniqueId" type="string" />
+    <Field name="Nickname" type="string" />
+    <Field name="Remark" type="string" />
+  </Struct>
+
+  <Struct name="DbBlacklistInfo">
+    <Field name="BlockedUserId" type="int32" />
+    <Field name="BlockedUniqueId" type="string" />
+    <Field name="BlockedNickname" type="string" />
+    <Field name="AddTime" type="int64" />
+  </Struct>
+
+  <Struct name="DbFriendApplyInfo">
+    <Field name="ApplyId" type="int64" />
+    <Field name="RequesterUserId" type="int32" />
+    <Field name="RequesterUniqueId" type="string" />
+    <Field name="RequesterNickname" type="string" />
+    <Field name="Message" type="string" />
+    <Field name="Status" type="string" />
+    <Field name="CreateTimeUtc" type="int64" />
+  </Struct>
+
+</Protocol>

@@ -9,6 +9,9 @@ namespace Game
         static async Task Main(string[] args)
         {
             Log.Configure(true, "Logs/Game.log");
+
+            // 远程日志上报（配置 LoggerHost/LoggerPort 后生效，对标 KBE logger 聚合）
+            Shared.RemoteLog.Initialize($"Game-{ConfigHelper.GetConfig<string>("GameHost") ?? "127.0.0.1"}:{ConfigHelper.GetConfig<int>("GamePort")}");
             Log.Info("游戏服务器正在启动...");
 
             await GameServerApp.StartNetworkAsync();

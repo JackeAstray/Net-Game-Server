@@ -7,4 +7,15 @@
   <Project Path="Login/Login.csproj" />
   <Project Path="Network/Network.csproj" />
   <Project Path="Shared/Shared.csproj" />
+  <Project Path="Protogen/Protogen.csproj" />
+  <Project Path="Framework/Framework.Core/Framework.Core.csproj" />
+  <Project Path="Framework/Framework.Protocol/Framework.Protocol.csproj" />
+  <Project Path="Framework/Framework.Entity/Framework.Entity.csproj" />
+  <Project Path="Framework/Framework.Tick/Framework.Tick.csproj" />
+  <Project Path="Framework/Framework.Scripting/Framework.Scripting.csproj" />
+  <Project Path="Tests/ProtocolVerify/ProtocolVerify.csproj" />
+  <Project Path="Tests/ScriptHostVerify/ScriptHostVerify.csproj" />
+  <Project Path="Tests/LoggerVerify/LoggerVerify.csproj" />
+  <Project Path="Bots/Bots.csproj" />
+  <Project Path="Logger/Logger.csproj" />
 </Solution>

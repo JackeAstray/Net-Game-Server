@@ -6,9 +6,16 @@
 ## 核心特性
 - **分布式微服务架构**: 服务器根据业务拆分为多个独立节点，降低耦合，易于水平扩展。
 - **高性能网络库**: 自定义 `Network` 模块支持 TCP/UDP/KCP/WS 协议，适合不同的网络环境。
-- **自定义序列化**: 优化包体大小，采用 `Shared.Json` 或二进制序列化提升性能。
-- **统一网关调度**: `Gateway` 节点处理异构客户端连接，将长连接和短连接动态路由到内部集群。
+- **声明式协议 + 代码生成**: `Protocol/defs/*.def` 声明消息，`Protogen` 自动生成
+  消息类/ID/路由表（MemoryPack 二进制序列化），改协议只改 def。
+- **统一网关调度**: `Gateway` 节点处理异构客户端连接，按生成的路由表配置化转发。
 - **服务发现与状态同步**: 通过 `Center` 服务器进行集群节点管理和注册。
+- **实体/属性框架**: `EntityDef` + 脏标记增量同步（对标 KBEngine Witness），
+  只广播变更属性。
+- **单线程 tick 引擎**: 固定频率主循环驱动帧同步与定时逻辑（对标 KBE gameUpdateHertz）。
+- **脚本宿主**: 游戏逻辑写在 `GameLogic/scripts/*.csx`，与底层框架物理分离、可热更新
+  （对标 KBE Python 脚本层）。
+- **安全加固**: 无状态签名 Token、内部连接认证握手、随机会话 ID。
 
 ## 项目结构
 - **[Gateway](NetGameServer/Docs/Gateway.md)**: 网关服务器，统一处理客户端的长短期连接。
@@ -19,6 +26,13 @@
 - **[DB](NetGameServer/Docs/DB.md)**: 数据库服务数据持久化节点，支持对数据库和缓存代理（Redis/MySQL等）的访问。
 - **[Network](NetGameServer/Docs/Network.md)**: 底层网络通信模块，承载 TCP/UDP/KCP/WS 网络连接和传输能力。
 - **[Shared](NetGameServer/Docs/Shared.md)**: 共享模块库，提供公用实体、统一常量、配置解析、统一序列化辅助等。
+- **Framework/**: 底层框架（Core/Protocol/Entity/Tick/Scripting），与游戏逻辑分离。
+- **Protocol/defs/**: 协议声明（唯一事实来源），构建时自动生成代码。
+- **GameLogic/scripts/**: 游戏逻辑脚本层（.csx，可热更新）。
+- **Protogen/**: 协议代码生成器。
+- **Tests/**: 验证套件（ProtocolVerify / ScriptHostVerify）。
+
+> 详细的重构对照、验证结果与迁移指南见 [Refactor-Summary.md](NetGameServer/Docs/Refactor-Summary.md)。
 
 ## 环境要求
 - [.NET 10.0 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)

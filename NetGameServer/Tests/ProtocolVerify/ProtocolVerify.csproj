@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>ProtocolVerify</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Framework\Framework.Protocol\Framework.Protocol.csproj" />
+    <ProjectReference Include="..\..\Framework\Framework.Core\Framework.Core.csproj" />
+    <ProjectReference Include="..\..\Framework\Framework.Entity\Framework.Entity.csproj" />
+    <ProjectReference Include="..\..\Framework\Framework.Tick\Framework.Tick.csproj" />
+    <ProjectReference Include="..\..\Network\Network.csproj" />
+  </ItemGroup>
+
+</Project>

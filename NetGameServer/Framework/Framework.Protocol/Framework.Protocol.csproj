@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Framework.Protocol</RootNamespace>
+    <AssemblyName>Framework.Protocol</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MemoryPack" Version="1.21.4" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Framework.Core\Framework.Core.csproj" />
+  </ItemGroup>
+
+  <!-- 协议定义文件：变更时触发重新生成 -->
+  <ItemGroup>
+    <ProtocolDefs Include="..\..\Protocol\defs\*.def" />
+  </ItemGroup>
+
+  <!-- 构建前自动运行 Protogen（若 Protogen 已构建） -->
+  <Target Name="GenerateProtocolCode" BeforeTargets="BeforeCompile" Inputs="@(ProtocolDefs)"
+          Outputs="$(MSBuildThisFileDirectory)Generated\MessageIds.g.cs" Condition="Exists('..\..\Protogen\Protogen.csproj')">
+    <Exec Command="dotnet run --project &quot;$(MSBuildThisFileDirectory)..\..\Protogen\Protogen.csproj&quot; -- &quot;$(MSBuildThisFileDirectory)..\..\Protocol\defs&quot; &quot;$(MSBuildThisFileDirectory)Generated&quot;" />
+  </Target>
+
+</Project>

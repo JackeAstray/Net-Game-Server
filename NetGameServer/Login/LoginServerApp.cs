@@ -53,9 +53,17 @@ namespace Login
             // 构建消息处理器字典，按 MsgId 分发
             var messageHandlers = Login.Handlers.MessageRouter.BuildHandlers(loginHandler);
 
+            // 新协议分发器：强类型消息 + MemoryPack（JSON 兼容回退），消灭手写 switch
+            var loginDispatcher = Login.Handlers.MessageRouter.BuildDispatcher(loginHandler);
+
             // 跟踪所有活跃网关会话，并记录“客户端会话 -> 网关会话”的绑定，避免多网关场景下回包错路由。
             var activeGatewaySessions = new System.Collections.Concurrent.ConcurrentDictionary<long, Network.ISession>();
             var clientGatewayBindings = new System.Collections.Concurrent.ConcurrentDictionary<long, long>();
+
+            // 内部连接认证：每个网关连接必须先通过认证握手（InternalAuth），
+            // 未认证的连接发送的业务消息将被拒绝。密钥与 Center 节点注册共用。
+            string authSecret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            var gatewayAuthFilters = new System.Collections.Concurrent.ConcurrentDictionary<long, Framework.Core.Security.InternalAuthFilter>();
 
             void RemoveClientGatewayBinding(long clientSessionId)
             {
@@ -77,12 +85,14 @@ namespace Login
             {
                 Shared.Log.Info($"Login <- Gateway 已连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
                 activeGatewaySessions[session.SessionId] = session;
+                gatewayAuthFilters[session.SessionId] = new Framework.Core.Security.InternalAuthFilter(authSecret, $"Login-{ConfigHelper.GetConfig<string>("LoginHost") ?? "127.0.0.1"}:{port}");
                 Shared.Log.Info($"Login 当前活跃网关连接数:{activeGatewaySessions.Count}");
             };
             tcpServer.OnSessionDisconnected += (session, reason) =>
             {
                 Shared.Log.Info($"Login <- Gateway 断开连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Reason:{reason}");
                 activeGatewaySessions.TryRemove(session.SessionId, out _);
+                gatewayAuthFilters.TryRemove(session.SessionId, out _);
                 RemoveBindingsByGatewaySession(session.SessionId);
                 Shared.Log.Info($"Login 当前活跃网关连接数:{activeGatewaySessions.Count}");
             };
@@ -149,6 +159,38 @@ namespace Login
 
                 int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
                 int payloadLength = data.Length - 4;
+
+                // 内部连接认证：未认证连接只接受认证握手消息，其余业务消息一律拒绝。
+                if (gatewayAuthFilters.TryGetValue(session.SessionId, out var authFilter))
+                {
+                    if (!authFilter.IsAuthenticated)
+                    {
+                        if (Framework.Core.Security.InternalAuthFilter.IsAuthMessage(msgId))
+                        {
+                            byte[] authPayload = data.Slice(4).ToArray();
+                            if (authFilter.TryAuthenticate(authPayload))
+                            {
+                                Shared.Log.Info($"Login <- Gateway 认证成功 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                            }
+                            else
+                            {
+                                Shared.Log.Warning($"Login <- Gateway 认证失败，断开连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                                session.Close();
+                                return;
+                            }
+                            return; // 认证握手不进入业务分发
+                        }
+
+                        Shared.Log.Warning($"Login 拒绝未认证连接的业务消息 MsgId:{msgId} SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                        return;
+                    }
+                }
+                else
+                {
+                    // 兼容：旧客户端/内部工具直连时不强制认证（过渡期），仅记录警告。
+                    Shared.Log.Warning($"Login 收到无认证过滤器连接的消息 MsgId:{msgId} SessionId:{session.SessionId}（过渡期兼容模式）");
+                }
+
                 Shared.Log.Info($"Login <- Gateway 收到消息 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} MsgId:{msgId} PacketLength:{data.Length} PayloadLength:{payloadLength}");
                 byte[] payload = data.Slice(4).ToArray();
 
@@ -163,7 +205,18 @@ namespace Login
 
                 try
                 {
-                    if (messageHandlers.TryGetValue(msgId, out var handler))
+                    // 新协议分发优先（强类型 + MemoryPack/JSON 双格式兼容）
+                    bool dispatched = await loginDispatcher.TryDispatch(
+                        new Login.Handlers.LoginSessionContext(session, clientSessionId), msgId, cleanPayload);
+                    if (dispatched)
+                    {
+                        if (msgId == MessageIds.PlayerDisconnectNotif)
+                        {
+                            Shared.Log.Info($"Login 收到玩家断线通知，清理绑定 ClientSessionId:{clientSessionId}");
+                            RemoveClientGatewayBinding(clientSessionId);
+                        }
+                    }
+                    else if (messageHandlers.TryGetValue(msgId, out var handler))
                     {
                         Shared.Log.Info($"Login 开始处理消息 MsgId:{msgId} ClientSessionId:{clientSessionId} PayloadLength:{cleanPayload.Length}");
                         await handler(cleanPayload, session, clientSessionId);
@@ -296,6 +349,10 @@ namespace Login
             {
                 Shared.Log.Info($"Login -> DB 已连接 (Host:{dbHost} Port:{dbPort}) SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
 
+                // 内部连接认证：先发送认证握手，再发业务请求
+                string dbAuthSecret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+                dbClient.SendInternalAuthHandshake(dbAuthSecret, $"Login-{ConfigHelper.GetConfig<string>("LoginHost") ?? "127.0.0.1"}");
+
                 var request = new Shared.Messages.Db.GetMaxUidRequest();
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(request);
                 byte[] packet = Network.Routing.PacketBuilder.BuildPacket(Shared.Messages.MessageIds.DbGetMaxUidReq, data, out int totalLength);
@@ -371,6 +428,9 @@ namespace Login
             centerClient.OnConnected += session =>
             {
                 Shared.Log.Info($"Login -> Center 已连接 (Host:{centerHost} Port:{centerPort}) SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+
+                // 内部连接认证：先发送认证握手，再注册节点
+                centerClient.SendInternalAuthHandshake(ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret", nodeId);
                 SendRegisterNode(centerClient, nodeId, "Login", loginHost, port, activeGatewaySessions.Count);
 
                 centerHeartbeatCts?.Cancel();

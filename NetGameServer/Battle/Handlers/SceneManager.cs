@@ -160,6 +160,12 @@ namespace Battle.Handlers
             return scenes.Count;
         }
 
+        /// <summary>获取全部场景（脚本 tick 驱动用）。</summary>
+        public IEnumerable<BattleScene> GetAllScenes()
+        {
+            return scenes.Values;
+        }
+
         /// <summary>
         /// 获取当前绑定到场景的玩家数量。
         /// </summary>
