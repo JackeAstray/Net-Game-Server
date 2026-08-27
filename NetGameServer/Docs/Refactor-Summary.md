@@ -158,6 +158,20 @@ Framework.Protocol/Generated/
 - **接入**：全部 6 个服务器 Program.cs 已接入 `RemoteLog.Initialize`（配置 `LoggerHost/LoggerPort` 后生效）
 - 验证：Info/Warn/Error 三类日志端到端上报 + 落盘全部通过
 
+### 19. 实体自动持久化 + 崩溃恢复（对标 KBE entity_table + restore_entity_handler）
+
+`Framework/Entity/EntityPersistenceService.cs`：
+- **属性声明驱动自动存取**：EntityDef 属性 → 序列化落盘（无手写 SQL/字段映射），按类型分目录
+- `SaveEntity/LoadEntity/LoadEntityById/DeleteEntity/RestoreAll`：单实体与全量恢复
+- **Battle 接入**：玩家加入时自动恢复存档（`[已恢复存档]` 标记）、离开/断开时自动保存
+- 验证：5 实体保存 → 模拟崩溃重启 → 全量恢复 5/5 属性正确 + 单实体加载/删除 ✓
+
+### 20. Center 注册表持久化（HA 基础）
+
+`Center/Handlers/NodeManager.cs`：
+- `SaveSnapshotToFile/RestoreFromSnapshotFile`：节点注册表 JSON 快照落盘/恢复
+- Center 启动时恢复静态节点信息（会话/心跳由节点重连自动更新），周期 10s 保存快照
+
 ---
 
 ## 三、验证结果汇总
@@ -181,7 +195,7 @@ Framework.Protocol/Generated/
 - [ ] 更多玩法脚本示例（Skill/Item/Quest）
 
 ### P3 完善
-- [ ] Center 高可用（主备 + 注册表持久化）
+- [ ] Center 主备（当前已具备注册表持久化基础，需选举/切换编排）
 
 ---
 

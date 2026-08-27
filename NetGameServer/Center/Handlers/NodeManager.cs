@@ -239,5 +239,84 @@ namespace Center.Handlers
                 .ThenBy(node => node.NodeId)
                 .ToList();
         }
+
+        // ===== 注册表持久化（Center 高可用基础：重启后保留节点注册信息） =====
+
+        /// <summary>
+        /// 将节点注册表快照保存到文件（JSON）。节点注册/心跳更新时由 Center 周期调用。
+        /// </summary>
+        public void SaveSnapshotToFile(string filePath)
+        {
+            try
+            {
+                var snapshot = new
+                {
+                    SavedAtUtc = DateTime.UtcNow,
+                    Nodes = GetNodeSnapshots()
+                };
+                string json = Shared.Json.Serialize(snapshot);
+                Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(filePath))!);
+                File.WriteAllText(filePath, json);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"节点注册表快照保存失败: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 从快照文件恢复节点注册信息（仅恢复主机/端口/类型等静态信息；
+        /// 会话与心跳由节点重新连接后自动更新）。
+        /// </summary>
+        /// <returns>恢复的节点数。</returns>
+        public int RestoreFromSnapshotFile(string filePath)
+        {
+            if (!File.Exists(filePath))
+            {
+                return 0;
+            }
+
+            try
+            {
+                string json = File.ReadAllText(filePath);
+                var data = Newtonsoft.Json.JsonConvert.DeserializeObject<SnapshotFile>(json);
+                if (data?.Nodes == null)
+                {
+                    return 0;
+                }
+
+                int restored = 0;
+                foreach (var node in data.Nodes)
+                {
+                    // 仅当节点尚未注册时恢复静态信息（会话为 null，等待节点重连）
+                    nodes.TryAdd(node.NodeId, new ServerNodeInfo
+                    {
+                        NodeId = node.NodeId,
+                        NodeType = node.NodeType,
+                        Host = node.Host,
+                        Port = node.Port,
+                        CurrentLoad = 0,
+                        Session = null!,
+                        LastHeartbeat = DateTime.UtcNow
+                    });
+                    restored++;
+                }
+
+                Log.Info($"节点注册表从快照恢复: {restored} 个节点");
+                return restored;
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"节点注册表快照恢复失败: {ex.Message}");
+                return 0;
+            }
+        }
+
+        /// <summary>快照文件结构（用于反序列化）。</summary>
+        private sealed class SnapshotFile
+        {
+            public DateTime SavedAtUtc { get; set; }
+            public List<NodeSnapshot>? Nodes { get; set; }
+        }
     }
 }

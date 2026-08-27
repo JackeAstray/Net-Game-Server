@@ -458,6 +458,47 @@ Console.WriteLine($"备份恢复: 恢复数={restoredCount} P5.Hp={restoredEntit
 if (restoredCount != 10 || restoredEntity?.Get<int>("Hp") != 105 || restoredEntity?.Get<string>("Nickname") != "P5") return 1;
 File.Delete(backupPath);
 
+// ===== 15. 实体持久化服务（对标 KBE entity_table：属性声明驱动自动存取 + 崩溃恢复） =====
+string persistDir = Path.Combine(Path.GetTempPath(), $"kbe_persist_{Guid.NewGuid():N}");
+var persistDef = new Framework.Entity.EntityDef { Name = "Player" }
+    .Add("Hp", Framework.Entity.EntityPropertyType.Int32)
+    .Add("Nickname", Framework.Entity.EntityPropertyType.String)
+    .Add("Position", Framework.Entity.EntityPropertyType.Float3);
+var persistFactory = new Func<long, Framework.Entity.Entity>(id => persistDef.CreateEntity(id));
+
+// 模拟"服务器运行期"：实体被修改并自动保存
+var liveManager = new Framework.Entity.EntityManager();
+var persistService = new Framework.Entity.EntityPersistenceService(persistDir, persistFactory);
+for (int i = 1; i <= 5; i++)
+{
+    var e = persistDef.CreateEntity(i);
+    e.Set("Hp", 200 + i);
+    e.Set("Nickname", $"S{i}");
+    e.Set("Position", new Framework.Entity.Float3(i * 10, 0, i * 10));
+    liveManager.AddOrUpdateEntity(i, e);
+    persistService.SaveEntity(e); // 属性声明驱动自动落库（无手写 SQL/映射）
+}
+Console.WriteLine($"实体持久化: 已保存 5 个，目录文件数={persistService.Count("Player")} (期望 5)");
+if (persistService.Count("Player") != 5) return 1;
+
+// 模拟"服务器崩溃重启"：用 factory 重建实体骨架并从持久化自动恢复（对标 restore_entity_handler）
+var recoveredManager = new Framework.Entity.EntityManager();
+var recoverService = new Framework.Entity.EntityPersistenceService(persistDir, persistFactory);
+var recovered = recoverService.RestoreAll("Player");
+foreach (var e in recovered) recoveredManager.AddOrUpdateEntity(e.EntityId, e);
+var recoveredEntity = recoveredManager.GetEntity(3);
+Console.WriteLine($"崩溃恢复: 恢复数={recovered.Count} P3.Hp={recoveredEntity?.Get<int>("Hp")} Nick={recoveredEntity?.Get<string>("Nickname")} (期望 5/203/S3)");
+if (recovered.Count != 5 || recoveredEntity?.Get<int>("Hp") != 203 || recoveredEntity?.Get<string>("Nickname") != "S3") return 1;
+
+// 单实体加载 + 删除
+var singleEntity = recoverService.LoadEntityById("Player", 5);
+Console.WriteLine($"单实体加载: Hp={singleEntity?.Get<int>("Hp")} (期望 205)");
+if (singleEntity?.Get<int>("Hp") != 205) return 1;
+recoverService.DeleteEntity("Player", 5);
+Console.WriteLine($"删除实体: 剩余文件数={recoverService.Count("Player")} (期望 4)");
+if (recoverService.Count("Player") != 4) return 1;
+Directory.Delete(persistDir, recursive: true);
+
 Console.WriteLine("\n===== 全部验证通过 =====");
 return 0;
 

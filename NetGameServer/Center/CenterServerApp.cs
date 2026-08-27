@@ -175,12 +175,19 @@ namespace Center
             await tcpServer.StartAsync(port);
             Log.Info($"Center 调度服务器网络已启动，监听内部端口: {port}");
 
+            // 注册表持久化（Center 高可用基础）：启动时从快照恢复静态节点信息，周期保存快照
+            string snapshotFile = Shared.ConfigHelper.GetConfig<string>("NodeSnapshotFile")
+                ?? Path.Combine(AppContext.BaseDirectory, "data", "node_snapshot.json");
+            Center.Handlers.NodeManager.Instance.RestoreFromSnapshotFile(snapshotFile);
+
             _ = Task.Run(async () =>
             {
                 TimeSpan timeout = TimeSpan.FromSeconds(30);
                 while (true)
                 {
                     await Task.Delay(TimeSpan.FromSeconds(10));
+                    // 周期保存注册表快照（节点注册/心跳变化后持久化）
+                    Center.Handlers.NodeManager.Instance.SaveSnapshotToFile(snapshotFile);
                     int removedCount = Center.Handlers.NodeManager.Instance.RemoveInactiveNodes(timeout);
                     if (removedCount > 0)
                     {

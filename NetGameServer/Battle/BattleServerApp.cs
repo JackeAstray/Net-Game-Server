@@ -16,6 +16,7 @@ namespace Battle
         private static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>? handlers;
         private static Framework.Protocol.MessageDispatcher? dispatcher;
         private static Framework.Scripting.ScriptHost? scriptHost;
+        private static Framework.Entity.EntityPersistenceService? persistService;
         private static System.Threading.CancellationTokenSource? centerHeartbeatCts;
         private static Battle.Handlers.SceneManager? sceneManager;
         private static TcpClientWrapper? centerClient;
@@ -31,6 +32,32 @@ namespace Battle
         public static void NotifyEntityDestroyed(Framework.Entity.Entity entity)
         {
             scriptHost?.NotifyDestroy(entity);
+        }
+
+        /// <summary>
+        /// 崩溃恢复：按持久化数据重建玩家实体并恢复属性（对标 KBE restore_entity_handler）。
+        /// 返回恢复的实体列表（加入场景前由调用方绑定）。
+        /// </summary>
+        public static List<Framework.Entity.Entity> RestorePersistedPlayers()
+        {
+            if (persistService == null)
+            {
+                return new List<Framework.Entity.Entity>();
+            }
+            return persistService.RestoreAll("Player");
+        }
+
+        /// <summary>持久化保存玩家实体（离开/下线时调用）。</summary>
+        public static void PersistPlayer(Framework.Entity.Entity entity)
+        {
+            try
+            {
+                persistService?.SaveEntity(entity);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, $"玩家实体持久化失败 EntityId:{entity.EntityId}");
+            }
         }
 
         /// <summary>客户端会话 -> 网关会话 映射（帧同步广播用；收包时登记，断开时清除）</summary>
@@ -104,6 +131,15 @@ namespace Battle
                     backupService.Tick();
                 }
             };
+
+            // 实体持久化服务（对标 KBE dbmgr entity_table 自动存取 + restore_entity_handler 崩溃恢复）
+            string persistDir = ConfigHelper.GetConfig<string>("EntityPersistDir")
+                ?? Path.Combine(AppContext.BaseDirectory, "persist", "entities");
+            var persistService = new Framework.Entity.EntityPersistenceService(persistDir, id =>
+            {
+                return Battle.Entities.PlayerEntityDef.Create(id);
+            });
+            BattleServerApp.persistService = persistService;
 
             sceneManager = new Battle.Handlers.SceneManager();
             var entitySyncHandler = new Battle.Handlers.EntitySyncHandler(sceneManager);

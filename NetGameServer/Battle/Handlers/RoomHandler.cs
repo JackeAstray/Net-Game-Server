@@ -69,6 +69,24 @@ namespace Battle.Handlers
                 // 基于实体框架创建玩家实体（属性脏标记 + 增量同步）
                 var newPlayerEntity = Battle.Entities.PlayerEntityDef.Create(clientSessionId);
 
+                // 崩溃恢复：若存在持久化数据，恢复玩家属性（对标 KBE restore_entity_handler）
+                bool recovered = false;
+                try
+                {
+                    var persisted = Battle.BattleServerApp.RestorePersistedPlayers()
+                        .FirstOrDefault(e => e.EntityId == clientSessionId);
+                    if (persisted != null)
+                    {
+                        newPlayerEntity = persisted;
+                        recovered = true;
+                        Shared.Log.Info($"玩家实体从持久化恢复 ClientSessionId:{clientSessionId}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Warning($"玩家实体恢复失败，使用默认属性 ClientSessionId:{clientSessionId} Exception:{ex.Message}");
+                }
+
                 // 通知游戏逻辑脚本：实体创建（脚本可覆写初始属性/绑定玩法）
                 Battle.BattleServerApp.NotifyEntityCreated(newPlayerEntity);
 
@@ -79,7 +97,7 @@ namespace Battle.Handlers
                 return Task.FromResult(new BattleJoinResponse
                 {
                     Success = true,
-                    Message = $"加入场景 {scene.Config.Name} (类型: {scene.Config.SceneType}) 成功. AOI启用: {isWorldMap}"
+                    Message = $"加入场景 {scene.Config.Name} (类型: {scene.Config.SceneType}) 成功. AOI启用: {isWorldMap}{(recovered ? " [已恢复存档]" : "")}"
                 });
             }
             catch (Exception ex)
@@ -117,6 +135,14 @@ namespace Battle.Handlers
                 });
             }
 
+            // 离开前持久化保存玩家属性（对标 KBE 实体落库，崩溃后可恢复）
+            var leavingEntity = scene.EntityManager.GetEntity(clientSessionId);
+            if (leavingEntity != null)
+            {
+                Battle.BattleServerApp.PersistPlayer(leavingEntity);
+                Battle.BattleServerApp.NotifyEntityDestroyed(leavingEntity);
+            }
+
             entitySyncHandler.OnPlayerLeave(clientSessionId, gatewaySession);
             Battle.BattleServerApp.SyncRoomPlayerCount(roomId);
             Battle.BattleServerApp.SyncRoomMemberLeave(roomId, clientSessionId);
@@ -144,6 +170,8 @@ namespace Battle.Handlers
                 var entity = scene.EntityManager.GetEntity(clientSessionId);
                 if (entity != null)
                 {
+                    // 断开时持久化保存（崩溃/断线后可恢复）
+                    Battle.BattleServerApp.PersistPlayer(entity);
                     Battle.BattleServerApp.NotifyEntityDestroyed(entity);
                 }
                 entitySyncHandler.OnPlayerLeave(clientSessionId, gatewaySession);
