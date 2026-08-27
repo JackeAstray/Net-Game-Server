@@ -1,7 +1,8 @@
 // ===== 示例游戏逻辑脚本：Avatar（玩家角色） =====
-// 说明：这是"游戏逻辑层"，与底层框架物理分离。
-// 修改本文件后无需重新编译框架——ScriptHost 检测到变更会自动热更新。
+// 展示玩法脚本的基础模式：实体创建初始化 → 每 tick 逻辑（回血）→ 消息响应（受伤）。
+// 伤害结算读取全局数据 DamageMultiplier（框架/其他脚本可调整倍率，无需改本脚本）。
 // 实体属性由 EntityDef 声明（见 Battle/Entities/PlayerEntityDef.cs 的字段）。
+// 所有逻辑只写在这一个 .csx 里，框架零改动，保存即热更新。
 
 using System;
 using Framework.Entity;

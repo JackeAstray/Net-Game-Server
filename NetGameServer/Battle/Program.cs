@@ -1,10 +1,11 @@
-using System;
-using System.Threading.Tasks;
 using Shared;
 using Log = Shared.Log;
 
 namespace Battle
 {
+    /// <summary>
+    /// 战斗/房间服务器入口：初始化日志与远程日志上报，启动网络服务（tick 引擎/场景/帧同步）。
+    /// </summary>
     internal class Program
     {
         static async Task Main(string[] args)
@@ -13,7 +14,7 @@ namespace Battle
             Log.Info("战斗/房间服务器(Battle Server)正在启动...");
 
             // 远程日志上报（配置 LoggerHost/LoggerPort 后生效，对标 KBE logger 聚合）
-            Shared.RemoteLog.Initialize($"Battle-{ConfigHelper.GetConfig<string>("BattleHost") ?? "127.0.0.1"}:{ConfigHelper.GetConfig<int>("BattlePort")}");
+            RemoteLog.Initialize($"Battle-{ConfigHelper.GetConfig<string>("BattleHost") ?? "127.0.0.1"}:{ConfigHelper.GetConfig<int>("BattlePort")}");
 
             await BattleServerApp.StartNetworkAsync();
 
