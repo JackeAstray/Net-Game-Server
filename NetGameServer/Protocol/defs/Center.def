@@ -145,6 +145,7 @@
   <Message id="30022" name="RoomReadyResult" target="Center">
     <Field name="Success" type="bool" />
     <Field name="Message" type="string" />
+    <Field name="Room" type="RoomInfo" />
   </Message>
 
   <Message id="30023" name="RoomReadyChangedNotify" target="Center">
@@ -161,6 +162,7 @@
   <Message id="30025" name="RoomTransferOwnerResult" target="Center">
     <Field name="Success" type="bool" />
     <Field name="Message" type="string" />
+    <Field name="Room" type="RoomInfo" />
   </Message>
 
   <Message id="30026" name="RoomOwnerChangedNotify" target="Center">
@@ -177,6 +179,7 @@
   <Message id="30028" name="RoomKickMemberResult" target="Center">
     <Field name="Success" type="bool" />
     <Field name="Message" type="string" />
+    <Field name="Room" type="RoomInfo" />
   </Message>
 
   <Message id="30029" name="RoomKickedNotify" target="Center">

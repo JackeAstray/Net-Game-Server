@@ -172,6 +172,20 @@ Framework.Protocol/Generated/
 - `SaveSnapshotToFile/RestoreFromSnapshotFile`：节点注册表 JSON 快照落盘/恢复
 - Center 启动时恢复静态节点信息（会话/心跳由节点重连自动更新），周期 10s 保存快照
 
+### 21. Center 回调类消息 Dispatcher 迁移
+
+`Center/Handlers/CenterDispatcher.cs`：
+- `CenterSessionContext` 扩展：`RoutedUserId/RoutedUid/RoutedNickname`（收包入口注入身份元数据）+ `Notify()`（多网关路由通知广播，对标旧 SendToGateway）
+- 新增迁移：RoomReady（准备）、RoomTransferOwner（房主转移）、RoomKickMember（踢人）——带通知广播回调的消息已全部迁移
+- def 补齐：RoomReadyResult/RoomTransferOwnerResult/RoomKickMemberResult 增加 Room 字段
+
+### 22. Quest 任务脚本示例（三脚本协作）
+
+`GameLogic/scripts/Quest.csx`：
+- 任务系统：监听全局数据 `TotalExpDropped`（Npc 击杀经验），达到阈值 → 任务完成 → 奖励写回全局数据
+- 展示"全局数据即脚本间总线"的松耦合协作（Npc 产出 → Quest 消费，无互相引用）
+- 验证：Avatar + Npc + Quest 三脚本共存；击杀 2 只 Npc（40 经验）→ Quest 自动完成 ✓
+
 ---
 
 ## 三、验证结果汇总

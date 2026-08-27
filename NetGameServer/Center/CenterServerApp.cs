@@ -87,10 +87,29 @@ namespace Center
                 byte[] payload = data.Slice(4).ToArray();
 
                 long originalSessionId = 0;
+                int routedUserId = 0;
+                string routedUid = string.Empty;
+                string routedNickname = string.Empty;
                 if (Shared.RouteMetadata.TryExtractClientSessionId(payload, out long clientSessionId, out var cleanPayload))
                 {
                     originalSessionId = clientSessionId;
                     payload = cleanPayload;
+                }
+                // 提取玩家身份元数据（房间操作类消息需要：准备/踢人/转让房主等）
+                if (Shared.RouteMetadata.TryExtractUserId(payload, out int extractedUserId, out var payloadNoUser))
+                {
+                    routedUserId = extractedUserId;
+                    payload = payloadNoUser;
+                }
+                if (Shared.RouteMetadata.TryExtractUid(payload, out string extractedUid, out var payloadNoUid))
+                {
+                    routedUid = extractedUid;
+                    payload = payloadNoUid;
+                }
+                if (Shared.RouteMetadata.TryExtractNickname(payload, out string extractedNickname, out var payloadNoNick))
+                {
+                    routedNickname = extractedNickname;
+                    payload = payloadNoNick;
                 }
 
                 if (originalSessionId > 0)
@@ -100,7 +119,13 @@ namespace Center
                 }
 
                 // 新协议分发优先（强类型 + MemoryPack/JSON 双格式兼容）
-                if (await centerDispatcher.TryDispatch(new Center.Handlers.CenterSessionContext(session, originalSessionId), msgId, payload))
+                var centerCtx = new Center.Handlers.CenterSessionContext(session, originalSessionId)
+                {
+                    RoutedUserId = routedUserId,
+                    RoutedUid = routedUid,
+                    RoutedNickname = routedNickname
+                };
+                if (await centerDispatcher.TryDispatch(centerCtx, msgId, payload))
                 {
                     Log.Debug($"Center 新协议分发完成 MsgId:{msgId} ClientSessionId:{originalSessionId}");
                 }

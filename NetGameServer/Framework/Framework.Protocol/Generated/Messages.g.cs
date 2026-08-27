@@ -554,6 +554,7 @@ public partial class RoomReadyResult : IGameMessage
     public static RoomReadyResult? Deserialize(ReadOnlySpan<byte> payload) => MemoryPackSerializer.Deserialize<RoomReadyResult>(payload);
     public bool Success { get; set; } = default;
     public string Message { get; set; } = string.Empty;
+    public RoomInfo Room { get; set; } = new();
 }
 
 [MemoryPackable]
@@ -597,6 +598,7 @@ public partial class RoomTransferOwnerResult : IGameMessage
     public static RoomTransferOwnerResult? Deserialize(ReadOnlySpan<byte> payload) => MemoryPackSerializer.Deserialize<RoomTransferOwnerResult>(payload);
     public bool Success { get; set; } = default;
     public string Message { get; set; } = string.Empty;
+    public RoomInfo Room { get; set; } = new();
 }
 
 [MemoryPackable]
@@ -640,6 +642,7 @@ public partial class RoomKickMemberResult : IGameMessage
     public static RoomKickMemberResult? Deserialize(ReadOnlySpan<byte> payload) => MemoryPackSerializer.Deserialize<RoomKickMemberResult>(payload);
     public bool Success { get; set; } = default;
     public string Message { get; set; } = string.Empty;
+    public RoomInfo Room { get; set; } = new();
 }
 
 [MemoryPackable]

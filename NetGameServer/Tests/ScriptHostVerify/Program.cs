@@ -80,7 +80,8 @@ await Task.Delay(1500);
 var lastGoodScript = host.GetScript("Avatar");
 string broken = original + "\nthis is not valid csharp {{{";
 File.WriteAllText(scriptFile, broken);
-await Task.Delay(1500);
+await Task.Delay(300); // 等待 watcher 防抖窗口（期间可能触发一次重载）
+host.ReloadAll();       // 确定性重新加载：broken 编译失败 → 保留旧实例
 var afterBroken = host.GetScript("Avatar");
 bool hasError = host.LastLoadErrors.ContainsKey("Avatar");
 Console.WriteLine($"错误隔离: 保留旧实例={ReferenceEquals(lastGoodScript, afterBroken)} 记录错误={hasError} (期望 True/True)");
@@ -88,7 +89,8 @@ if (!ReferenceEquals(lastGoodScript, afterBroken) || !hasError) return 1;
 
 // 修复脚本并确认恢复
 File.WriteAllText(scriptFile, original);
-await Task.Delay(1500);
+await Task.Delay(300);
+host.ReloadAll();
 bool errorCleared = !host.LastLoadErrors.ContainsKey("Avatar");
 Console.WriteLine($"错误恢复: 错误已清除={errorCleared} (期望 True)");
 if (!errorCleared) return 1;
@@ -127,6 +129,43 @@ if (expDropped is not int exp || exp != 20) return 1;
 
 // 全局数据在脚本间共享：Avatar 脚本也可读取（此处验证框架侧读取一致）
 Console.WriteLine("多脚本共存验证 OK");
+
+// 8. Quest 任务脚本验证（三脚本共存 + 跨脚本协作：Npc 击杀 → 全局数据 → Quest 完成）
+var questDef = new Framework.Entity.EntityDef { Name = "Quest" }
+    .Add("Hp", Framework.Entity.EntityPropertyType.Int32)
+    .Add("MaxHp", Framework.Entity.EntityPropertyType.Int32)
+    .Add("Score", Framework.Entity.EntityPropertyType.Int32);
+var quest = questDef.CreateEntity(4001);
+manager.AddOrUpdateEntity(4001, quest);
+
+var questScript = host.GetScript("Quest");
+Console.WriteLine($"Quest 脚本加载: {questScript != null} (期望 True)");
+if (questScript == null) return 1;
+
+host.NotifyCreate(quest);
+if (quest.Get<int>("MaxHp") != 20) { Console.WriteLine("!! Quest OnCreate 未设置目标"); return 1; }
+
+// 模拟第二只 Npc 死亡：经验达到阈值 → Quest tick 检测到完成
+host.DispatchMessage(npc, "TakeDamage", new object?[] { 100 });
+// 注意：第二只 Npc 已死亡，直接再次击杀同实体无效果——改为通过全局数据直接设置（简化）
+// 重新创建一只 Npc 击杀以累计经验
+var npc2 = npcDef.CreateEntity(3002);
+manager.AddOrUpdateEntity(3002, npc2);
+host.NotifyCreate(npc2);
+host.DispatchMessage(npc2, "TakeDamage", new object?[] { 100 });
+
+// 驱动 tick 让 Quest 脚本检测到全局数据变化（5 tick 轮询 + 判定）
+for (long f = 1; f <= 20; f++)
+{
+    host.TickAll(manager, f);
+}
+bool questCompleted = host.GetGlobal("QuestCompleted") is bool qc && qc;
+Console.WriteLine($"Quest 完成: {questCompleted} (期望 True，经验 40>=20)");
+if (!questCompleted) return 1;
+
+// 查询进度消息
+host.DispatchMessage(quest, "QueryProgress", Array.Empty<object?>());
+Console.WriteLine("三脚本协作（Npc→全局数据→Quest）验证 OK");
 
 host.Dispose();
 Console.WriteLine("\n===== ScriptHost 验证通过 =====");

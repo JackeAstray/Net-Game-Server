@@ -24,6 +24,14 @@ public sealed class CenterSessionContext : ISessionContext
 
     public long ClientSessionId => clientSessionId;
 
+    /// <summary>网关会话（房间广播等场景需要原始会话）。</summary>
+    public ISession GatewaySession => gatewaySession;
+
+    /// <summary>路由元数据中的玩家身份（由收包入口注入）。</summary>
+    public int RoutedUserId { get; set; }
+    public string RoutedUid { get; set; } = string.Empty;
+    public string RoutedNickname { get; set; } = string.Empty;
+
     public void Send(int msgId, ReadOnlyMemory<byte> payload)
     {
         SendTo(clientSessionId, msgId, payload);
@@ -40,6 +48,32 @@ public sealed class CenterSessionContext : ISessionContext
         byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
         try
         {
+            gatewaySession.Send(packet.AsSpan(0, totalLength).ToArray());
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+        }
+    }
+
+    /// <summary>
+    /// 通知广播（对标旧 SendToGateway 的多网关路由）：优先按客户端会话路由到其网关会话，
+    /// 找不到时回退当前网关会话。通知对象以 JSON 序列化（与旧协议一致，兼容旧客户端）。
+    /// </summary>
+    public void Notify(long targetSessionId, int msgId, object notification)
+    {
+        byte[] responsePayload = Shared.Json.SerializeToUtf8Bytes(notification);
+        byte[] routedPayload = Shared.RouteMetadata.AttachClientSessionId(responsePayload, targetSessionId);
+        byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
+        try
+        {
+            if (targetSessionId > 0
+                && Center.Handlers.NodeManager.Instance.TryGetGatewaySessionByClientSessionId(targetSessionId, out var routed)
+                && routed.IsConnected)
+            {
+                routed.Send(packet.AsSpan(0, totalLength).ToArray());
+                return;
+            }
             gatewaySession.Send(packet.AsSpan(0, totalLength).ToArray());
         }
         finally
@@ -85,6 +119,63 @@ public static class CenterDispatcher
             var req = new RoomMemberListRequest { RoomId = msg.RoomId };
             var res = matchHandler.HandleRoomMemberListRequestAsync(req).GetAwaiter().GetResult();
             var resMsg = new RoomMemberListResult
+            {
+                Success = res.Success,
+                Message = res.Message ?? string.Empty,
+                Room = res.Room != null ? MapRoom(res.Room) : null
+            };
+            ctx.Send(resMsg);
+        }, jsonFallback: true);
+
+        // 房间准备（带通知广播回调：状态变化通知房间成员）
+        dispatcher.RegisterSync<RoomReady>((ctx, msg) =>
+        {
+            var cctx = (CenterSessionContext)ctx;
+            var req = new RoomReadyRequest { RoomId = msg.RoomId, IsReady = msg.IsReady };
+            var res = matchHandler.HandleRoomReadyRequestAsync(
+                ctx.ClientSessionId, cctx.RoutedUserId, cctx.RoutedUid, cctx.RoutedNickname,
+                req, cctx.GatewaySession,
+                (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif))
+                .GetAwaiter().GetResult();
+            var resMsg = new RoomReadyResult
+            {
+                Success = res.Success,
+                Message = res.Message ?? string.Empty,
+                Room = res.Room != null ? MapRoom(res.Room) : null
+            };
+            ctx.Send(resMsg);
+        }, jsonFallback: true);
+
+        // 房主转移
+        dispatcher.RegisterSync<RoomTransferOwner>((ctx, msg) =>
+        {
+            var cctx = (CenterSessionContext)ctx;
+            var req = new RoomTransferOwnerRequest { RoomId = msg.RoomId, TargetUserId = msg.TargetUserId };
+            var res = matchHandler.HandleRoomTransferOwnerRequestAsync(
+                cctx.RoutedUserId, req, cctx.GatewaySession,
+                (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif))
+                .GetAwaiter().GetResult();
+            var resMsg = new RoomTransferOwnerResult
+            {
+                Success = res.Success,
+                Message = res.Message ?? string.Empty,
+                Room = res.Room != null ? MapRoom(res.Room) : null
+            };
+            ctx.Send(resMsg);
+        }, jsonFallback: true);
+
+        // 踢出房间成员
+        dispatcher.RegisterSync<RoomKickMember>((ctx, msg) =>
+        {
+            var cctx = (CenterSessionContext)ctx;
+            var req = new RoomKickMemberRequest { RoomId = msg.RoomId, TargetUserId = msg.TargetUserId };
+            var res = matchHandler.HandleRoomKickMemberRequestAsync(
+                cctx.RoutedUserId, req, cctx.GatewaySession,
+                (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif),
+                (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif),
+                (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif))
+                .GetAwaiter().GetResult();
+            var resMsg = new RoomKickMemberResult
             {
                 Success = res.Success,
                 Message = res.Message ?? string.Empty,
