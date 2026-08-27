@@ -85,7 +85,7 @@ namespace Game.Handlers
         /// </summary>
         /// <param name="sessionBase">当前的网络会话。</param>
         /// <param name="payload">客户端发送的请求数据。</param>
-        private static void HandleAddFriendRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleAddFriendRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
         {
             if (sessionBase is not ClientSessionWrapper session) return;
             var req = Shared.Json.DeserializeFromUtf8Bytes<AddFriendRequest>(payload.Span);
@@ -133,7 +133,7 @@ namespace Game.Handlers
         /// <remarks>方法通过发送消息与数据库服务交互并向客户端发送响应；在会话未绑定、请求无效或 DB 未连接时返回错误响应。</remarks>
         /// <param name="sessionBase">会话对象；应为 ClientSessionWrapper，用于获取会话标识并发送响应。</param>
         /// <param name="payload">包含请求的 UTF-8 JSON 负载，用于反序列化为 RemoveFriendRequest。</param>
-        private static void HandleRemoveFriendRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleRemoveFriendRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
         {
             if (sessionBase is not ClientSessionWrapper session) return;
             var req = Shared.Json.DeserializeFromUtf8Bytes<RemoveFriendRequest>(payload.Span);
@@ -182,7 +182,7 @@ namespace Game.Handlers
         /// DbSetFriendRemarkReq；若发送失败则返回失败响应。</remarks>
         /// <param name="sessionBase">会话接口实例，期望为 ClientSessionWrapper 类型；若非该类型则忽略请求。</param>
         /// <param name="payload">包含 UTF-8 编码的 JSON 请求数据，反序列化为 SetFriendRemarkRequest。</param>
-        private static void HandleSetFriendRemarkRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleSetFriendRemarkRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
         {
             if (sessionBase is not ClientSessionWrapper session) return;
             var req = Shared.Json.DeserializeFromUtf8Bytes<SetFriendRemarkRequest>(payload.Span);
@@ -231,7 +231,7 @@ namespace Game.Handlers
         /// 并尝试发送到数据库服务。</remarks>
         /// <param name="sessionBase">客户端的网络会话基对象（Network.ISession），方法会将其转换为 ClientSessionWrapper 以继续处理。</param>
         /// <param name="payload">只读的字节内存，包含 JSON 编码的 GetFriendsRequest，方法从中反序列化请求数据。</param>
-        private static void HandleGetFriendsRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleGetFriendsRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
         {
             if (sessionBase is not ClientSessionWrapper session) return;
             var req = Shared.Json.DeserializeFromUtf8Bytes<GetFriendsRequest>(payload.Span);
@@ -272,7 +272,7 @@ namespace Game.Handlers
         /// IsInviteResolve 与 InviteRoomId。依赖 PlayerSessionManager 和 GameServerApp.DbClient。</remarks>
         /// <param name="sessionBase">客户端会话基类（期望为 ClientSessionWrapper），用于发送响应并获取会话标识。</param>
         /// <param name="payload">请求负载的只读字节内存，反序列化为 InviteGameRequest。</param>
-        private static void HandleInviteGameRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleInviteGameRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
         {
             if (sessionBase is not ClientSessionWrapper session) return;
             var req = Shared.Json.DeserializeFromUtf8Bytes<InviteGameRequest>(payload.Span);
@@ -353,7 +353,7 @@ namespace Game.Handlers
         /// DB 服务；通过 PlayerSessionManager 获取用户标识。</remarks>
         /// <param name="sessionBase">会话基对象，预期为 ClientSessionWrapper 实例；若不是则忽略请求。</param>
         /// <param name="payload">包含序列化的 AddBlacklistRequest 的 UTF-8 字节负载。</param>
-        private static void HandleAddBlacklistRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleAddBlacklistRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
         {
             if (sessionBase is not ClientSessionWrapper session) return;
             var req = Shared.Json.DeserializeFromUtf8Bytes<AddBlacklistRequest>(payload.Span);
@@ -401,7 +401,7 @@ namespace Game.Handlers
         /// DbRemoveBlacklistRequest。</remarks>
         /// <param name="sessionBase">网络会话基对象，预期为 ClientSessionWrapper；用于获取会话 ID 并向客户端发送响应。</param>
         /// <param name="payload">包含 RemoveBlacklistRequest 的 UTF-8 编码序列化字节数据。</param>
-        private static void HandleRemoveBlacklistRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleRemoveBlacklistRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
         {
             if (sessionBase is not ClientSessionWrapper session) return;
             var req = Shared.Json.DeserializeFromUtf8Bytes<RemoveBlacklistRequest>(payload.Span);
@@ -449,7 +449,7 @@ namespace Game.Handlers
         /// DbGetBlacklistRequest，并在发送失败时返回错误响应。</remarks>
         /// <param name="sessionBase">会话实例，期望为 ClientSessionWrapper；若不是则忽略请求。</param>
         /// <param name="payload">包含请求的 UTF-8 JSON 字节数据，反序列化为 GetBlacklistRequest。</param>
-        private static void HandleGetBlacklistRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleGetBlacklistRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
         {
             if (sessionBase is not ClientSessionWrapper session) return;
             var req = Shared.Json.DeserializeFromUtf8Bytes<GetBlacklistRequest>(payload.Span);

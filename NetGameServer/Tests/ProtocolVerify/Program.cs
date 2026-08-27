@@ -548,6 +548,30 @@ bool leaveOk = await centerDispatcher.TryDispatch(centerCtx, leaveMsgId, leaveBo
 Console.WriteLine($"Center 离开房间: ok={leaveOk} 发送包数={centerSent.Count} (期望 True/>=4)");
 if (!leaveOk || centerSent.Count < 4) return 1;
 
+// ===== 17. Leader 选举验证（主备高可用：争锁 + 故障接管） =====
+string leaderLock = Path.Combine(Path.GetTempPath(), $"leader_test_{Guid.NewGuid():N}.lock");
+var leaderA = new Framework.Core.LeaderElection(leaderLock, "Center-A", heartbeatIntervalMs: 300);
+var leaderB = new Framework.Core.LeaderElection(leaderLock, "Center-B", heartbeatIntervalMs: 300);
+Console.WriteLine($"Leader 选举: A={leaderA.IsLeader} B={leaderB.IsLeader} (期望 True/False，同一时刻仅一个 Leader)");
+if (!leaderA.IsLeader || leaderB.IsLeader) return 1;
+
+// 模拟 A 故障（释放锁）→ B 应自动接管
+leaderA.Dispose();
+await Task.Delay(1000);
+Console.WriteLine($"Leader 故障接管: A={leaderA.IsLeader} B={leaderB.IsLeader} (期望 False/True)");
+if (!leaderB.IsLeader) return 1;
+
+// B 主动让出 → 重新创建 A 可再抢
+leaderB.StepDown();
+leaderA = new Framework.Core.LeaderElection(leaderLock, "Center-A", heartbeatIntervalMs: 300);
+await Task.Delay(500);
+Console.WriteLine($"Leader 重新选举: A={leaderA.IsLeader} B={leaderB.IsLeader} (期望 True/False)");
+if (!leaderA.IsLeader || leaderB.IsLeader) return 1;
+
+leaderA.Dispose();
+leaderB.Dispose();
+File.Delete(leaderLock);
+
 Console.WriteLine("\n===== 全部验证通过 =====");
 return 0;
 

@@ -11,15 +11,34 @@ namespace Center
     {
         private static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>? handlers;
 
+        /// <summary>Leader 选举实例（主备高可用：仅 Leader 处理业务）。</summary>
+        public static Framework.Core.LeaderElection? LeaderElection { get; private set; }
+
+        /// <summary>当前是否为主节点（Leader）。</summary>
+        public static bool IsLeader => LeaderElection?.IsLeader ?? true;
+
         /// <summary>
         /// 启动中心调度服务器的网络，注册并配置内部 TCP 服务器、消息路由和事件处理器，并监听指定端口。
         /// </summary>
-        /// <remarks>从配置读取端口（默认 31306）。接收并分发网关转发的内部消息，维护会话绑定，并在后台周期性清理超时节点。</remarks>
+        /// <remarks>从配置读取端口（默认 31306）。接收并分发网关转发的内部消息，维护会话绑定，并在后台周期性清理超时节点。
+        /// 支持主备：配置 LeaderLockFile 后启动 Leader 选举，仅 Leader 处理业务消息，Standby 节点保持监听等待接管。</remarks>
         /// <returns>表示启动操作完成的异步任务。</returns>
         public static async Task StartNetworkAsync()
         {
             // 例如配置中 CenterPort 默认 31306
             int port = ConfigHelper.GetConfig<int>("CenterPort") == 0 ? 31306 : ConfigHelper.GetConfig<int>("CenterPort");
+
+            // Leader 选举（配置 LeaderLockFile 启用主备；未配置时单机模式始终为 Leader）
+            string? leaderLockFile = ConfigHelper.GetConfig<string>("LeaderLockFile");
+            if (!string.IsNullOrWhiteSpace(leaderLockFile))
+            {
+                string centerHost = ConfigHelper.GetConfig<string>("CenterHost") ?? "127.0.0.1";
+                LeaderElection = new Framework.Core.LeaderElection(leaderLockFile, $"Center-{centerHost}:{port}");
+                LeaderElection.LeadershipChanged += isLeader =>
+                {
+                    Log.Warning($"Center 主备状态变化: IsLeader={isLeader}");
+                };
+            }
 
             var matchHandler = new Center.Handlers.MatchHandler();
             handlers = Center.Handlers.MessageRouter.BuildHandlers(matchHandler);
@@ -116,6 +135,13 @@ namespace Center
                 {
                     Center.Handlers.NodeManager.Instance.BindClientGatewayRoute(originalSessionId, session);
                     Log.Debug($"Center 路由绑定更新 ClientSessionId:{originalSessionId} -> NodeSessionId:{session.SessionId}");
+                }
+
+                // 主备：非 Leader 节点拒绝业务消息（节点注册/心跳仍接受，便于 Standby 恢复后快速同步）
+                if (!IsLeader && msgId < 90000)
+                {
+                    Log.Warning($"Center (Standby) 拒绝业务消息 MsgId:{msgId}（等待接管为 Leader）");
+                    return;
                 }
 
                 // 新协议分发优先（强类型 + MemoryPack/JSON 双格式兼容）

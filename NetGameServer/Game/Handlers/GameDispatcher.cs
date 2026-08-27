@@ -2,6 +2,7 @@ using Framework.Protocol;
 using Framework.Protocol.Generated;
 using Shared.Messages.Chat;
 using Shared.Data.Chat;
+using Shared.Messages.Social;
 using ISession = Network.ISession;
 
 namespace Game.Handlers;
@@ -83,6 +84,73 @@ public static class GameDispatcher
             var session = new Game.Network.ClientSessionWrapper(
                 ((GameSessionContext)ctx).GatewaySession, ctx.ClientSessionId);
             chatHandler.HandleSendChatRequest(session, req);
+        }, jsonFallback: true);
+
+        // 好友：添加（复用现有逻辑：身份映射 + DB 转发 + 异步响应）
+        dispatcher.RegisterSync<FriendAdd>((ctx, msg) =>
+        {
+            var session = new Game.Network.ClientSessionWrapper(
+                ((GameSessionContext)ctx).GatewaySession, ctx.ClientSessionId);
+            // 复用现有入口（内部序列化为请求对象再走原有业务管线）
+            var req = new AddFriendRequest { TargetUniqueId = msg.TargetUniqueId, Remark = msg.Remark };
+            var payload = Shared.Json.SerializeToUtf8Bytes(req);
+            Game.Handlers.FriendHandler.HandleAddFriendRequest(session, payload);
+        }, jsonFallback: true);
+
+        // 好友：删除
+        dispatcher.RegisterSync<FriendRemove>((ctx, msg) =>
+        {
+            var session = new Game.Network.ClientSessionWrapper(
+                ((GameSessionContext)ctx).GatewaySession, ctx.ClientSessionId);
+            var req = new RemoveFriendRequest { FriendUniqueId = msg.FriendUniqueId };
+            var payload = Shared.Json.SerializeToUtf8Bytes(req);
+            Game.Handlers.FriendHandler.HandleRemoveFriendRequest(session, payload);
+        }, jsonFallback: true);
+
+        // 好友：设置备注
+        dispatcher.RegisterSync<FriendSetRemark>((ctx, msg) =>
+        {
+            var session = new Game.Network.ClientSessionWrapper(
+                ((GameSessionContext)ctx).GatewaySession, ctx.ClientSessionId);
+            var req = new SetFriendRemarkRequest { FriendUniqueId = msg.FriendUniqueId, Remark = msg.Remark };
+            var payload = Shared.Json.SerializeToUtf8Bytes(req);
+            Game.Handlers.FriendHandler.HandleSetFriendRemarkRequest(session, payload);
+        }, jsonFallback: true);
+
+        // 好友：获取列表
+        dispatcher.RegisterSync<FriendGetList>((ctx, msg) =>
+        {
+            var session = new Game.Network.ClientSessionWrapper(
+                ((GameSessionContext)ctx).GatewaySession, ctx.ClientSessionId);
+            Game.Handlers.FriendHandler.HandleGetFriendsRequest(session, Array.Empty<byte>());
+        }, jsonFallback: true);
+
+        // 黑名单：添加
+        dispatcher.RegisterSync<BlacklistAdd>((ctx, msg) =>
+        {
+            var session = new Game.Network.ClientSessionWrapper(
+                ((GameSessionContext)ctx).GatewaySession, ctx.ClientSessionId);
+            var req = new AddBlacklistRequest { TargetUniqueId = msg.TargetUniqueId };
+            var payload = Shared.Json.SerializeToUtf8Bytes(req);
+            Game.Handlers.FriendHandler.HandleAddBlacklistRequest(session, payload);
+        }, jsonFallback: true);
+
+        // 黑名单：移除
+        dispatcher.RegisterSync<BlacklistRemove>((ctx, msg) =>
+        {
+            var session = new Game.Network.ClientSessionWrapper(
+                ((GameSessionContext)ctx).GatewaySession, ctx.ClientSessionId);
+            var req = new RemoveBlacklistRequest { TargetUniqueId = msg.TargetUniqueId };
+            var payload = Shared.Json.SerializeToUtf8Bytes(req);
+            Game.Handlers.FriendHandler.HandleRemoveBlacklistRequest(session, payload);
+        }, jsonFallback: true);
+
+        // 黑名单：获取列表
+        dispatcher.RegisterSync<BlacklistGetList>((ctx, msg) =>
+        {
+            var session = new Game.Network.ClientSessionWrapper(
+                ((GameSessionContext)ctx).GatewaySession, ctx.ClientSessionId);
+            Game.Handlers.FriendHandler.HandleGetBlacklistRequest(session, Array.Empty<byte>());
         }, jsonFallback: true);
 
         return dispatcher;

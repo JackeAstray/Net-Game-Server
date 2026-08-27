@@ -13,6 +13,7 @@ public class CenterController : ControllerBase
         return Ok(new
         {
             status = "ok",
+            isLeader = CenterServerApp.IsLeader,
             nodeCount = NodeManager.Instance.GetNodeCount(),
             timestamp = DateTime.UtcNow
         });

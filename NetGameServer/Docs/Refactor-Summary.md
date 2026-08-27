@@ -188,6 +188,20 @@ Framework.Protocol/Generated/
   旧字典仅保留内部节点消息（注册/心跳/场景创建回执）
 - 集成验证：创建房间 → 加入 → 聊天 → 离开 全链路通过（MatchHandler 真实业务执行）
 
+### 23. Game FriendHandler 迁移（8/13 消息）
+
+`Game/Handlers/GameDispatcher.cs`：
+- 新增迁移 7 个好友/黑名单消息：FriendAdd/FriendRemove/FriendSetRemark/FriendGetList/BlacklistAdd/BlacklistRemove/BlacklistGetList
+- 模式：生成消息类 → 复用现有 FriendHandler 入口（身份映射 + DB 转发 + 异步响应管线）
+- Game 累计迁移 8/13 客户端消息（Chat 1 + Friend/Blacklist 7）
+
+### 24. Center 主备 Leader 选举（HA）
+
+`Framework/Core/LeaderElection.cs`：
+- 基于独占文件锁的选举：同一时刻仅一个 Leader；Leader 心跳续约；Standby 周期尝试抢占（故障自动接管）
+- Center 接入：配置 `LeaderLockFile` 启用主备；非 Leader 拒绝业务消息（注册/心跳仍接受）；健康接口暴露 `isLeader`
+- 验证：争锁唯一性（A=True/B=False）→ A 故障 B 自动接管 → B 让出后 A 重新选举 全部通过
+
 ### 22. Quest 任务脚本示例（三脚本协作）
 
 `GameLogic/scripts/Quest.csx`：
