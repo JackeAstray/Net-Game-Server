@@ -429,8 +429,29 @@
 - 验证：`dotnet build` 0 错误；五套件全部通过（ProtocolVerify 覆盖实体迁移属性全量序列化→恢复回环
   Props=76B；NetworkVerify Part5 伪 Center 下发 91005 后 Gateway 玩家消息 A→B 重绑定）。
 
-### 迭代 10（规划）——路线剩余项
+### 迭代 10 —— 巨型单体类拆分（完成）
 
-- **三-14 巨型单体类拆分**：MatchHandler（54KB）/ LoginHandler（41KB）/ DbQueryHandler（71KB）/
-  GatewayServerApp（45KB）按业务模块拆分，并全部迁移 MessageDispatcher 强类型风格。
+- **三-14 巨型单体类拆分**：MatchHandler / LoginHandler / DbQueryHandler / GatewayServerApp
+  全部改为 `partial class` 并按业务模块/关注点分文件组织（对标 KBE 按逻辑拆分），方法零改动：
+  - **MatchHandler**（1215 行 → 3 文件）：`MatchHandler.cs`（房间注册表/匹配/创建/列表）
+    + `MatchHandler.Rooms.cs`（加入/退出/设置/开局/关闭/转让/踢人/准备/聊天/成员）
+    + `MatchHandler.SceneSync.cs`（场景协同/广播助手/密码校验）。
+  - **DbQueryHandler**（1461 行 → 5 文件）：`DbQueryHandler.cs`（共享 SendDbResponse）
+    + `Account.cs`（登录/注册/账户/在线）/`Password.cs`/`Friends.cs`/`Social.cs`（黑名单/解析/好友申请）。
+  - **GatewayServerApp**（1003 行 → 5 文件）：`GatewayServerApp.cs`（字段/SendToBattle/发送器）
+    + `Network.cs`（四协议监听+路由）/`Backend.cs`（后端连接+节点回包）/
+    `CenterClient.cs`（Center 生命周期/注册/状态/签名）/`Sessions.cs`（断线恢复/HTTP 反代）。
+  - **LoginHandler**（864 行 → 3 文件）：`LoginHandler.cs`（登录/注册/Token）
+    + `Account.cs`（找回密码/账户/在线/登出/改密）/`Security.cs`（DB 调用/节流/邮件）。
+  - **MessageDispatcher 强类型迁移收尾**：Login 补齐生成协议处理
+    `ResetPassword(10007)/UpdateNickname(10009)/FindPasswordWithCode(10012)`（jsonFallback 兼容旧客户端），
+    Login 全部业务操作均已覆盖强类型分发。
+- 验证：`dotnet build` 0 错误；五套件全部通过；git diff 方法数逐一核对（4 个类方法数前后一致，零丢失）。
+
+### 迭代 11（规划）——路线剩余项
+
+- **P3 工程治理补测试**（路线第 10 条遗留）：Battle 集成压测（Bots 目前仅协议级）、
+  并发注入测试（验证 P0 修复）、热更新状态迁移测试。
+- 后续增强项：玩法实体跨节点迁移（Skill/Item/Npc）v2、Game 服务器 ChatHandler/FriendHandler
+  同构拆分、跨进程 EntityCall（91001/91002）实战应用等。
 

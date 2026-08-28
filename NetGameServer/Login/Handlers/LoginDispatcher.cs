@@ -115,6 +115,33 @@ public static partial class MessageRouter
             Login.Managers.SessionManager.Instance.OnSessionDisconnected(ctx.ClientSessionId);
         }, jsonFallback: true);
 
+        // 重置密码（对标旧 ResetPasswordReq：会话 + 账户改密）
+        dispatcher.RegisterSync<ResetPassword>((ctx, msg) =>
+        {
+            var req = new ChangePasswordRequest
+            {
+                Account = msg.Account,
+                OldPassword = msg.OldPassword,
+                NewPassword = msg.NewPassword
+            };
+            var res = loginHandler.HandleChangePasswordRequestAsync(req, ctx.ClientSessionId).GetAwaiter().GetResult();
+            ctx.Send(new ResetPasswordResult { Success = res.Success, Message = res.Message ?? string.Empty });
+        }, jsonFallback: true);
+
+        // 更新昵称（与旧 UpdateNicknameReq 一致：直接返回成功）
+        dispatcher.RegisterSync<UpdateNickname>((ctx, msg) =>
+        {
+            ctx.Send(new UpdateNicknameResult { Success = true, Message = "更改昵称成功" });
+        }, jsonFallback: true);
+
+        // 找回密码（发送验证码；对标旧 FindPasswordWithCodeReq）
+        dispatcher.RegisterSync<FindPasswordWithCode>((ctx, msg) =>
+        {
+            var req = new FindPasswordRequest { Account = msg.Account, Email = msg.Email };
+            var res = loginHandler.HandleFindPasswordRequestAsync(req).GetAwaiter().GetResult();
+            ctx.Send(new FindPasswordWithCodeResult { Success = res.Success, Message = res.Message ?? string.Empty });
+        }, jsonFallback: true);
+
         return dispatcher;
     }
 }
