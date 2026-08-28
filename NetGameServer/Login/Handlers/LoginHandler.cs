@@ -41,14 +41,15 @@ namespace Login.Handlers
         }
 
         /// <summary>
-        /// 生成登录 Token（HMAC-SHA256 签名，含用户身份与过期时间，无状态可验证）。
+        /// 生成登录 Token（HMAC-SHA256 签名，含用户身份、SessionSeq（防重放）、过期时间，无状态可验证）。
+        /// D6：登录发放 seq=1；续签/重连由调用方传入递增 seq。
         /// </summary>
-        public string IssueToken(int userId, string uid) => tokenService.Issue(userId, uid);
+        public string IssueToken(int userId, string uid) => tokenService.Issue(userId, uid, seq: 1);
 
         /// <summary>
-        /// 验证 Token。成功返回 (userId, uid, expires)；失败返回 null。
+        /// 验证 Token。成功返回 (userId, uid, seq, expires)；失败或重放旧 seq 返回 null。
         /// </summary>
-        public (int UserId, string Uid, long Expires)? VerifyToken(string? token) => tokenService.Verify(token);
+        public (int UserId, string Uid, long Seq, long Expires)? VerifyToken(string? token) => tokenService.Verify(token);
 
         /// <summary>
         /// 异步处理登录请求：向 DB 服务发送验证请求并返回登录响应。

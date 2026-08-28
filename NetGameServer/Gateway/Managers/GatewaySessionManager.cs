@@ -35,6 +35,8 @@ namespace Gateway.Managers
         private readonly ConcurrentDictionary<long, string> sessionUids = new();
         private readonly ConcurrentDictionary<string, long> uidSessions = new();
         private readonly ConcurrentDictionary<long, string> sessionNicknames = new();
+        // D6 客户端会话防重放：会话建立时间，用于 SessionGuard 时间窗判定（防止过期 SessionId 重放）
+        private readonly ConcurrentDictionary<long, DateTime> sessionCreatedAt = new();
 
         /// <summary>
         /// 私有构造函数，防止外部实例化（实现单例模式）
@@ -49,6 +51,8 @@ namespace Gateway.Managers
         public void AddSession(Network.ISession session)
         {
             clientSessions[session.SessionId] = session;
+            // D6：记录会话建立时间，供 SessionGuard 判定生命周期窗口
+            sessionCreatedAt[session.SessionId] = DateTime.UtcNow;
             Shared.Log.Info($"Gateway 会话已加入 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
         }
 
@@ -70,8 +74,13 @@ namespace Gateway.Managers
             }
 
             sessionNicknames.TryRemove(sessionId, out _);
+            sessionCreatedAt.TryRemove(sessionId, out _);
             Shared.Log.Info($"Gateway 会话已移除 SessionId:{sessionId}");
         }
+
+        /// <summary>D6：获取客户端会话的建立时间（UTC）。无记录返回 null。</summary>
+        public DateTime? GetCreatedAt(long sessionId)
+            => sessionCreatedAt.TryGetValue(sessionId, out var t) ? t : null;
 
         /// <summary>
         /// 根据 sessionId 获取对应的客户端会话。

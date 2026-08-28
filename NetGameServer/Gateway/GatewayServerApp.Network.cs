@@ -91,6 +91,16 @@ namespace Gateway
             {
                 try
                 {
+                    // D6 客户端会话防重放：生命周期窗（MaxSessionLifetime）判定。
+                    // 超出窗口的 SessionId 直接关连接并丢弃，防止捕获重放（session.Close 后 OnDisconnected 自然清理）。
+                    DateTime? createdAt = Gateway.Managers.GatewaySessionManager.Instance.GetCreatedAt(session.SessionId);
+                    if (createdAt.HasValue && !Framework.Core.Security.SessionGuard.IsSessionValid(createdAt.Value, createdAt.Value, DateTime.UtcNow))
+                    {
+                        Shared.Log.Warning($"Gateway 会话超过最大生命周期，关连接 SessionId:{session.SessionId} EstablishedAt:{createdAt:O}");
+                        try { session.Close(); } catch { /* 关闭异常吞掉 */ }
+                        return;
+                    }
+
                     if (data.Length >= 4)
                     {
                         int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));

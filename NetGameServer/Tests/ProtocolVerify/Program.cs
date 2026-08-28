@@ -55,18 +55,18 @@ if (targetBattle != "Battle") return 1;
 var route = RouterTable.Routes[90999];
 Console.WriteLine($"MsgId 90999 InternalAuth -> {route.TargetServer} IsInternal={route.IsInternal}");
 
-// ===== 3. Token 服务验证 =====
+// ===== 3. Token 服务验证（D6：含 SessionSeq 单调序号） =====
 var tokenService = new TokenService("test-secret-key-for-verification");
-string token = tokenService.Issue(12345, "100000001");
+string token = tokenService.Issue(12345, "100000001", seq: 1);
 Console.WriteLine($"Token: {token}");
 
 var verified = tokenService.Verify(token);
-if (verified == null || verified.Value.UserId != 12345 || verified.Value.Uid != "100000001")
+if (verified == null || verified.Value.UserId != 12345 || verified.Value.Uid != "100000001" || verified.Value.Seq != 1)
 {
     Console.WriteLine("!! Token 验证失败");
     return 1;
 }
-Console.WriteLine($"Token 验证成功: UserId={verified.Value.UserId} Uid={verified.Value.Uid} Expires={verified.Value.Expires}");
+Console.WriteLine($"Token 验证成功: UserId={verified.Value.UserId} Uid={verified.Value.Uid} Seq={verified.Value.Seq} Expires={verified.Value.Expires}");
 
 // 篡改 token 应失败
 string tampered = token + "x";
@@ -79,13 +79,39 @@ Console.WriteLine("篡改 Token 已被拒绝 OK");
 
 // 过期 token 应失败
 var expiredService = new TokenService("test-secret-key-for-verification");
-string expiredToken = expiredService.Issue(1, "2", TimeSpan.FromSeconds(-10));
+string expiredToken = expiredService.Issue(1, "2", seq: 1, TimeSpan.FromSeconds(-10));
 if (expiredService.Verify(expiredToken) != null)
 {
     Console.WriteLine("!! 过期 Token 未被拒绝");
     return 1;
 }
 Console.WriteLine("过期 Token 已被拒绝 OK");
+
+// D6 单调序号防重放：同 userId 用旧 seq 重放应被拒绝
+var replayService = new TokenService("test-secret-key-for-replay");
+var replayState = new SessionGuard.AntiReplayState();
+string tokenSeq2 = replayService.Issue(777, "u777", seq: 2, TimeSpan.FromHours(1));
+string tokenSeq1 = replayService.Issue(777, "u777", seq: 1, TimeSpan.FromHours(1));
+// 先用 seq=2 验证（接受 → lastSeq=2）
+if (replayService.Verify(tokenSeq2, replayState)?.Seq != 2) { Console.WriteLine("!! seq=2 Token 未接受"); return 1; }
+// 再用 seq=1 重放（拒绝 → 应返回 null）
+if (replayService.Verify(tokenSeq1, replayState) != null) { Console.WriteLine("!! 旧 seq Token 重放未被拒绝"); return 1; }
+Console.WriteLine($"单调序号防重放: seq=2 接受、seq=1 重放被拒 OK (lastSeq={replayState.GetLastSeq(777)})");
+
+// NonceService 防重放：同 nonce 第二次登记应被拒
+var nonces = new NonceService();
+bool first = nonces.RegisterOnce("n-abc-001", TimeSpan.FromMinutes(1), now: DateTime.UtcNow);
+bool replay = nonces.RegisterOnce("n-abc-001", TimeSpan.FromMinutes(1), now: DateTime.UtcNow);
+if (!first || replay) { Console.WriteLine($"!! NonceService 异常 first={first} replay={replay}"); return 1; }
+Console.WriteLine($"NonceService: 首次登记={first} 重放被拒={!replay} Count={nonces.Count} OK");
+
+// SessionGuard 时间窗：lifetime（≤2h）+ idle（≤15min）联合判定
+DateTime baseTime = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+bool inWindow = SessionGuard.IsSessionValid(baseTime, baseTime.AddMinutes(50), baseTime.AddHours(1)); // lifetime=1h OK, idle=10min OK
+bool overLifetime = SessionGuard.IsSessionValid(baseTime, baseTime.AddHours(3), baseTime.AddHours(3)); // lifetime=3h > 2h
+bool overIdle = SessionGuard.IsSessionValid(baseTime, baseTime.AddMinutes(-20), baseTime); // idle=20min > 15min
+if (!inWindow || overLifetime || overIdle) { Console.WriteLine($"!! SessionGuard 异常 inWindow={inWindow} overLifetime={overLifetime} overIdle={overIdle}"); return 1; }
+Console.WriteLine($"SessionGuard: 窗口内={inWindow} 超生命周期={overLifetime} 超空闲={overIdle} OK");
 
 // ===== 4. 内部认证验证 =====
 var serverFilter = new InternalAuthFilter("shared-secret", "Center-127.0.0.1:31306");

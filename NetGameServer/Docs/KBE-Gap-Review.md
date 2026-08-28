@@ -1,9 +1,9 @@
 # 服务器与 KBEngine 差距核查（KBE-Gap-Review）
 
 > 本文档由最初的「逐文件差距核查」演进为**现状快照 + 可优化路线**。
-> 前 15 轮迭代已将原始核查中的绝大多数差距落地（P0/P1/P2 全部处理），
+> 前 16 轮迭代已将原始核查中的绝大多数差距落地（P0/P1/P2 全部处理），
 > 本版聚焦两件事：**① 服务器 ↔ KBE 现状对比；② 仍可优化的脚本与设计模式**。
-> 涉及文件均给路径/行号，可直接据此迭代。最后更新：迭代 15。
+> 涉及文件均给路径/行号，可直接据此迭代。最后更新：迭代 16。
 
 ---
 
@@ -20,7 +20,7 @@
 | 实体迁移 | 跨节点搬迁 | 玩家主实体冻结-序列化-搬迁-恢复（迭代7/9）；玩法实体 v2 待做 | ◐ |
 | 帧同步 | 场景推进 + 空帧心跳 | 每场景 FrameCounter + 权威帧号/时间戳空帧（迭代3） | ✅ |
 | 负载均衡 | 平滑加权分配 | `GetBestBattleNode` 平滑加权轮询（SWRR）+ 过期负载惩罚（迭代14，ProtocolVerify §17b 验证分布/剔除/公平） | ✅ |
-| 防重放 | 时间戳窗口 + HMAC | Center 节点注册/上报 120s 窗 + HMAC（已有）；客户端会话侧缺 | ◐ |
+| 防重放 | 时间戳窗口 + HMAC | Center 节点 120s 窗 + HMAC + **客户端会话侧 SessionGuard 时间窗（lifetime ≤2h / idle ≤15min）+ TokenService SessionSeq 单调序号 + NonceService 一次性 nonce（迭代16）** | ✅ |
 | EntityCall | 跨进程实体调用 + 超时回调 | 91001/91002 跨进程中继（Center 路由）+ callId + 超时表 + 回执关联（迭代13，ProtocolVerify §11b） | ✅ |
 | 时间同步 | 客户端-服务端时钟对齐 | 权威帧号/时间戳已具备；**时钟对齐协商缺**（B6） | ✗ |
 | 配置 | 模板 + 校验 + 热重载 | reloadOnChange 已开；**无模板校验、无缓存**（B7） | ◐ |
@@ -32,7 +32,7 @@
 
 ---
 
-## 二、已对齐能力（15 轮迭代成果）
+## 二、已对齐能力（16 轮迭代成果）
 
 - **P0 数据竞争清零**：消息全部收编 `OrderedTaskQueue`/Channel 单线程串行（迭代3）；备份注册泄漏、join 全量扫盘、派遣器锁竞争修复（迭代1）。
 - **性能热路径**：属性名 UTF-8 预缓存、MessageDispatcher 免锁读、备份序列化移出主循环、SceneManager 玩家-场景反索引、零拷贝写队列 + 背压（迭代1/3/4/8）。
@@ -45,6 +45,7 @@
 - **Battle 全量强类型化（迭代14）**：旧 JSON 路由字典整体移除，全部消息经 MessageDispatcher 强类型分发（JSON 兼容由 jsonFallback 承担），双轨归一。
 - **Center 平滑加权负载均衡（迭代14）**：SWRR（权重=100-load）+ 心跳过期剔除 + 权重表周期清理，持续偏向低负载 Battle 节点。
 - **玩法实体迁移 v2（迭代15）**：属主玩法实体（Skill/Item）与玩家主实体同包随迁 + 属主绑定 + 孤儿回收（CompleteMigrateOut/LeaveScene/离房三条路径），玩法实体 ID 加节点段保证跨节点不撞 ID。
+- **客户端会话侧防重放（迭代16）**：SessionGuard 时间窗（lifetime+idle）由 Gateway 客户端入口强制；TokenService 嵌入 SessionSeq 单调序号拒旧 token 重放；NonceService 一次性 nonce 缓存（带 TTL 周期 GC）补齐 TokenService 文档此前承诺。
 
 ---
 
@@ -69,7 +70,7 @@
 | D4 | **玩法实体迁移 v2** | ✅ 迭代15 已落地：① 玩法实体 ID 加节点段 [32,40)（`BattleServerApp.GetGameplayIdNodePrefix`）保证跨节点迁移不撞 ID；② `EntityMigrateRequest` 增 `OwnedEntities: list<EntityMigratePayload>` 字段，源 Battle `SerializeOwnedEntitiesForMigration` 收集属主 Skill/Item 同包发送；③ 目标 Battle `RestoreMigratedEntity` 支持 ownerClientId 参数完成属主绑定；④ `RecycleOwnedEntities` 在 `CompleteMigrateOut`（已随迁）/ `LeaveScene` / 离房三条路径回收孤儿实体（ProtocolVerify §15.6 + NetworkVerify 全绿） | Skill/Item 随玩家跨 Battle 节点；离场防泄漏 |
 | D5 | **负载均衡升级** | ✅ 迭代14 已落地：`GetBestBattleNode`（`Center/Handlers/NodeManager.cs:157`）改平滑加权轮询（权重=100-load）+ 心跳过期剔除 + 周期清理权重表 | 与 Nginx SWRR 对齐，持续偏向低负载节点 |
 | D5 | **负载均衡升级** | `GetBestBattleNode` 按 CurrentLoad 升序（`Center/Handlers/NodeManager.cs:157`） | 加平滑加权 / 最小连接 / 过期负载惩罚 |
-| D6 | **客户端会话侧防重放** | 仅 Center 节点侧有 120s 窗口 + HMAC；Token/SessionId 路径无 | 会话令牌加时间窗 + 单调序号 |
+| D6 | **客户端会话侧防重放** | ✅ 迭代16 已落地：① `SessionGuard.IsSessionValid` 时间窗（lifetime ≤2h / idle ≤15min），Gateway 客户端入口按 `CreatedAt` 强制判定，超窗关连接；② `TokenService` 嵌入 `SessionSeq` 单调序号（payload 5 字段），`Verify(token, AntiReplayState)` 拒绝旧 seq 重放，登录发放 seq=1；③ `NonceService` 一次性 nonce 缓存（带 TTL + 周期 GC，TokenService 文档此前承诺的 NonceService 本轮补齐）；ProtocolVerify §3 全绿 | 客户端会话重放面补齐 |
 | D7 | **时间同步协议** | 帧同步有权威帧号/时间戳，但无客户端-服务端时钟对齐 | 加 NTP 式 offset 协商，客户端延迟补偿 / 确定性回放更准 |
 | D8 | **Bots 集成压测** | Bots 仅协议级；迭代11 压测为进程内 | Bots 走真实 Gateway→Battle 链路多机器人跑分 |
 | D9 | **配置模板/缓存** | ConfigHelper reloadOnChange 已开，但无模板校验、每次 `GetConfig` 重新查节（`Shared/ConfigHelper.cs:29`） | 加配置模板定义 + 校验 + 节缓存 |
@@ -95,4 +96,5 @@
 | 13 | D1+D3 落地 | FriendHandler 业务层强类型化（去二次序列化，Game 13 条消息，与 DB 对齐）；EntityCall 加 CallId/超时表/回执关联 + Center 中继 91001/91002 真实跨进程链路（ProtocolVerify §11b 通过） |
 | 14 | D2+D5 落地 | Battle 双轨归一（移除旧 JSON 路由字典，CenterCreateScene/CenterDestroyScene 迁移强类型分发）；Center 平滑加权轮询 + 过期负载惩罚（ProtocolVerify §17b 通过） |
 | 15 | D4 落地 | 玩法实体迁移 v2：EntityMigrateRequest 增 OwnedEntities 同包随迁 + 属主绑定 + RecycleOwnedEntities 三路径孤儿回收 + 玩法实体 ID 节点段防跨节点撞 ID（ProtocolVerify §15.6 + NetworkVerify 全绿） |
-| 16 | 规划 | 客户端会话侧防重放（D6）、Bots 集成压测（D8）、脚本层 entityMailbox 封装（D7） |
+| 16 | D6 落地 | 客户端会话侧防重放：SessionGuard 时间窗（lifetime+idle，Gateway 入口强制）+ TokenService SessionSeq 单调序号拒旧重放 + NonceService 一次性 nonce 缓存（ProtocolVerify §3 全绿） |
+| 17 | 规划 | Bots 集成压测（D8）、脚本层 entityMailbox 封装（D7） |

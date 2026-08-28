@@ -17,7 +17,7 @@
   （对标 KBE Python 脚本层）。
 - **强类型消息分发**: `MessageDispatcher` 配置化注册 + MemoryPack/JSON 双格式兼容，
   业务层直接消费强类型请求对象（无二次序列化，Game/DB 已全量对齐）。
-- **安全加固**: 无状态签名 Token、内部连接认证握手、随机会话 ID。
+- **安全加固**: 无状态签名 Token（含 SessionSeq 单调序号防重放）、**SessionGuard 时间窗（lifetime+idle，Gateway 入口强制）**、**NonceService 一次性 nonce 缓存**、内部连接认证握手、随机会话 ID。
 
 ## 迭代里程碑（对标 KBEngine 演进，详见 [KBE-Gap-Review](NetGameServer/Docs/KBE-Gap-Review.md)）
 | 迭代 | 主题 | 成果 |
@@ -28,6 +28,7 @@
 | 13 | 强类型化 + EntityCall | FriendHandler 业务层强类型化（去二次序列化）；EntityCall 加 callId/超时表/回执关联 + Center 中继 91001/91002 真实跨进程链路 |
 | 14 | 双轨清理 + 负载均衡 | Battle 旧 JSON 路由字典移除（全量迁移强类型分发）；Center 平滑加权轮询 + 过期负载惩罚 |
 | 15 | 玩法实体迁移 v2 | 属主 Skill/Item 与玩家同包随迁（EntityMigrateRequest.OwnedEntities）+ 属主绑定 + 三路径孤儿回收（迁移出/离场/离房）+ 玩法实体 ID 节点段防跨节点撞 ID |
+| 16 | 客户端会话防重放 | SessionGuard 时间窗（lifetime ≤2h / idle ≤15min，Gateway 入口强制关连接）+ TokenService SessionSeq 单调序号拒旧 token 重放 + NonceService 一次性 nonce 缓存（带 TTL 周期 GC） |
 
 > 前 12 轮迭代把 P0/P1/P2 全部落地；当前**五套验证**（Protocol / Network / ScriptHost / Logger / Supervisor）全绿。
 
