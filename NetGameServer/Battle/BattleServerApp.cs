@@ -13,7 +13,6 @@ namespace Battle
 {
     public static class BattleServerApp
     {
-        private static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>? handlers;
         private static Framework.Protocol.MessageDispatcher? dispatcher;
         private static Framework.Scripting.ScriptHost? scriptHost;
         private static Framework.Entity.EntityPersistenceService? persistService;
@@ -322,14 +321,6 @@ namespace Battle
                 if (dispatcher != null && dispatcher.TryDispatch(new Battle.Handlers.BattleSessionContext(session, originalSessionId), msgId, payload).GetAwaiter().GetResult())
                 {
                     Log.Debug("Battle 新协议分发完成 MsgId:{MsgId} ClientSessionId:{ClientSessionId}", msgId, originalSessionId);
-                    return;
-                }
-
-                if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
-                {
-                    Log.Debug("Battle 开始处理消息 MsgId:{MsgId} SessionId:{SessionId} OriginalSessionId:{OriginalSessionId} PayloadLength:{PayloadLength}", msgId, session.SessionId, originalSessionId, payload.Length);
-                    handlerAction(payload, session, originalSessionId).GetAwaiter().GetResult();
-                    Log.Debug("Battle 完成处理消息 MsgId:{MsgId} SessionId:{SessionId} OriginalSessionId:{OriginalSessionId}", msgId, session.SessionId, originalSessionId);
                     return;
                 }
 
@@ -814,8 +805,7 @@ namespace Battle
             });
 
             // 新协议分发器：强类型消息 + MemoryPack（JSON 兼容回退），消灭手写 switch
-            dispatcher = Battle.Handlers.MessageRouter.BuildDispatcher(roomHandler, entitySyncHandler, frameSyncManager);
-            handlers = Battle.Handlers.MessageRouter.BuildHandlers(roomHandler, entitySyncHandler, battleMainHandler, frameSyncManager);
+            dispatcher = Battle.Handlers.MessageRouter.BuildDispatcher(roomHandler, entitySyncHandler, battleMainHandler, frameSyncManager);
 
             var tcpServer = new TcpServer();
 

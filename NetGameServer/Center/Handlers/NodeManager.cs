@@ -151,22 +151,80 @@ namespace Center.Handlers
         }
 
         /// <summary>
-        /// 获取当前负载最低的 BattleNode 的节点ID，如果没有可用的 BattleNode 则返回 null。
+        /// 获取最佳 Battle 节点（平滑加权轮询，对标 KBE cellappmgr 负载均衡 / Nginx SWRR）：
+        /// - 权重 = LoadWeightCeiling - CurrentLoad（负载越低权重越高，最低为 1）
+        /// - 心跳过期（超过 NodeHeartbeatStaleThreshold）的节点剔除（过期负载惩罚，避免把流量发给负载数据陈旧的节点）
+        /// - 每次选择累加各节点权重取当前权重最大者，选中节点减去总权重 → 平滑分布且持续偏向低负载节点
+        /// 无新鲜候选时回退到“已连接 + 负载最低”的传统选择。
         /// </summary>
-        /// <returns>当前负载最低的 BattleNode 的节点ID，如果没有可用的 BattleNode 则返回 null。</returns>
+        /// <returns>选中的 Battle 节点 ID；无可用节点返回 null。</returns>
         public string? GetBestBattleNode()
         {
-            var battleNodes = nodes.Values
-                .Where(n => n.NodeType.Equals("Battle", StringComparison.OrdinalIgnoreCase) && n.Session.IsConnected)
-                .OrderBy(n => n.CurrentLoad)
+            var now = DateTime.UtcNow;
+            var candidates = nodes.Values
+                .Where(n => n.NodeType.Equals("Battle", StringComparison.OrdinalIgnoreCase)
+                            && n.Session.IsConnected
+                            && now - n.LastHeartbeat <= NodeHeartbeatStaleThreshold)
                 .ToList();
 
-            if (battleNodes.Count > 0)
+            if (candidates.Count == 0)
             {
-                return battleNodes.First().NodeId;
+                // 回退：所有候选心跳都过期时，仍按“已连接 + 负载最低”兜底（保留旧行为）
+                var fallback = nodes.Values
+                    .Where(n => n.NodeType.Equals("Battle", StringComparison.OrdinalIgnoreCase) && n.Session.IsConnected)
+                    .OrderBy(n => n.CurrentLoad)
+                    .FirstOrDefault();
+                return fallback?.NodeId;
             }
-            return null;
+
+            int totalWeight = 0;
+            string? best = null;
+            int bestWeight = int.MinValue;
+
+            foreach (var node in candidates)
+            {
+                int weight = Math.Max(1, LoadWeightCeiling - node.CurrentLoad);
+                int current = smoothWeights.AddOrUpdate(node.NodeId, weight, (_, w) => w + weight);
+                totalWeight += weight;
+                if (current > bestWeight)
+                {
+                    bestWeight = current;
+                    best = node.NodeId;
+                }
+            }
+
+            if (best != null)
+            {
+                smoothWeights[best] -= totalWeight;
+            }
+
+            // 周期性清理已下线/过期节点残留的平滑权重（防字典无限增长）
+            if (++selectCount % 32 == 0)
+            {
+                var live = new HashSet<string>(candidates.Select(n => n.NodeId));
+                foreach (var kv in smoothWeights)
+                {
+                    if (!live.Contains(kv.Key))
+                    {
+                        smoothWeights.TryRemove(kv.Key, out _);
+                    }
+                }
+            }
+
+            return best;
         }
+
+        /// <summary>负载权重上限（负载越大权重越小）。</summary>
+        private const int LoadWeightCeiling = 100;
+
+        /// <summary>节点心跳过期阈值：超过视为负载数据过期，从平滑加权候选剔除。</summary>
+        private static readonly TimeSpan NodeHeartbeatStaleThreshold = TimeSpan.FromSeconds(30);
+
+        /// <summary>SWRR 平滑加权轮询的节点当前权重表（NodeId -> currentWeight）。</summary>
+        private readonly ConcurrentDictionary<string, int> smoothWeights = new();
+
+        /// <summary>选择次数（周期清理平滑权重用）。</summary>
+        private long selectCount;
 
         /// <summary>
         /// 检索与指定节点标识符关联的服务器节点信息

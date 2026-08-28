@@ -1,177 +1,23 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading.Tasks;
 using Shared.Messages;
 using Shared.Messages.Battle;
-using GenFrameSync = Framework.Protocol.Generated.BattleFrameSync;
 
 namespace Battle.Handlers
 {
     public static class MessageRouter
     {
         /// <summary>
-        /// 构建消息处理器字典，将消息ID映射到对应的处理函数
-        /// </summary>
-        /// <param name="roomHandler">房间处理器实例</param>
-        /// <param name="entitySyncHandler">实体同步处理器实例</param>
-        /// <param name="frameSyncManager">帧同步管理器（可为 null，禁用帧同步）</param>
-        /// <returns>消息处理器字典</returns>
-        public static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>> BuildHandlers(RoomHandler roomHandler, EntitySyncHandler entitySyncHandler, BattleMainHandler battleMainHandler, FrameSyncManager? frameSyncManager = null)
-        {
-            var handlers = new Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>();
-
-            handlers[MessageIds.BattleJoinReq] = async (payload, session, clientSessionId) =>
-            {
-                try
-                {
-                    var req = Shared.Json.DeserializeFromUtf8Bytes<BattleJoinRequest>(payload.Span);
-                    if (req != null)
-                    {
-                        var res = await roomHandler.HandleJoinRequestAsync(clientSessionId, req, session);
-                        SendToGateway(session, clientSessionId, MessageIds.BattleJoinRes, res);
-                    }
-                    else
-                    {
-                        Shared.Log.Warning($"BattleJoinReq 反序列化失败 ClientSessionId:{clientSessionId}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Shared.Log.Error($"BattleJoinReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
-                }
-            };
-
-            handlers[MessageIds.EntitySyncReq] = async (payload, session, clientSessionId) =>
-            {
-                try
-                {
-                    var req = Shared.Json.DeserializeFromUtf8Bytes<EntitySyncRequest>(payload.Span);
-                    if (req != null)
-                    {
-                        await entitySyncHandler.HandleEntitySyncRequestAsync(clientSessionId, req, session);
-                    }
-                    else
-                    {
-                        Shared.Log.Warning($"EntitySyncReq 反序列化失败 ClientSessionId:{clientSessionId}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Shared.Log.Error($"EntitySyncReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
-                }
-            };
-
-            // 帧同步：客户端上报输入（若启用帧同步管理器）
-            if (frameSyncManager != null)
-            {
-                handlers[MessageIds.BattleFrameSync] = (payload, session, clientSessionId) =>
-                {
-                    try
-                    {
-                        var req = Shared.Json.DeserializeFromUtf8Bytes<GenFrameSync>(payload.Span);
-                        if (req != null)
-                        {
-                            frameSyncManager.EnqueueInput(clientSessionId, req);
-                        }
-                        else
-                        {
-                            Shared.Log.Warning($"BattleFrameSync 反序列化失败 ClientSessionId:{clientSessionId}");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Shared.Log.Error($"BattleFrameSync 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
-                    }
-                    return Task.CompletedTask;
-                };
-            }
-
-            handlers[MessageIds.BattleLeaveRoomReq] = async (payload, session, clientSessionId) =>
-            {
-                try
-                {
-                    var req = Shared.Json.DeserializeFromUtf8Bytes<BattleLeaveRoomRequest>(payload.Span);
-                    if (req != null)
-                    {
-                        var res = await roomHandler.HandleLeaveRoomRequestAsync(clientSessionId, req, session);
-                        SendToGateway(session, clientSessionId, MessageIds.BattleLeaveRoomRes, res);
-                    }
-                    else
-                    {
-                        Shared.Log.Warning($"BattleLeaveRoomReq 反序列化失败 ClientSessionId:{clientSessionId}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Shared.Log.Error($"BattleLeaveRoomReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
-                }
-            };
-
-            handlers[MessageIds.PlayerDisconnectNotif] = async (payload, session, clientSessionId) =>
-            {
-                roomHandler.HandleDisconnect(clientSessionId, session);
-                await Task.CompletedTask;
-            };
-
-            handlers[MessageIds.CenterCreateSceneReq] = async (payload, session, clientSessionId) =>
-            {
-                try
-                {
-                    var req = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Center.CenterCreateSceneRequest>(payload.Span);
-                    if (req != null)
-                    {
-                        var res = await battleMainHandler.HandleCreateSceneRequestAsync(req);
-                        byte[] resPayload = Shared.Json.SerializeToUtf8Bytes(res);
-                        byte[] packet = Network.Routing.PacketBuilder.BuildPacket(MessageIds.CenterCreateSceneRes, resPayload, out int totalLength);
-                        Network.PacketSender.Send(session, packet, totalLength);
-                    }
-                    else
-                    {
-                        Shared.Log.Warning($"CenterCreateSceneReq 反序列化失败 ClientSessionId:{clientSessionId}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Shared.Log.Error($"CenterCreateSceneReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
-                }
-            };
-
-            handlers[MessageIds.CenterDestroySceneReq] = async (payload, session, clientSessionId) =>
-            {
-                try
-                {
-                    var req = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Center.CenterDestroySceneRequest>(payload.Span);
-                    if (req != null)
-                    {
-                        var res = await battleMainHandler.HandleDestroySceneRequestAsync(req);
-                        byte[] resPayload = Shared.Json.SerializeToUtf8Bytes(res);
-                        byte[] packet = Network.Routing.PacketBuilder.BuildPacket(MessageIds.CenterDestroySceneRes, resPayload, out int totalLength);
-                        Network.PacketSender.Send(session, packet, totalLength);
-                    }
-                    else
-                    {
-                        Shared.Log.Warning($"CenterDestroySceneReq 反序列化失败 ClientSessionId:{clientSessionId}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Shared.Log.Error($"CenterDestroySceneReq 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
-                }
-            };
-
-            return handlers;
-        }
-
-        /// <summary>
         /// 构建基于 MessageDispatcher 的强类型处理器（对标 KBE 自动生成的处理器注册表）。
         /// 使用生成的协议消息类 + MemoryPack 二进制序列化（JSON 兼容回退），
         /// 彻底消灭手写 MsgId 分支与手动反序列化。
-        /// 返回 dispatcher，未注册的 MsgId 由调用方回退旧逻辑。
+        /// 未注册的 MsgId 由调用方回退旧逻辑。
         /// </summary>
         public static Framework.Protocol.MessageDispatcher BuildDispatcher(
             RoomHandler roomHandler,
             EntitySyncHandler entitySyncHandler,
+            BattleMainHandler battleMainHandler,
             FrameSyncManager? frameSyncManager)
         {
             var dispatcher = new Framework.Protocol.MessageDispatcher();
@@ -309,31 +155,62 @@ namespace Battle.Handlers
                     Framework.Entity.EntityCallHub.HandleResult(msg);
                 });
 
+            // 创建场景（Center 内部消息 90003，迁移自旧 JSON 路由）：回 90004 到 Center
+            dispatcher.RegisterSync<Framework.Protocol.Generated.CenterCreateScene>(
+                (ctx, msg) =>
+                {
+                    var req = new Shared.Messages.Center.CenterCreateSceneRequest
+                    {
+                        RoomId = msg.RoomId,
+                        RoomName = msg.RoomName,
+                        SceneType = msg.SceneType,
+                        IsPrivate = msg.IsPrivate,
+                        MaxPlayers = msg.MaxPlayers
+                    };
+                    var res = battleMainHandler.HandleCreateSceneRequestAsync(req).GetAwaiter().GetResult();
+                    SendRawToSession(((BattleSessionContext)ctx).GatewaySession, MessageIds.CenterCreateSceneRes,
+                        new Framework.Protocol.Generated.CenterCreateSceneResult
+                        {
+                            Success = res.Success,
+                            RoomId = res.RoomId,
+                            SceneId = res.SceneId,
+                            BattleNodeId = res.BattleNodeId,
+                            Message = res.Success ? string.Empty : "创建场景失败"
+                        });
+                },
+                jsonFallback: true);
+
+            // 销毁场景（Center 内部消息 90006，迁移自旧 JSON 路由）：回 90007 到 Center
+            dispatcher.RegisterSync<Framework.Protocol.Generated.CenterDestroyScene>(
+                (ctx, msg) =>
+                {
+                    var req = new Shared.Messages.Center.CenterDestroySceneRequest { RoomId = msg.RoomId };
+                    var res = battleMainHandler.HandleDestroySceneRequestAsync(req).GetAwaiter().GetResult();
+                    SendRawToSession(((BattleSessionContext)ctx).GatewaySession, MessageIds.CenterDestroySceneRes,
+                        new Framework.Protocol.Generated.CenterDestroySceneResult
+                        {
+                            Success = res.Success,
+                            RoomId = res.RoomId,
+                            Message = res.Message,
+                            AffectedSessionIds = res.AffectedSessionIds.ToList()
+                        });
+                },
+                jsonFallback: true);
+
             return dispatcher;
         }
 
         /// <summary>
-        /// 将 response 序列化为 UTF-8 JSON，附加目标客户端会话 ID，构建路由包并通过 gatewaySession 发送。
+        /// 向指定会话发送 MemoryPack 序列化的内部消息包（不带客户端路由元数据，Center 内部消息回包用）。
         /// </summary>
-        /// <remarks>发送失败时记录错误并吞掉异常；完成后将临时缓冲区归还给 ArrayPool。</remarks>
-        /// <typeparam name="T">响应对象的类型。</typeparam>
-        /// <param name="gatewaySession">用于向网关发送已构建数据包的会话接口。</param>
-        /// <param name="clientSessionId">目标客户端的会话标识符。</param>
-        /// <param name="msgId">消息或路由标识符。</param>
-        /// <param name="response">要序列化并发送的响应对象。</param>
-        private static void SendToGateway<T>(Network.ISession gatewaySession, long clientSessionId, int msgId, T response)
+        /// <param name="session">目标会话（如 Center 节点的连接会话）。</param>
+        /// <param name="msgId">消息标识符。</param>
+        /// <param name="message">要序列化并发送的消息对象。</param>
+        private static void SendRawToSession(Network.ISession session, int msgId, Framework.Protocol.IGameMessage message)
         {
-            byte[] payload = Shared.Json.SerializeToUtf8Bytes(response);
-            byte[] routedPayload = Shared.RouteMetadata.AttachTargetSessionId(payload, clientSessionId);
-            byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
-            try
-            {
-                Network.PacketSender.Send(gatewaySession, packet, totalLength);
-            }
-            catch (Exception ex)
-            {
-                Shared.Log.Error($"Battle 向网关发送响应失败 MsgId:{msgId} ClientSessionId:{clientSessionId} Exception:{ex}");
-            }
+            byte[] payload = message.Serialize();
+            byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
+            Network.PacketSender.Send(session, packet, totalLength);
         }
     }
 }

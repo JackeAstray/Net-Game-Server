@@ -644,6 +644,60 @@ leaderA.Dispose();
 leaderB.Dispose();
 File.Delete(leaderLock);
 
+// ===== 17b. Center 平滑加权负载均衡验证（SWRR + 过期负载惩罚） =====
+var lbManager = Center.Handlers.NodeManager.Instance;
+var lbSent = new List<(int, byte[])>();
+var lbSessionA = new TestGatewaySession(lbSent);
+var lbSessionB = new TestGatewaySession(lbSent);
+lbManager.RegisterNode("Battle-A", "Battle", "127.0.0.1", 31310, lbSessionA);
+lbManager.RegisterNode("Battle-B", "Battle", "127.0.0.1", 31311, lbSessionB);
+lbManager.UpdateLoad("Battle-A", 80);
+lbManager.UpdateLoad("Battle-B", 10);
+
+// 平滑加权：A 负载高(80)、B 负载低(10)，50 次选择应偏向 B（权重 20:90，约 82% B）且两者都有命中
+int lbPickA = 0, lbPickB = 0;
+for (int i = 0; i < 50; i++)
+{
+    var pick = lbManager.GetBestBattleNode();
+    if (pick == "Battle-A") lbPickA++;
+    else if (pick == "Battle-B") lbPickB++;
+}
+Console.WriteLine($"平滑加权选择: A={lbPickA} B={lbPickB} (期望 偏向低负载 B：B>40 且 A>0)");
+if (lbPickA == 0 || lbPickB <= 40) return 1;
+
+// 过期负载惩罚：把 A 心跳改旧（>30s 阈值）→ 仅 B 被选中
+if (lbManager.GetNode("Battle-A") is { } nodeA)
+{
+    nodeA.LastHeartbeat = DateTime.UtcNow.AddSeconds(-60);
+}
+int stalePickA = 0, stalePickB = 0;
+for (int i = 0; i < 10; i++)
+{
+    var pick = lbManager.GetBestBattleNode();
+    if (pick == "Battle-A") stalePickA++;
+    else if (pick == "Battle-B") stalePickB++;
+}
+Console.WriteLine($"过期负载惩罚: A={stalePickA} B={stalePickB} (期望 0/10，A 心跳过期被剔除)");
+if (stalePickA != 0 || stalePickB != 10) return 1;
+
+// 等负载公平：恢复 A 心跳、AB 同负载 → 不再被单一节点垄断（大致各半）
+lbManager.GetNode("Battle-A")!.LastHeartbeat = DateTime.UtcNow;
+lbManager.UpdateLoad("Battle-A", 50);
+lbManager.UpdateLoad("Battle-B", 50);
+int fairA = 0, fairB = 0;
+for (int i = 0; i < 40; i++)
+{
+    var pick = lbManager.GetBestBattleNode();
+    if (pick == "Battle-A") fairA++;
+    else if (pick == "Battle-B") fairB++;
+}
+Console.WriteLine($"等负载公平: A={fairA} B={fairB} (期望 大致 20/20，无单点垄断)");
+if (fairA == 0 || fairB == 0 || Math.Abs(fairA - fairB) > 10) return 1;
+
+// 清理测试节点，避免污染后续验证
+lbManager.RemoveNodeBySession(lbSessionA);
+lbManager.RemoveNodeBySession(lbSessionB);
+
 // ===== 18. DB 配置化分发验证（DbDispatcher 全量注册 + 双格式 + RequestId 路由） =====
 
 // 18.1 全量注册：DB 服务器 20 条请求消息全部迁移到强类型分发
