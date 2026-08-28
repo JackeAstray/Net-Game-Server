@@ -571,6 +571,82 @@ Directory.Delete(persistDir, recursive: true);
     if (!migOk) return 1;
 }
 
+// ===== 15.6 玩法实体迁移 v2（D4）：属主玩法实体同包随迁 + 属主绑定恢复 =====
+{
+    // 源节点：玩家属主的玩法实体骨架（含公开/OWN_CLIENT/CELL_PRIVATE 三种作用域，模拟 Skill/Item 形态）
+    var skillDef = new Framework.Entity.EntityDef { Name = "Skill" }
+        .Add("Level", Framework.Entity.EntityPropertyType.Int32)
+        .Add("CooldownRemaining", Framework.Entity.EntityPropertyType.Int32, syncToClient: true, scope: Framework.Entity.EntitySyncScope.OwnClient)
+        .Add("Casts", Framework.Entity.EntityPropertyType.Int32, syncToClient: false);
+    var itemDef = new Framework.Entity.EntityDef { Name = "Item" }
+        .Add("ItemId", Framework.Entity.EntityPropertyType.Int32, syncToClient: true, scope: Framework.Entity.EntitySyncScope.OwnClient)
+        .Add("Count", Framework.Entity.EntityPropertyType.Int32, syncToClient: true, scope: Framework.Entity.EntitySyncScope.OwnClient);
+
+    var skill = skillDef.CreateEntity(9001);
+    skill.OwnerClientId = 777;
+    skill.Set("Level", 5);
+    skill.Set("CooldownRemaining", 3);
+    skill.Set("Casts", 12);
+
+    var item = itemDef.CreateEntity(9002);
+    item.OwnerClientId = 777;
+    item.Set("ItemId", 6001);
+    item.Set("Count", 4);
+
+    var migReq = new Framework.Protocol.Generated.EntityMigrateRequest
+    {
+        SourceNodeId = "Battle-A",
+        TargetNodeId = "Battle-B",
+        ClientSessionId = 777,
+        EntityId = 777,
+        EntityType = "Player",
+        SceneId = "S1",
+        Props = new byte[] { 1, 2, 3 },
+        OwnedEntities = new List<Framework.Protocol.Generated.EntityMigratePayload>
+        {
+            new Framework.Protocol.Generated.EntityMigratePayload
+            {
+                EntityId = skill.EntityId,
+                EntityType = skill.TypeName,
+                Props = Framework.Entity.PropertyCodec.SerializeAllValues(skill.CopyValues(), skill.Def, onlySyncToClient: false)
+            },
+            new Framework.Protocol.Generated.EntityMigratePayload
+            {
+                EntityId = item.EntityId,
+                EntityType = item.TypeName,
+                Props = Framework.Entity.PropertyCodec.SerializeAllValues(item.CopyValues(), item.Def, onlySyncToClient: false)
+            }
+        }
+    };
+
+    // 同包 round-trip（MemoryPack，含随迁属主实体列表）
+    byte[] migReqBytes = MemoryPack.MemoryPackSerializer.Serialize(migReq);
+    var migReqBack = MemoryPack.MemoryPackSerializer.Deserialize<Framework.Protocol.Generated.EntityMigrateRequest>(migReqBytes);
+    bool reqOk = migReqBack?.OwnedEntities?.Count == 2
+        && migReqBack.OwnedEntities[0].EntityId == 9001
+        && migReqBack.OwnedEntities[1].EntityType == "Item";
+    Console.WriteLine($"迁移随迁同包 round-trip: Count={migReqBack?.OwnedEntities?.Count} EntityId0={migReqBack?.OwnedEntities?[0].EntityId} Type1={migReqBack?.OwnedEntities?[1].EntityType} (期望 2/9001/Item)");
+    if (!reqOk) return 1;
+
+    // 属主绑定恢复：按 RestoreMigratedEntity 语义解包 + OwnerClientId 绑定
+    var skillDst = skillDef.CreateEntity(migReqBack!.OwnedEntities![0].EntityId);
+    Framework.Entity.PropertyCodec.DeserializeInto(skillDst, migReqBack.OwnedEntities[0].Props, applyDirty: false);
+    skillDst.OwnerClientId = migReqBack.ClientSessionId;
+    var itemDst = itemDef.CreateEntity(migReqBack.OwnedEntities[1].EntityId);
+    Framework.Entity.PropertyCodec.DeserializeInto(itemDst, migReqBack.OwnedEntities[1].Props, applyDirty: false);
+    itemDst.OwnerClientId = migReqBack.ClientSessionId;
+
+    bool restoreOk = skillDst.Get<int>("Level") == 5
+        && skillDst.Get<int>("CooldownRemaining") == 3
+        && skillDst.Get<int>("Casts") == 12
+        && skillDst.OwnerClientId == 777
+        && itemDst.Get<int>("ItemId") == 6001
+        && itemDst.Get<int>("Count") == 4
+        && itemDst.OwnerClientId == 777;
+    Console.WriteLine($"随迁玩法实体恢复: Skill Level={skillDst.Get<int>("Level")} Cooldown={skillDst.Get<int>("CooldownRemaining")} Casts={skillDst.Get<int>("Casts")} Owner={skillDst.OwnerClientId} / Item Id={itemDst.Get<int>("ItemId")} Count={itemDst.Get<int>("Count")} Owner={itemDst.OwnerClientId} (期望 5/3/12/777 / 6001/4/777)");
+    if (!restoreOk) return 1;
+}
+
 // ===== 16. Center 配置化分发集成验证（MatchHandler 真实链路） =====
 var centerMatchHandler = new Center.Handlers.MatchHandler();
 var centerDispatcher = Center.Handlers.CenterDispatcher.BuildDispatcher(centerMatchHandler);

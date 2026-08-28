@@ -152,6 +152,9 @@ namespace Battle.Handlers
                 Battle.BattleServerApp.NotifyEntityDestroyed(leavingEntity);
             }
 
+            // D4 孤儿回收：玩家主动离房，属主玩法实体（Skill/Item）回收防泄漏
+            Battle.BattleServerApp.RecycleOwnedEntities(scene, clientSessionId);
+
             entitySyncHandler.OnPlayerLeave(clientSessionId, gatewaySession);
             Battle.BattleServerApp.SyncRoomPlayerCount(roomId);
             Battle.BattleServerApp.SyncRoomMemberLeave(roomId, clientSessionId);

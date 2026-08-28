@@ -315,7 +315,17 @@
     <Field name="EntityType" type="string" />
     <Field name="SceneId" type="string" />
     <Field name="Props" type="bytes" />
+    <!-- D4 玩法实体迁移 v2：属主玩法实体随迁（Skill/Item，携带属主会话 ID 由 ClientSessionId 表达），
+         与玩家主实体同包原子恢复，避免目标节点出现孤儿实体 -->
+    <Field name="OwnedEntities" type="list:EntityMigratePayload" />
   </Message>
+
+  <!-- D4：迁移随迁玩法实体负载（EntityId + 类型 + 全量属性） -->
+  <Struct name="EntityMigratePayload">
+    <Field name="EntityId" type="int64" />
+    <Field name="EntityType" type="string" />
+    <Field name="Props" type="bytes" />
+  </Struct>
 
   <Message id="91004" name="EntityMigrateResult" target="All" internal="true">
     <Field name="Success" type="bool" />

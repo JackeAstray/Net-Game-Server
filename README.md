@@ -27,6 +27,7 @@
 | 10-12 | 工程治理 | 巨型类按业务域拆 partial、并发/压测/热迁移测试、FriendHandler 6 拆 |
 | 13 | 强类型化 + EntityCall | FriendHandler 业务层强类型化（去二次序列化）；EntityCall 加 callId/超时表/回执关联 + Center 中继 91001/91002 真实跨进程链路 |
 | 14 | 双轨清理 + 负载均衡 | Battle 旧 JSON 路由字典移除（全量迁移强类型分发）；Center 平滑加权轮询 + 过期负载惩罚 |
+| 15 | 玩法实体迁移 v2 | 属主 Skill/Item 与玩家同包随迁（EntityMigrateRequest.OwnedEntities）+ 属主绑定 + 三路径孤儿回收（迁移出/离场/离房）+ 玩法实体 ID 节点段防跨节点撞 ID |
 
 > 前 12 轮迭代把 P0/P1/P2 全部落地；当前**五套验证**（Protocol / Network / ScriptHost / Logger / Supervisor）全绿。
 

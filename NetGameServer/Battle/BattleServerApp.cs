@@ -77,9 +77,30 @@ namespace Battle
         }
 
         private static long gameplayEntitySeq;
+        private static long gameplayIdNodePrefix = -1;
 
-        /// <summary>玩法实体 ID 分配（高位基址，避免与网关会话 ID 冲突）。</summary>
-        private static long NextGameplayEntityId() => (1L << 40) + System.Threading.Interlocked.Increment(ref gameplayEntitySeq);
+        /// <summary>
+        /// D4 玩法实体 ID 前缀：在 (1L&lt;&lt;40) 高位基址上叠加节点派生段 [32,40)，
+        /// 保证不同 Battle 节点生成的玩法实体 ID 互不冲突 → 玩家迁入目标节点后，
+        /// 随迁的 Skill/Item 不会与目标节点本地玩法实体撞 ID（v1 节点级计数器会撞）。
+        /// </summary>
+        private static long GetGameplayIdNodePrefix()
+        {
+            if (gameplayIdNodePrefix < 0)
+            {
+                uint hash = 2166136261; // FNV-1a 32
+                foreach (char c in CurrentNodeId)
+                {
+                    hash ^= c;
+                    hash *= 16777619;
+                }
+                gameplayIdNodePrefix = (1L << 40) + ((long)(hash & 0xFF) << 32);
+            }
+            return gameplayIdNodePrefix;
+        }
+
+        /// <summary>玩法实体 ID 分配（高位基址 + 节点段 + 序号，避免与网关会话 ID 冲突）。</summary>
+        private static long NextGameplayEntityId() => GetGameplayIdNodePrefix() + (System.Threading.Interlocked.Increment(ref gameplayEntitySeq) & 0xFFFFFFFFL);
 
         /// <summary>
         /// 场景创建时生成场景级玩法实体（Npc 巡逻 / Quest 任务）：
@@ -118,6 +139,66 @@ namespace Battle
                 scene.AoiManager.AddOrUpdateEntity(entity.EntityId, entity, out _, out _);
             }
             NotifyEntityCreated(entity);
+        }
+
+        /// <summary>
+        /// D4 孤儿回收：移除场景中该玩家属主的玩法实体（Skill/Item，OwnerClientId == clientSessionId）。
+        /// 在玩家完整离场（LeaveScene/离房）与迁移出完成（属主实体已随迁）时调用，防止无主玩法实体泄漏。
+        /// 须在 tick 线程调用。
+        /// </summary>
+        /// <returns>回收的玩法实体数量。</returns>
+        public static int RecycleOwnedEntities(Battle.Handlers.BattleScene scene, long clientSessionId)
+        {
+            if (scene == null)
+            {
+                return 0;
+            }
+            int recycled = 0;
+            foreach (var owned in scene.EntityManager.GetAllEntities())
+            {
+                if (owned.EntityId == clientSessionId || owned.OwnerClientId != clientSessionId)
+                {
+                    continue;
+                }
+                NotifyEntityDestroyed(owned);
+                scene.EntityManager.RemoveEntity(owned.EntityId);
+                scene.AoiManager?.RemoveEntity(owned.EntityId);
+                recycled++;
+            }
+            if (recycled > 0)
+            {
+                Log.Info($"玩法实体孤儿回收完成 ClientSessionId:{clientSessionId} 回收数:{recycled}");
+            }
+            return recycled;
+        }
+
+        /// <summary>
+        /// D4 迁移序列化：收集该玩家属主的玩法实体（Skill/Item，OwnerClientId == clientSessionId）为迁移负载，
+        /// 与玩家主实体同包随迁（属主绑定经 ClientSessionId 表达）。
+        /// 须在 tick 线程调用。
+        /// </summary>
+        public static List<Framework.Protocol.Generated.EntityMigratePayload> SerializeOwnedEntitiesForMigration(long clientSessionId, string sceneId)
+        {
+            var list = new List<Framework.Protocol.Generated.EntityMigratePayload>();
+            var scene = sceneManager?.GetScene(sceneId);
+            if (scene == null)
+            {
+                return list;
+            }
+            foreach (var owned in scene.EntityManager.GetAllEntities())
+            {
+                if (owned.EntityId == clientSessionId || owned.OwnerClientId != clientSessionId)
+                {
+                    continue;
+                }
+                list.Add(new Framework.Protocol.Generated.EntityMigratePayload
+                {
+                    EntityId = owned.EntityId,
+                    EntityType = owned.TypeName,
+                    Props = Framework.Entity.PropertyCodec.SerializeAllValues(owned.CopyValues(), owned.Def, onlySyncToClient: false)
+                });
+            }
+            return list;
         }
 
         /// <summary>分发通用实体脚本动作（客户端 ScriptAction 消息 → 脚本 OnMessage）。</summary>
@@ -197,6 +278,9 @@ namespace Battle
                 PersistPlayer(entity);
                 NotifyEntityDestroyed(entity);
             }
+
+            // D4 孤儿回收：玩家完整离场，属主玩法实体（Skill/Item）无法随迁，回收防泄漏
+            RecycleOwnedEntities(scene, clientSessionId);
 
             if (gatewaySession != null)
             {
@@ -420,8 +504,9 @@ namespace Battle
         /// <summary>
         /// 在目标场景恢复迁移实体（含场景绑定/AOI/脚本 OnCreate 通知）。返回恢复的实体；失败返回 null。
         /// v1 说明：仅迁移玩家主实体（EntityId = ClientSessionId）；Skill/Item/Npc 等玩法实体暂不跨节点搬迁。
+        /// D4 玩法实体迁移 v2：通过 ownerClientId 参数支持随迁玩法实体的属主绑定（非空且非玩家类型时设置）。
         /// </summary>
-        public static Framework.Entity.Entity? RestoreMigratedEntity(long entityId, string entityType, string sceneId, byte[] props)
+        public static Framework.Entity.Entity? RestoreMigratedEntity(long entityId, string entityType, string sceneId, byte[] props, long? ownerClientId = null)
         {
             var scene = sceneManager?.GetScene(sceneId);
             if (scene == null)
@@ -447,6 +532,10 @@ namespace Battle
             {
                 entity.OwnerClientId = entityId; // 玩家实体：属主 = 会话 ID = 实体 ID
                 sceneManager.BindPlayerToScene(entityId, sceneId);
+            }
+            else if (ownerClientId.HasValue && ownerClientId.Value > 0)
+            {
+                entity.OwnerClientId = ownerClientId.Value; // D4：随迁玩法实体恢复属主绑定
             }
             RegisterSceneEntity(scene, entity);
             Log.Info($"实体迁移恢复完成 EntityId:{entityId} Type:{entityType} Scene:{sceneId}");
@@ -480,7 +569,7 @@ namespace Battle
             }
         }
 
-        /// <summary>处理迁移入（目标 Battle）：恢复实体 + 回 91004 到 Center。</summary>
+        /// <summary>处理迁移入（目标 Battle）：恢复玩家主实体 + 随迁属主玩法实体 + 回 91004 到 Center。</summary>
         public static void HandleEntityMigrateIn(Framework.Protocol.Generated.EntityMigrateRequest req)
         {
             try
@@ -490,7 +579,32 @@ namespace Battle
                     req.EntityType ?? string.Empty,
                     req.SceneId ?? string.Empty,
                     req.Props ?? Array.Empty<byte>());
-                SendMigrateResult(entity != null, req.ClientSessionId, req.EntityId, CurrentNodeId, entity != null ? "迁移成功" : "迁移恢复失败");
+
+                // D4：随迁属主玩法实体（Skill/Item）原子恢复 + 属主绑定
+                int ownedOk = 0, ownedTotal = req.OwnedEntities?.Count ?? 0;
+                if (entity != null && req.OwnedEntities != null)
+                {
+                    foreach (var owned in req.OwnedEntities)
+                    {
+                        if (owned == null)
+                        {
+                            continue;
+                        }
+                        var restored = RestoreMigratedEntity(
+                            owned.EntityId,
+                            owned.EntityType ?? string.Empty,
+                            req.SceneId ?? string.Empty,
+                            owned.Props ?? Array.Empty<byte>(),
+                            req.ClientSessionId);
+                        if (restored != null)
+                        {
+                            ownedOk++;
+                        }
+                    }
+                }
+
+                SendMigrateResult(entity != null, req.ClientSessionId, req.EntityId, CurrentNodeId,
+                    entity != null ? $"迁移成功（属主实体随迁 {ownedOk}/{ownedTotal}）" : "迁移恢复失败");
             }
             catch (Exception ex)
             {
@@ -530,6 +644,9 @@ namespace Battle
             {
                 NotifyEntityDestroyed(entity);
             }
+
+            // D4：属主玩法实体已随迁至目标节点，源节点回收本地副本（防孤儿泄漏）
+            RecycleOwnedEntities(scene, clientSessionId);
 
             var gatewaySession = GetGatewaySessionByClient(clientSessionId);
             if (gatewaySession != null)
@@ -579,6 +696,7 @@ namespace Battle
             }
 
             FreezeClientSession(clientSessionId);
+            var owned = SerializeOwnedEntitiesForMigration(clientSessionId, scene.SceneId);
             var req = new Framework.Protocol.Generated.EntityMigrateRequest
             {
                 SourceNodeId = CurrentNodeId,
@@ -587,14 +705,15 @@ namespace Battle
                 EntityId = clientSessionId,
                 EntityType = entity.TypeName,
                 SceneId = scene.SceneId,
-                Props = Framework.Entity.PropertyCodec.SerializeAllValues(entity.CopyValues(), entity.Def, onlySyncToClient: false)
+                Props = Framework.Entity.PropertyCodec.SerializeAllValues(entity.CopyValues(), entity.Def, onlySyncToClient: false),
+                OwnedEntities = owned
             };
             byte[] payload = req.Serialize();
             byte[] packet = PacketBuilder.BuildPacket(Framework.Protocol.Generated.MessageIds.EntityMigrateRequest, payload, out int totalLength);
             try
             {
                 Network.PacketSender.Send(centerClient, packet, totalLength);
-                Log.Info($"实体迁移发起 ClientSessionId:{clientSessionId} -> {targetNodeId} Scene:{scene.SceneId}");
+                Log.Info($"实体迁移发起 ClientSessionId:{clientSessionId} -> {targetNodeId} Scene:{scene.SceneId} 属主实体随迁:{owned.Count}");
             }
             catch (Exception ex)
             {

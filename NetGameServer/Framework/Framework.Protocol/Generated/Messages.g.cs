@@ -207,6 +207,14 @@ public partial class EntitySnapshot : IGameMessage
 }
 
 [MemoryPackable]
+public partial class EntityMigratePayload
+{
+    public long EntityId { get; set; } = default;
+    public string EntityType { get; set; } = string.Empty;
+    public byte[] Props { get; set; } = Array.Empty<byte>();
+}
+
+[MemoryPackable]
 public partial class RoomMemberInfo
 {
     public int UserId { get; set; } = default;
@@ -953,6 +961,7 @@ public partial class EntityMigrateRequest : IGameMessage
     public string EntityType { get; set; } = string.Empty;
     public string SceneId { get; set; } = string.Empty;
     public byte[] Props { get; set; } = Array.Empty<byte>();
+    public List<EntityMigratePayload> OwnedEntities { get; set; } = new();
 }
 
 [MemoryPackable]
