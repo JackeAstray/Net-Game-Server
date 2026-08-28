@@ -76,6 +76,14 @@ int newHp = freshAvatar.Get<int>("Hp");
 Console.WriteLine($"热更新后新逻辑: Hp={newHp} (期望 1090 = 100-10+1000)");
 if (newHp != 1090) return 1;
 
+// 5.5 热更新状态迁移：同一实体对象在重载前后状态保持，且新逻辑作用于保留状态
+//    avatar 经 40 tick 后 Hp=52（未受新实体影响）；重载后新实例对旧实体 TakeDamage(10)
+//    → Hp = 52-10=42，再 +1000 = 1042（证明状态跨热更新迁移 + 新逻辑生效）
+host.DispatchMessage(avatar, "TakeDamage", new object?[] { 10 });
+int migratedHp = avatar.Get<int>("Hp");
+Console.WriteLine($"热更新状态迁移: 旧实体 Hp={migratedHp} (期望 1042 = 52-10+1000)");
+if (migratedHp != 1042) return 1;
+
 // 恢复原脚本
 File.WriteAllText(scriptFile, original);
 await Task.Delay(1500);

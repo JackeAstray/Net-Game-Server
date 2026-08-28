@@ -667,6 +667,105 @@ if (dbRouteHandled == 1 && dbSentFrames.Count > 0)
 Console.WriteLine($"DB RequestId 路由: ok={dbResolveOk} handled={dbRouteHandled} requestId={dbExtractedRequestId} nickname={dbResolvedNickname} (期望 True/1/4242/npc5)");
 if (!dbResolveOk || !dbRequestIdOk) return 1;
 
+// ===== 19. 并发注入压测（验证 P0 并发修复：OrderedTaskQueue 严格保序 + MessageDispatcher 免锁读） =====
+{
+    // 19a. OrderedTaskQueue：16 生产者并发投递 960 任务 / 6 key。
+    // 并发下各生产者投递顺序无法对外部编号对齐，因此断言「单生产者 → 单 key」的 FIFO：
+    // 队列必须保持每个生产者自己投递到同一 key 的任务的相对顺序。
+    var bigQueue = new Framework.Core.OrderedTaskQueue("stress");
+    var bigLog = new System.Collections.Concurrent.ConcurrentQueue<string>();
+    const int producers = 16;
+    const int perProducer = 60;
+    const int stressKeys = 6;
+    var allTasks = new List<Task>();
+    var tasksLock = new object();
+    var injectors = new List<Task>();
+    for (int p = 0; p < producers; p++)
+    {
+        int pid = p;
+        injectors.Add(Task.Run(() =>
+        {
+            var local = new List<Task>();
+            for (int s = 0; s < perProducer; s++)
+            {
+                int key = (s + pid) % stressKeys;
+                int seq = s;
+                local.Add(bigQueue.Enqueue($"p{pid}:k{key}", () => bigLog.Enqueue($"{pid}:{key}:{seq}")));
+            }
+            lock (tasksLock) allTasks.AddRange(local);
+        }));
+    }
+    await Task.WhenAll(injectors);
+    await Task.WhenAll(allTasks);
+
+    bool bigOrdered = true;
+    for (int pid = 0; pid < producers && bigOrdered; pid++)
+    {
+        for (int key = 0; key < stressKeys; key++)
+        {
+            int last = -1;
+            foreach (var entry in bigLog.Where(e => e.StartsWith($"{pid}:{key}:")))
+            {
+                int seq = int.Parse(entry.Split(':')[2]);
+                if (seq <= last) { bigOrdered = false; break; }
+                last = seq;
+            }
+        }
+    }
+    int stressTotal = producers * perProducer;
+    Console.WriteLine($"并发注入 OrderedTaskQueue: 任务数={bigLog.Count} 单生产者逐key保序={bigOrdered} (期望 {stressTotal}/True)");
+    if (bigLog.Count != stressTotal || !bigOrdered) return 1;
+
+    // 19b. MessageDispatcher：8 线程 × 400 次并发分发，免锁读路由正确 + 计数准确
+    var conDsp = new Framework.Protocol.MessageDispatcher();
+    var conCounters = new System.Collections.Concurrent.ConcurrentDictionary<int, int>();
+    conDsp.RegisterSync<Framework.Protocol.Generated.Login>((ctx, msg) => conCounters.AddOrUpdate(1, 1, (_, c) => c + 1));
+    conDsp.RegisterSync<Framework.Protocol.Generated.ResetPassword>((ctx, msg) => conCounters.AddOrUpdate(2, 1, (_, c) => c + 1));
+    conDsp.RegisterSync<Framework.Protocol.Generated.UpdateNickname>((ctx, msg) => conCounters.AddOrUpdate(3, 1, (_, c) => c + 1));
+    conDsp.RegisterSync<Framework.Protocol.Generated.Logout>((ctx, msg) => conCounters.AddOrUpdate(4, 1, (_, c) => c + 1));
+
+    byte[] EncodeBody(Framework.Protocol.IGameMessage m)
+    {
+        byte[] frame = Framework.Protocol.ProtocolCodec.Encode(m);
+        Framework.Protocol.ProtocolCodec.TryParseFrame(frame.AsSpan(4), out _, out var body);
+        return body.ToArray();
+    }
+    byte[] conBody1 = EncodeBody(new Framework.Protocol.Generated.Login { Account = "a", Password = "p" });
+    byte[] conBody2 = EncodeBody(new Framework.Protocol.Generated.ResetPassword { Account = "a", OldPassword = "o", NewPassword = "n" });
+    byte[] conBody3 = EncodeBody(new Framework.Protocol.Generated.UpdateNickname { UserId = 1, NewNickname = "x" });
+    byte[] conBody4 = EncodeBody(new Framework.Protocol.Generated.Logout { UserId = 1 });
+    int[] conIds = new[]
+    {
+        Framework.Protocol.Generated.Login.MsgId,
+        Framework.Protocol.Generated.ResetPassword.MsgId,
+        Framework.Protocol.Generated.UpdateNickname.MsgId,
+        Framework.Protocol.Generated.Logout.MsgId
+    };
+    byte[][] conBodies = { conBody1, conBody2, conBody3, conBody4 };
+
+    var conCtx = new TestSessionContext(new List<(int, byte[])>());
+    var conTasks = new List<Task>();
+    const int conPerThread = 400;
+    for (int t = 0; t < 8; t++)
+    {
+        conTasks.Add(Task.Run(async () =>
+        {
+            for (int i = 0; i < conPerThread; i++)
+            {
+                int pick = (i + t) % 4;
+                await conDsp.TryDispatch(conCtx, conIds[pick], conBodies[pick]);
+            }
+        }));
+    }
+    await Task.WhenAll(conTasks);
+
+    int conTotal = 0;
+    foreach (var kv in conCounters) conTotal += kv.Value;
+    bool conOk = conTotal == 8 * conPerThread && conCounters.Count == 4 && conDsp.RegisteredCount == 4;
+    Console.WriteLine($"并发注入 MessageDispatcher: 分发={conTotal}/{8 * conPerThread} 注册={conDsp.RegisteredCount} 免锁读稳定={conOk} (期望 {8 * conPerThread}/4/True)");
+    if (!conOk) return 1;
+}
+
 Console.WriteLine("\n===== 全部验证通过 =====");
 return 0;
 

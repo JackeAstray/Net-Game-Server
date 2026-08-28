@@ -598,5 +598,119 @@ Console.WriteLine("== 实体迁移：Gateway 接收 91005 后切换玩家 Battle
     migClient.Close();
 }
 
+// ========== 第六部分：Battle 集成压测（并发玩家加入 + 高频 EntitySync 广播） ==========
+// 复用进程内真实 Battle（31327）：6 个伪网关并发加入同一房间，各发 80 条高频 EntitySync，
+// 验证多玩家互相广播可达 + tick 线程排空入站队列（无积压）。
+Console.WriteLine("== Battle 集成压测：并发玩家加入 + 高频 EntitySync 广播 ==");
+{
+    const int stressClients = 6;
+    const int syncsPerClient = 80;
+    var joined = new ConcurrentDictionary<long, bool>();
+    var joinMsg = new ConcurrentDictionary<long, string>();
+    var deltasPerClient = new ConcurrentDictionary<long, int>();
+    var eofFlag = new ConcurrentDictionary<long, bool>();
+
+    void SendRouted(System.IO.Stream s, long csid, Framework.Protocol.IGameMessage msg)
+    {
+        byte[] routed = Shared.RouteMetadata.AttachClientSessionId(msg.Serialize(), csid);
+        byte[] packet = PacketBuilder.BuildPacket(msg.MessageId, routed, out int len);
+        s.Write(packet.AsSpan(0, len));
+        System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+    }
+
+    var stressTasks = new List<Task>();
+    for (int i = 0; i < stressClients; i++)
+    {
+        int idx = i;
+        stressTasks.Add(Task.Run(async () =>
+        {
+            long csid = 9100 + idx;
+            using var c = new TcpClient();
+            await c.ConnectAsync("127.0.0.1", 31327);
+            var stream = c.GetStream();
+            var reader = new LengthPrefixedPacketReader();
+            var buf = new byte[16384];
+            int deltaCount = 0;
+            bool joinOk = false;
+            string joinMessage = "";
+
+            var readTask = Task.Run(async () =>
+            {
+                while (true)
+                {
+                    int n = await stream.ReadAsync(buf);
+                    if (n == 0) { eofFlag[csid] = true; break; }
+                    reader.Append(buf.AsSpan(0, n));
+                    while (reader.TryReadPacket(out var pkt))
+                    {
+                        if (pkt.Length < 4) continue;
+                        int msgId = BitConverter.ToInt32(pkt.Span.Slice(0, 4));
+                        if (msgId == GenIds.BattleJoinResult)
+                        {
+                            var res = MemoryPackSerializer.Deserialize<BattleJoinResult>(pkt.Slice(4).Span);
+                            if (res != null)
+                            {
+                                joinOk = res.Success;
+                                joinMessage = res.Message ?? "";
+                            }
+                        }
+                        else if (msgId == GenIds.EntityDeltaSync)
+                        {
+                            Interlocked.Increment(ref deltaCount);
+                        }
+                    }
+                }
+            });
+
+            // 内部认证握手
+            var authFilter = new Framework.Core.Security.InternalAuthFilter("change-this-secret", $"TestGateway-127.0.0.1:{idx + 2}");
+            byte[] authPacket = authFilter.BuildAuthPacket();
+            byte[] authFramed = PacketBuilder.BuildPacket(Framework.Core.Security.InternalAuthFilter.AuthMsgId, authPacket.AsSpan(4), out int authLen);
+            stream.Write(authFramed.AsSpan(0, authLen));
+            System.Buffers.ArrayPool<byte>.Shared.Return(authFramed);
+
+            // 加入压测房间
+            var join = new BattleJoin { RoomId = "stress-room", SceneName = "并发压测", SceneType = "PVP", MaxPlayers = 16 };
+            SendRouted(stream, csid, join);
+
+            // 高频 EntitySync（位置递增确保每次脏 → 广播）
+            for (int k = 0; k < syncsPerClient; k++)
+            {
+                var sync = new EntitySync
+                {
+                    Position = new Vector3 { X = idx, Y = 0, Z = k },
+                    Rotation = new Vector3 { X = 0, Y = 0, Z = 0 }
+                };
+                SendRouted(stream, csid, sync);
+                if (k % 20 == 19) await Task.Delay(15); // 适当让出写带宽
+            }
+
+            await WaitUntil(() => joinOk, TimeSpan.FromSeconds(5));
+            joined[csid] = joinOk;
+            joinMsg[csid] = joinMessage;
+            await Task.Delay(400); // 等待广播到达
+            deltasPerClient[csid] = Volatile.Read(ref deltaCount);
+            await Task.WhenAny(readTask, Task.Delay(200));
+            c.Close();
+        }));
+    }
+    await Task.WhenAll(stressTasks);
+
+    // 队列必须被 tick 线程排空（无积压）
+    bool drained = await WaitUntil(() => Battle.BattleServerApp.PendingInboundCount == 0, TimeSpan.FromSeconds(5));
+    int totalDeltas = 0;
+    foreach (var kv in deltasPerClient) totalDeltas += kv.Value;
+    foreach (var kv in joined)
+    {
+        if (!kv.Value)
+        {
+            Console.WriteLine($"    调试: csid={kv.Key} 未加入 msg=[{joinMsg[kv.Key]}] eof={eofFlag.ContainsKey(kv.Key)} 增量={deltasPerClient[kv.Key]}");
+        }
+    }
+    Check(joined.Count == stressClients && joined.Values.All(v => v), "并发玩家全部加入", $"{joined.Count}/{stressClients}");
+    Check(totalDeltas > 0, "EntitySync 广播到达（多玩家互相可见）", $"总增量={totalDeltas} 每客户端={string.Join(",", deltasPerClient.Values)}");
+    Check(drained, "tick 线程排空入站队列", $"PendingInboundCount={Battle.BattleServerApp.PendingInboundCount}");
+}
+
 Console.WriteLine(failures == 0 ? "\n===== NetworkVerify 全部通过 =====" : $"\n===== NetworkVerify 失败 {failures} 项 =====");
 return failures == 0 ? 0 : 1;

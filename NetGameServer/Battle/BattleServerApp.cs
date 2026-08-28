@@ -280,6 +280,9 @@ namespace Battle
             }
         }
 
+        /// <summary>待处理入站消息数（压测/监控验证 tick 线程排空用）。</summary>
+        public static int PendingInboundCount => (int)System.Threading.Interlocked.Read(ref queuedInboundCount);
+
         /// <summary>tick 线程排空待执行动作（实体迁移等需在单线程内访问实体状态）。</summary>
         private static void DrainTickActions()
         {

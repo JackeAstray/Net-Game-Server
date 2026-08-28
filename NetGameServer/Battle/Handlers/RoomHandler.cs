@@ -54,7 +54,10 @@ namespace Battle.Handlers
 
                 // 获取或创建场景
                 var scene = sceneManager.GetOrCreateScene(sceneConfig);
-                if (scene.Config.MaxPlayers > 0 && scene.EntityManager.GetAllSessionIds().Count() >= scene.Config.MaxPlayers)
+                // 人数校验只统计真实玩家（场景反索引），玩法实体（NPC/Quest/Skill/Item）
+                // 不占用玩家名额——此前 GetAllSessionIds() 会把玩法实体计入，导致 PVP(10)
+                // 房间实际只能容纳 2 名玩家（4 场景实体 + 每人 2 个私有玩法实体）。
+                if (scene.Config.MaxPlayers > 0 && sceneManager.GetPlayerCount(scene.Config.SceneId) >= scene.Config.MaxPlayers)
                 {
                     return Task.FromResult(new BattleJoinResponse
                     {

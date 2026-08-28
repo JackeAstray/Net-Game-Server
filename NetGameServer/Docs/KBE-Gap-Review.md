@@ -448,10 +448,23 @@
     Login 全部业务操作均已覆盖强类型分发。
 - 验证：`dotnet build` 0 错误；五套件全部通过；git diff 方法数逐一核对（4 个类方法数前后一致，零丢失）。
 
-### 迭代 11（规划）——路线剩余项
+### 迭代 11 —— 工程治理补测试（完成）
 
-- **P3 工程治理补测试**（路线第 10 条遗留）：Battle 集成压测（Bots 目前仅协议级）、
-  并发注入测试（验证 P0 修复）、热更新状态迁移测试。
-- 后续增强项：玩法实体跨节点迁移（Skill/Item/Npc）v2、Game 服务器 ChatHandler/FriendHandler
-  同构拆分、跨进程 EntityCall（91001/91002）实战应用等。
+- **P3 工程治理补测试**（路线第 10 条遗留）：
+  - **Battle 集成压测**（NetworkVerify Part 6）：6 个伪网关并发加入同一房间 + 各 80 条高频
+    EntitySync，验证并发玩家全部加入、多玩家互相广播可达（总增量 2686）、tick 线程排空入站队列
+    （PendingInboundCount→0，无积压）。
+  - **并发注入测试**（ProtocolVerify Part 19）：16 生产者并发投递 960 任务，断言「单生产者→单 key」
+    严格 FIFO（回归迭代 8 OrderedTaskQueue worker 池修复）；MessageDispatcher 8 线程 ×400 并发分发
+    3200 次，免锁读路由稳定、计数精确。
+  - **热更新状态迁移测试**（ScriptHostVerify 5.5）：热更新重载后，旧实体状态（Hp=52）跨重载保持，
+    新脚本逻辑作用于保留状态（52-10+1000=1042）。
+- **顺带修复真 bug**：RoomHandler 人数校验原用 GetAllSessionIds()（含 NPC/Quest/Skill/Item 玩法实体），
+  PVP(10) 房间实际只能容纳 2 名玩家；改为 GetPlayerCount 反索引只统计真实玩家。
+- 验证：`dotnet build` 0 错误；五套件全部通过。
+
+### 迭代 12（规划）——后续增强项
+
+- 玩法实体跨节点迁移（Skill/Item/Npc）v2、Game 服务器 ChatHandler/FriendHandler 同构拆分、
+  跨进程 EntityCall（91001/91002）实战应用等。
 
