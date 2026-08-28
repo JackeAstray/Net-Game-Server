@@ -40,6 +40,21 @@
     <Field name="Args" type="list:int32" />
   </Message>
 
+  <!-- ==== 时间同步 40010-40019（KBE-Gap-Review D7）==== -->
+  <!-- 客户端发起时间同步：发送 clientSendMs 与最近一次收到 serverSendMs（首次发 0），用于服务端计算 RTT/offset。 -->
+  <Message id="40010" name="ClientTimeSync" target="Battle" reply="40011">
+    <Field name="ClientSendMs" type="int64" />
+    <Field name="LastServerSendMs" type="int64" />
+  </Message>
+
+  <!-- 服务端时间同步回包：携带 serverRecvMs/serverSendMs/clientSendMs，客户端据此估算 RTT 与 offset。 -->
+  <Message id="40011" name="ServerTimeSync" target="Battle">
+    <Field name="ClientSendMs" type="int64" />
+    <Field name="ServerRecvMs" type="int64" />
+    <Field name="ServerSendMs" type="int64" />
+    <Field name="AuthFrame" type="int64" />
+  </Message>
+
   <!-- ==== 实体同步 40100-40199 ==== -->
   <Message id="40101" name="EntitySync" target="Battle">
     <Field name="Position" type="Vector3" />

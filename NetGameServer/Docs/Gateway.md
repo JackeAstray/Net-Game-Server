@@ -2,9 +2,8 @@
 
 > 外部客户端连接集群的统一入口，承接 TCP/UDP/KCP/WebSocket 四种协议，
 > 按 `Protocol/defs` 生成的路由表配置化转发到后端节点，并在入口强制会话时间窗。
-
-项目总览与能力描述见 [README.md](../../README.md) §模块详解 / 节点拓扑。
-本文件聚焦**代码定位、关键文件、注意事项、排错**。
+>
+> 项目总览与节点拓扑见 [README.md](../../README.md)，协议约束见 [Protocol.md](Protocol.md)。
 
 ## 职责边界
 
@@ -13,7 +12,7 @@
 - ✅ 按 `RouterTable` 把客户端消息路由到 Login/Game/Center/Battle
 - ✅ 注入路由元数据（`__clientSessionId` / `__userId` / `__uid` / `__broadcast`）
 - ✅ 登录成功后把 `clientSessionId` 切换到新 Gateway 连接（断线重连）
-- ✅ **会话时间窗强制**（`SessionGuard.IsSessionValid`，迭代 16）
+- ✅ 会话时间窗强制（`SessionGuard.IsSessionValid`，迭代 16）
 - ❌ 不做业务校验、不存游戏状态（业务下沉到 Game/Battle）
 - ❌ 不接 `internal="true"` 的内部消息（已拒绝）
 

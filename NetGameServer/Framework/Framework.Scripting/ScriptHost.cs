@@ -25,11 +25,18 @@ public sealed class ScriptHost : IDisposable
     private readonly ConcurrentDictionary<string, object?> globalData = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<EntityManagerObj, byte> entityManagers = new();
     private readonly ConcurrentDictionary<long, Action<string, object?, object?>> propertyHandlers = new();
+    /// <summary>热更新前透传给 OnReload 的 state 字典（KBE-Gap-Review S4）。</summary>
+    private readonly ConcurrentDictionary<string, object?> _reloadStates = new(StringComparer.Ordinal);
+    /// <summary>每个类型当前生效的 ScriptVersion（KBE-Gap-Review S4）：热更新时若版本号变更则全量打日志，便于诊断破坏性变更。</summary>
+    private readonly ConcurrentDictionary<string, int> _scriptVersions = new(StringComparer.Ordinal);
     private FileSystemWatcher? watcher;
     private readonly object compileGate = new();
 
     /// <summary>脚本加载/重载事件（typeName -> 脚本实例）。</summary>
     public event Action<string, IEntityScript>? ScriptLoaded;
+
+    /// <summary>脚本重载事件（typeName, newVersion, oldVersion）：用于宿主记录版本号变更日志/做迁移决策。</summary>
+    public event Action<string, int, int>? ScriptReloaded;
 
     /// <summary>最近一次脚本加载错误（typeName -> 异常；热更新失败时保留旧实例并记录）。</summary>
     public IReadOnlyDictionary<string, Exception> LastLoadErrors => lastLoadErrors;
@@ -62,6 +69,16 @@ public sealed class ScriptHost : IDisposable
         return this;
     }
 
+    /// <summary>获取指定类型已加载脚本的版本号（KBE-Gap-Review S4）。未加载返回 0。</summary>
+    public int GetScriptVersion(string entityType)
+        => _scriptVersions.TryGetValue(entityType, out var v) ? v : 0;
+
+    /// <summary>设置指定类型的重载 state（KBE-Gap-Review S4：迁移辅助）。
+    /// 旧实例可在 OnReload 钩子里读这个 state 来恢复运行期缓存（如 tickCount、随机种子）。
+    /// </summary>
+    public void SetReloadState(string entityType, object? state)
+        => _reloadStates[entityType] = state;
+
     public ScriptHost(string scriptsDir)
     {
         this.scriptsDir = Path.GetFullPath(scriptsDir);
@@ -86,6 +103,21 @@ public sealed class ScriptHost : IDisposable
 
     /// <summary>重新加载全部脚本（手动触发）。</summary>
     public void ReloadAll() => LoadAll();
+
+    /// <summary>
+    /// 暂停 FileSystemWatcher 自动重载（KBE-Gap-Review S4：测试/管理场景下需要"写文件 + ReloadAll" 的一次性操作，
+    /// 避免 watcher 防抖窗口内多个事件竞争）。
+    /// </summary>
+    public void PauseWatcher()
+    {
+        if (watcher != null) watcher.EnableRaisingEvents = false;
+    }
+
+    /// <summary>恢复 FileSystemWatcher。</summary>
+    public void ResumeWatcher()
+    {
+        if (watcher != null) watcher.EnableRaisingEvents = true;
+    }
 
     /// <summary>获取脚本实例；未加载返回 null。</summary>
     public IEntityScript? GetScript(string entityType)
@@ -164,6 +196,37 @@ public sealed class ScriptHost : IDisposable
         if (scripts.TryGetValue(entity.TypeName, out var script))
         {
             script.OnDestroy(entity);
+        }
+    }
+
+    /// <summary>
+    /// 注入的 TickEngine（KBE-Gap-Review S2：脚本可注册定时器代替 tick%N 轮询）。
+    /// 宿主在启动时调用 <see cref="AttachTickEngine"/>；未注入时为 null，脚本里要判空。
+    /// </summary>
+    public Framework.Tick.TickEngine? TickEngine { get; private set; }
+
+    /// <summary>挂载 TickEngine（Battle/服务器启动时调用）。</summary>
+    public void AttachTickEngine(Framework.Tick.TickEngine engine) => TickEngine = engine;
+
+    /// <summary>
+    /// 通知热更新（KBE-Gap-Review S4）：旧实例的 OnReload 钩子按类型下每个实体各调用一次。
+    /// 错误隔离：单实体异常不影响其他实体迁移。
+    /// </summary>
+    private void NotifyReload(string typeName, IEntityScript oldScript, IEntityScript newScript, object? state)
+    {
+        foreach (var manager in entityManagers.Keys)
+        {
+            foreach (var entity in manager.GetAllEntitiesByType(typeName))
+            {
+                try
+                {
+                    oldScript.OnReload(entity, state);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, $"脚本 {typeName} OnReload 异常 EntityId:{entity.EntityId}");
+                }
+            }
         }
     }
 
@@ -270,14 +333,43 @@ public sealed class ScriptHost : IDisposable
             }
 
             string typeName = instance.EntityType;
+            int newVersion = instance.ScriptVersion;
+            // KBE-Gap-Review S4：版本号跟踪
+            int oldVersion = 0;
+            if (scripts.TryGetValue(typeName, out var oldScript))
+            {
+                oldVersion = (oldScript as IEntityScript)?.ScriptVersion ?? 0;
+            }
+            if (oldVersion != 0 && oldVersion != newVersion)
+            {
+                Log.Warn($"脚本 {typeName} 版本号变更 {oldVersion} -> {newVersion}，状态迁移需由 OnReload 钩子显式处理");
+            }
+            _scriptVersions[typeName] = newVersion;
+
             scripts[typeName] = instance;
             // 错误簿记键与失败登记保持一致：失败时按文件名登记（编译失败时拿不到类型名），
             // 成功时按文件名清除；同时兼容按类型名登记的旧键（文件名 ≠ 类型名时也能正确清除）。
             var loadedFileName = Path.GetFileNameWithoutExtension(filePath);
             lastLoadErrors.TryRemove(loadedFileName, out _);
             lastLoadErrors.TryRemove(typeName, out _);
-            Log.Info($"脚本加载成功: {typeName} <- {Path.GetFileName(filePath)}");
+            if (oldVersion != 0)
+            {
+                Log.Info($"脚本热更新成功: {typeName} v{oldVersion} -> v{newVersion} <- {Path.GetFileName(filePath)}");
+            }
+            else
+            {
+                Log.Info($"脚本加载成功: {typeName} v{newVersion} <- {Path.GetFileName(filePath)}");
+            }
+
+            // KBE-Gap-Review S4：热更新时通知旧实例的 OnReload 钩子（带 state）
+            if (oldScript != null && !ReferenceEquals(oldScript, instance))
+            {
+                _reloadStates.TryGetValue(typeName, out var reloadState);
+                NotifyReload(typeName, oldScript, instance, reloadState);
+            }
+
             ScriptLoaded?.Invoke(typeName, instance);
+            ScriptReloaded?.Invoke(typeName, newVersion, oldVersion);
         }
         catch (Exception ex)
         {

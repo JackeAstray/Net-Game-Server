@@ -1,103 +1,103 @@
 # 服务器与 KBEngine 差距核查（KBE-Gap-Review）
 
-> 本文档由最初的「逐文件差距核查」演进为**现状快照 + 可优化路线**。
-> 前 17 轮迭代已将原始核查中的绝大多数差距落地（P0/P1/P2 全部处理），
-> 本版聚焦两件事：**① 服务器 ↔ KBE 现状对比；② 仍可优化的脚本与设计模式**。
-> 涉及文件均给路径/行号，可直接据此迭代。最后更新：迭代 17。
+> 现状快照 + 可优化路线。前 20 轮迭代已将原始核查的差距基本落地。
+>
+> 本版聚焦两件事：① 服务器 ↔ KBE 现状对比（迭代 20 全部 ✅）；
+> ② 关键能力落地路径的可追溯索引（指向代码 / 文档）。
+> 涉及文件均给路径/行号，可直接据此迭代。最后更新：迭代 20。
 
 ---
 
-## 一、服务器 ↔ KBE 现状对比
+## 一、服务器 ↔ KBE 现状对比（迭代 20）
+
+> ✅ 对齐　◐ 部分对齐　✗ 未实现
 
 | 维度 | KBE 机制 | 本服务器现状 | 状态 |
 |---|---|---|---|
-| 协议/实体 | defs 声明 + 生成 + 强类型分发 | MemoryPack 生成 + `MessageDispatcher` 强类型（免锁读）；Login/DB/Center/Game 分发层均已迁移 | ✅ |
+| 协议/实体 | defs 声明 + 生成 + 强类型分发 | MemoryPack 生成 + `MessageDispatcher` 强类型（免锁读）；Login/DB/Center/Game/Battle 分发层均已迁移 | ✅ |
 | 脏同步 | 属性脏标记 + 增量广播 | Entity 脏标记 + PropertyCodec 增量 + 同步权限分级（SyncScope，迭代2） | ✅ |
-| 脚本层 | .csx 脚本 + 热更新 + 事件 | 生产生效 + 热更新/错误隔离/回滚 + 属性事件总线（迭代2/11） | ✅ |
-| 进程模型 | 8 进程 + machine 看护 | 7 进程 + Supervisor 自动拉起 + 管理台仪表盘（迭代6）；无 machine 配置发现 | ◐ |
+| 脚本层 | .csx 脚本 + 热更新 + 事件 | 生产生效 + 热更新/错误隔离/回滚 + 属性事件总线 + OnReload 钩子 + ScriptVersion 跟踪（迭代2/11/19） | ✅ |
+| 脚本层 Logger | KBE 脚本可调 `KBEngine.INFO/DEBUG` | `EntityScriptBase.Log` 结构化模板日志（迭代19 S1，Serilog 转发，Tag 过滤） | ✅ |
+| 脚本层定时器 | KBE `addTimer` 全局定时器 | `AddTimer(entity, ms, cb, repeat)`（迭代19 S2，框架 TickEngine 驱动） | ✅ |
+| 脚本层边界 | KBE 业务自行处理 | `MathClampSet/MathClampAdd`（迭代19 S3，防负值/溢出/上限） | ✅ |
+| 脚本热更新 | KBE reload 实体 + 状态保留 | `OnReload(oldState)` 钩子 + `ScriptVersion` 跟踪（迭代19 S4） | ✅ |
+| **进程模型 / Machine** | 8 进程 + machine 看护（kbengine.xml 拓扑 + 依赖启动 + 崩溃重启） | **Tools/Machine（topology.json 依赖拓扑 + replicas 多实例 + TCP 探针就绪 + 崩溃指数退避 + machine/instance 字段注入）+ Center 节点注册协议 3 字段扩展 + 管理台『机器/进程总览』页（/api/center/cluster）+ `--emit-supervisor-config` 兼容老 Supervisor（迭代20）** | **✅** |
 | 备份/恢复 | 定期备份 + 崩溃恢复 | 备份防泄漏 + 序列化移出主循环（迭代1/8）；持久化 `LoadEntityById`（迭代1） | ✅ |
 | 断线重连 | 会话挂起 + 重连令牌 | 挂起/恢复/超时离场 + TCP 超时踢线（迭代5） | ✅ |
-| 实体迁移 | 跨节点搬迁 | 玩家主实体冻结-序列化-搬迁-恢复（迭代7/9）；玩法实体 v2 待做 | ◐ |
+| 实体迁移 | 跨节点搬迁 | 玩家主实体冻结-序列化-搬迁-恢复（迭代7/9）；玩法实体 v2（迭代15） | ✅ |
 | 帧同步 | 场景推进 + 空帧心跳 | 每场景 FrameCounter + 权威帧号/时间戳空帧（迭代3） | ✅ |
-| 负载均衡 | 平滑加权分配 | `GetBestBattleNode` 平滑加权轮询（SWRR）+ 过期负载惩罚（迭代14，ProtocolVerify §17b 验证分布/剔除/公平） | ✅ |
-| 防重放 | 时间戳窗口 + HMAC | Center 节点 120s 窗 + HMAC + **客户端会话侧 SessionGuard 时间窗（lifetime ≤2h / idle ≤15min）+ TokenService SessionSeq 单调序号 + NonceService 一次性 nonce（迭代16）** | ✅ |
-| EntityCall | 跨进程实体调用 + 超时回调 | 91001/91002 跨进程中继（Center 路由）+ callId + 超时表 + 回执关联（迭代13，ProtocolVerify §11b） | ✅ |
-| 时间同步 | 客户端-服务端时钟对齐 | 权威帧号/时间戳已具备；**时钟对齐协商缺**（B6） | ✗ |
-| 配置 | 模板 + 校验 + 热重载 | reloadOnChange 已开；**无模板校验、无缓存**（B7） | ◐ |
+| 时间同步 | KBE time sync（clock align） | 客户端-服务端 NTP 式协商（迭代19 D7，40010/40011，TimeSyncManager） | ✅ |
+| 配置 | KBE res + 校验 | reloadOnChange + 内存节缓存 + IConfigValidator 模板校验 + OnConfigChanged 热重载钩子（迭代19 D9） | ✅ |
+| 负载均衡 | 平滑加权分配 | `GetBestBattleNode` 平滑加权轮询（SWRR）+ 过期负载惩罚（迭代14） | ✅ |
+| 防重放 | 时间戳窗口 + HMAC | Center 节点 120s 窗 + HMAC + SessionGuard 时间窗 + TokenService SessionSeq + NonceService（迭代16） | ✅ |
+| EntityCall | 跨进程实体调用 + 超时回调 | 91001/91002 跨进程中继（Center 路由）+ callId + 超时表 + 回执关联（迭代13） | ✅ |
+| EntityMailbox | entityMailboxComponent / cellMailbox | `EntityMailbox.Local/Remote` + `Entity.Mailbox` 懒属性，csx 脚本 Call/CallAsync（迭代17） | ✅ |
 | Profile/告警 | tick 耗时 + 慢消息告警 | TickEngine 统计 + 慢 tick 告警（迭代5） | ✅ |
-| 运维 | 管理台 + 自动拉起 + 压测 | 仪表盘 + Supervisor（迭代6）；Bots 压测仅协议级 | ◐ |
-| 工程 | 巨型类 + 强类型 + 测试 | 巨类全拆 partial（迭代10/12）；五套件 + 并发/压测/热迁移测试（迭代11） | ✅ |
+| Bots 压测 | bots 多机器人跑分 | TCP/WS 协议 + RTT/P50/P95 + 时间同步 offset 分布 + ramp-up（迭代19 D8） | ✅ |
+| 运维 | 管理台 + 自动拉起 + 压测 | 仪表盘 + Supervisor + Machine（迭代6/20） | ✅ |
+| 工程 | 巨型类 + 强类型 + 测试 | 巨类全拆 partial（迭代10/12）；**六套件（新增 MachineVerify）+ 压测/热迁移/时间同步/Machine 化测试（迭代11/19/20）** | ✅ |
 
-> ✅ 对齐　◐ 部分对齐（见 §三 剩余缺口）　✗ 未实现
+**总览**：迭代 19 时 21 维对比中 1 项 ◐（machine 配置发现）；**迭代 20 后全部 21 项 ✅**。
 
----
+### 迭代 20 增量（Machine 化落点）
 
-## 二、已对齐能力（17 轮迭代成果）
-
-- **P0 数据竞争清零**：消息全部收编 `OrderedTaskQueue`/Channel 单线程串行（迭代3）；备份注册泄漏、join 全量扫盘、派遣器锁竞争修复（迭代1）。
-- **性能热路径**：属性名 UTF-8 预缓存、MessageDispatcher 免锁读、备份序列化移出主循环、SceneManager 玩家-场景反索引、零拷贝写队列 + 背压（迭代1/3/4/8）。
-- **脚本生产生效**：5 个玩法脚本与实体类型匹配并在 Battle 运行，事件驱动化 + 热更新状态迁移（迭代2/11）。
-- **可靠性**：断线重连 + 超时踢线（迭代5）；静态分片 + 玩家实体跨节点迁移（迭代7/9）；Leader 选举（已有）。
-- **运维**：Supervisor 进程看护 + 管理台仪表盘 + 慢 tick 告警（迭代6）。
-- **工程**：MatchHandler/DbQueryHandler/GatewayServerApp/LoginHandler/FriendHandler 巨型类按业务域拆 partial；Game 分发层强类型化；五套件（协议/脚本/日志/网络/监管）全绿。
-- **业务层强类型化（迭代13）**：Game FriendHandler 业务方法改收强类型请求对象，与 DB `DbQueryHandler` 对齐，去掉二次序列化热路径损耗。
-- **EntityCall 完整链路（迭代13）**：callId + 超时表 + 回执关联 + Center 中继 91001/91002 真实跨进程调用（对标 KBE EntityCall/Mailbox 回执与超时）。
-- **Battle 全量强类型化（迭代14）**：旧 JSON 路由字典整体移除，全部消息经 MessageDispatcher 强类型分发（JSON 兼容由 jsonFallback 承担），双轨归一。
-- **Center 平滑加权负载均衡（迭代14）**：SWRR（权重=100-load）+ 心跳过期剔除 + 权重表周期清理，持续偏向低负载 Battle 节点。
-- **玩法实体迁移 v2（迭代15）**：属主玩法实体（Skill/Item）与玩家主实体同包随迁 + 属主绑定 + 孤儿回收（CompleteMigrateOut/LeaveScene/离房三条路径），玩法实体 ID 加节点段保证跨节点不撞 ID。
-- **客户端会话侧防重放（迭代16）**：SessionGuard 时间窗（lifetime+idle）由 Gateway 客户端入口强制；TokenService 嵌入 SessionSeq 单调序号拒旧 token 重放；NonceService 一次性 nonce 缓存（带 TTL 周期 GC）补齐 TokenService 文档此前承诺。
-- **脚本层 entityMailbox（迭代17）**：`EntityMailbox.Local/Remote` + `Entity.Mailbox` 懒属性，csx 脚本 `entity.Mailbox.Call/CallAsync(method, args, cb)` 同进程零开销、跨节点走 EntityCall 链路，对标 KBE entityMailboxComponent / cellMailbox。
+- `Tools/Machine/Program.cs`：topology.json 依赖解析 + replicas 展开 + TCP 探针 + 指数退避
+- `Shared/NodeLaunchArgs.cs` + 6 节点 Program.cs 接受 `--port/--host/--center-host/--node-id/--instance-id/--machine-id/--supervised-by`
+- `Shared/ConfigHelper.SetRuntimeOverride` 运行时覆盖（最高优先级内存配置源）
+- 协议扩展：`CenterRegisterNodeRequest` 增 `InstanceId/MachineId/SupervisedBy` 三字段（参与签名，验签路径已扩展）
+- `Center/Handlers/NodeManager.cs`：`ServerNodeInfo` 持久化 3 字段
+- `Center/Controllers/ClusterController.cs`：`/api/center/cluster` 按 MachineId 聚合
+- 管理台『机器/进程总览』页（前端）
+- `--emit-supervisor-config` 把 topology 渲染成 supervisor.json 保持老 Supervisor 路径可用
 
 ---
 
-## 三、可优化项（脚本 + 设计模式）★
+## 二、可优化项索引（按代码定位）
 
-### A. 脚本层（`GameLogic/scripts/*.csx`）
+> 此处只列**当前仍在演进**或**值得在生产前再核验**的项；✅ 已收口项见 §一 状态表。
 
-| # | 项 | 现状 | 建议 |
+| # | 项 | 状态 | 代码定位 / 文档 |
 |---|---|---|---|
-| S1 | **脚本 Logger** | 所有 .csx 用 `Console.WriteLine`（Avatar.csx:24,38,54,58；Item.csx:25…），日志散落不可控 | 向脚本注入结构化 Logger（对标 KBE 脚本可 Log*），`EntityScriptBase` 暴露 Log 属性，支持级别/标签过滤 |
-| S2 | **回血改框架定时器** | Avatar 用 `tickCount % 20` 轮询计数回血（Avatar.csx:17,29-31） | 改 `AddTimer(1000, …)`，消除每 tick 空转判断，与事件驱动对齐 |
-| S3 | **数值边界校验** | Item/Skill 脚本直接改实体属性，无上下限防护 | 在脚本 OnMessage 内做边界钳制（Count≥0、冷却≥0），防负值/溢出/刷取 |
-| S4 | **热更新显式钩子** | 热更新靠「状态只存实体属性」约定保证迁移（迭代11已验证状态保持） | 可选：`EntityScriptBase` 增 `OnReload(oldState)` 钩子 + 脚本版本号，迁移规则显式化 |
-
-### B. 设计模式 / 结构
-
-| # | 项 | 现状 | 建议 |
-|---|---|---|---|
-| D1 | **FriendHandler 业务层强类型化** | ✅ 迭代13 已落地：业务方法改收强类型请求对象（`ClientSessionWrapper session, XxxRequest? req`），去掉 `MemoryPack→反序列化→JSON 再序列化→byte[] 再反序列化` 二次序列化；旧路由仅保留反序列化适配层（`FriendHandler.RegisterRequest`） | 与 DB `DbQueryHandler` 强类型业务层对齐（Game 13 条好友/黑名单/申请/邀请消息） |
-| D2 | **Battle 双轨清理** | ✅ 迭代14 已落地：旧 `MessageRouter.BuildHandlers` JSON 字典整体移除，CenterCreateScene/CenterDestroyScene 迁移至强类型 dispatcher（`Battle/Handlers/MessageRouter.cs`），JSON 兼容由 `jsonFallback` 承担 | Battle 全部消息强类型化，无遗留旧路由 |
-| D3 | **EntityCall 超时/回执** | ✅ 迭代13 已落地：defs 增 `CallId`（91001/91002）→ `EntityCallHub` 超时表 + 回执关联 + `CallAsync` 回调 → `EntityManager.ExecuteRemoteCall` → Center 中继 91001/91002 真实跨进程链路（`CenterDispatcher` / `BattleServerApp.HandleEntityRemoteCallIn`），Battle tick 每 0.5s 清超时 | 框架/协议/Center/Battle 全链路已接；真实多节点集群联调可在启动全部节点后验证 |
-| D4 | **玩法实体迁移 v2** | ✅ 迭代15 已落地：① 玩法实体 ID 加节点段 [32,40)（`BattleServerApp.GetGameplayIdNodePrefix`）保证跨节点迁移不撞 ID；② `EntityMigrateRequest` 增 `OwnedEntities: list<EntityMigratePayload>` 字段，源 Battle `SerializeOwnedEntitiesForMigration` 收集属主 Skill/Item 同包发送；③ 目标 Battle `RestoreMigratedEntity` 支持 ownerClientId 参数完成属主绑定；④ `RecycleOwnedEntities` 在 `CompleteMigrateOut`（已随迁）/ `LeaveScene` / 离房三条路径回收孤儿实体（ProtocolVerify §15.6 + NetworkVerify 全绿） | Skill/Item 随玩家跨 Battle 节点；离场防泄漏 |
-| D5 | **负载均衡升级** | ✅ 迭代14 已落地：`GetBestBattleNode`（`Center/Handlers/NodeManager.cs:157`）改平滑加权轮询（权重=100-load）+ 心跳过期剔除 + 周期清理权重表 | 与 Nginx SWRR 对齐，持续偏向低负载节点 |
-| D5 | **负载均衡升级** | `GetBestBattleNode` 按 CurrentLoad 升序（`Center/Handlers/NodeManager.cs:157`） | 加平滑加权 / 最小连接 / 过期负载惩罚 |
-| D6 | **客户端会话侧防重放** | ✅ 迭代16 已落地：① `SessionGuard.IsSessionValid` 时间窗（lifetime ≤2h / idle ≤15min），Gateway 客户端入口按 `CreatedAt` 强制判定，超窗关连接；② `TokenService` 嵌入 `SessionSeq` 单调序号（payload 5 字段），`Verify(token, AntiReplayState)` 拒绝旧 seq 重放，登录发放 seq=1；③ `NonceService` 一次性 nonce 缓存（带 TTL + 周期 GC，TokenService 文档此前承诺的 NonceService 本轮补齐）；ProtocolVerify §3 全绿 | 客户端会话重放面补齐 |
-| D7 | **脚本层 entityMailbox 封装** | ✅ 迭代17 已落地：`EntityMailbox.Local/Remote` 工厂 + `Entity.Mailbox` 懒属性 + `EntityManager.AddOrUpdateEntity` 自动挂 Local Mailbox + `AttachMailboxIfAbsent` 不覆盖已挂 Remote。脚本层 `entity.Mailbox.Call/CallAsync(method, args, cb)` 同进程零开销同步执行，跨节点经 sendAction → EntityCallHub 异步回执 + 超时清扫（对标 KBE entityMailboxComponent / cellMailbox）；ProtocolVerify §15.7 全绿 | 脚本可直接调实体方法并拿回执/超时，无需手写 91001/91002 |
-| D7 | **时间同步协议** | 帧同步有权威帧号/时间戳，但无客户端-服务端时钟对齐 | 加 NTP 式 offset 协商，客户端延迟补偿 / 确定性回放更准 |
-| D8 | **Bots 集成压测** | Bots 仅协议级；迭代11 压测为进程内 | Bots 走真实 Gateway→Battle 链路多机器人跑分 |
-| D9 | **配置模板/缓存** | ConfigHelper reloadOnChange 已开，但无模板校验、每次 `GetConfig` 重新查节（`Shared/ConfigHelper.cs:29`） | 加配置模板定义 + 校验 + 节缓存 |
+| S1 | 脚本 Logger（`EntityScriptBase.Log` + Tag 过滤） | ✅ 迭代19 | `Framework/Framework.Scripting/EntityScriptBase.cs`；[GameLogic/scripts/README.md](../GameLogic/scripts/README.md) |
+| S2 | 脚本定时器（`AddTimer`） | ✅ 迭代19 | `EntityScriptBase.AddTimer`；`Battle/Handlers/Scripting/` 注入 TickEngine |
+| S3 | 脚本边界钳制（`MathClampSet/Add`） | ✅ 迭代19 | `EntityScriptBase.MathClamp*` |
+| S4 | 热更新 OnReload + ScriptVersion | ✅ 迭代19 | `Framework.Scripting.IEntityScript.OnReload` + `ScriptVersion` |
+| D1 | FriendHandler 业务层强类型化 | ✅ 迭代13 | `Game/Handlers/FriendHandler.*.cs`（partial 6 段） |
+| D2 | Battle 双轨归一 | ✅ 迭代14 | `Battle/Handlers/MessageRouter.cs`（旧 JSON 路由字典已移除） |
+| D3 | EntityCall 超时/回执 | ✅ 迭代13 | `Framework/Framework.Entity/EntityCallHub.cs` + `Center/Handlers/CenterDispatcher.cs` + `Battle/Handlers/MessageRouter.cs`（91001/91002） |
+| D4 | 玩法实体迁移 v2 | ✅ 迭代15 | `BattleServerApp.GetGameplayIdNodePrefix` + `SerializeOwnedEntitiesForMigration` + `RestoreMigratedEntity` + `RecycleOwnedEntities` |
+| D5 | 负载均衡升级 | ✅ 迭代14 | `Center/Handlers/NodeManager.cs:157`（SWRR） |
+| D6 | 客户端会话侧防重放 | ✅ 迭代16 | `Framework/Framework.Core/Security/SessionGuard.cs` + `TokenService.cs` + `NonceService.cs` |
+| D7 | 脚本层 entityMailbox 封装 | ✅ 迭代17 | `Framework/Framework.Entity/EntityMailbox.cs` + `Entity.Mailbox` 懒属性 |
+| D7' | 时间同步协议 | ✅ 迭代19 | `Protocol/defs/Battle.def`（40010/40011）+ `Battle/Handlers/TimeSyncManager.cs` |
+| D8 | Bots 集成压测 | ✅ 迭代19 | `Bots/Program.cs`（TCP/WS + ramp-up + RTT 分布 + time sync offset） |
+| D9 | 配置模板/缓存 | ✅ 迭代19 | `Shared/ConfigHelper.cs`（节缓存 + `IConfigValidator` + `OnConfigChanged`） |
 
 ---
 
-## 四、修订记录（紧凑）
+## 三、修订记录（紧凑）
 
 | 迭代 | 主题 | 一句话成果 |
 |---|---|---|
-| 1 | P0 修复 + 工程质量 | 备份泄漏 / join 全量扫盘 / 派遣器锁 / 日志门面 / 属性名 UTF-8 缓存 / 反索引（三-2/3/7/8/11/15） |
-| 2 | 脚本层对齐 | 玩法脚本生产生效 + 属性事件总线 + 同步权限分级 + 热更新完善（三-5/6/9，C7） |
-| 3 | 并发 / 帧同步 | 消息单线程串行收编 + 帧同步空帧心跳 + 零拷贝（P0#1/4，B6，P1#9） |
-| 4 | 传输层 | 多协议传输 + 背压写队列 + 发送合并（P1#5） |
-| 5 | 断线重连 / Profile | 会话挂起恢复 + TCP 超时踢线 + tick 耗时统计 / 慢 tick 告警（B4/C4/C6） |
-| 6 | 运维 | Supervisor 进程看护 + 管理台仪表盘（C1/C5） |
-| 7 | 静态分片 | Battle 按场景哈希路由 + Center 路由表下发（C3 前半） |
-| 8 | 队列 / 序列化 | OrderedTaskQueue 改 Channel + worker 池；备份序列化移出主循环（三-10/16） |
-| 9 | 实体在线迁移 | 玩家实体冻结-序列化-搬迁-恢复，Center 协调中继（C2 第二阶段） |
-| 10 | 巨型类拆分 | Match/DbQuery/Gateway/LoginHandler 拆 partial + Login 强类型收尾（三-14） |
+| 1 | P0 修复 + 工程质量 | 备份泄漏 / join 全量扫盘 / 派遣器锁 / 日志门面 / 属性名 UTF-8 缓存 / 反索引 |
+| 2 | 脚本层对齐 | 玩法脚本生产生效 + 属性事件总线 + 同步权限分级 + 热更新完善 |
+| 3 | 并发 / 帧同步 | 消息单线程串行收编 + 帧同步空帧心跳 + 零拷贝 |
+| 4 | 传输层 | 多协议传输 + 背压写队列 + 发送合并 |
+| 5 | 断线重连 / Profile | 会话挂起恢复 + TCP 超时踢线 + tick 耗时统计 / 慢 tick 告警 |
+| 6 | 运维 | Supervisor 进程看护 + 管理台仪表盘 |
+| 7 | 静态分片 | Battle 按场景哈希路由 + Center 路由表下发 |
+| 8 | 队列 / 序列化 | OrderedTaskQueue 改 Channel + worker 池；备份序列化移出主循环 |
+| 9 | 实体在线迁移 | 玩家实体冻结-序列化-搬迁-恢复，Center 协调中继 |
+| 10 | 巨型类拆分 | Match/DbQuery/Gateway/LoginHandler 拆 partial + Login 强类型收尾 |
 | 11 | 补测试 + 真 bug | Battle 压测 / 并发注入 / 热迁移测试；RoomHandler 人数误计玩法实体 bug 修复 |
 | 12 | Game 同构拆分 | FriendHandler（1519 行）拆 6 个 partial 按业务域（零逻辑改动） |
-| 13 | D1+D3 落地 | FriendHandler 业务层强类型化（去二次序列化，Game 13 条消息，与 DB 对齐）；EntityCall 加 CallId/超时表/回执关联 + Center 中继 91001/91002 真实跨进程链路（ProtocolVerify §11b 通过） |
-| 14 | D2+D5 落地 | Battle 双轨归一（移除旧 JSON 路由字典，CenterCreateScene/CenterDestroyScene 迁移强类型分发）；Center 平滑加权轮询 + 过期负载惩罚（ProtocolVerify §17b 通过） |
-| 15 | D4 落地 | 玩法实体迁移 v2：EntityMigrateRequest 增 OwnedEntities 同包随迁 + 属主绑定 + RecycleOwnedEntities 三路径孤儿回收 + 玩法实体 ID 节点段防跨节点撞 ID（ProtocolVerify §15.6 + NetworkVerify 全绿） |
-| 16 | D6 落地 | 客户端会话侧防重放：SessionGuard 时间窗（lifetime+idle，Gateway 入口强制）+ TokenService SessionSeq 单调序号拒旧重放 + NonceService 一次性 nonce 缓存（ProtocolVerify §3 全绿） |
-| 17 | D7 落地 | 脚本层 entityMailbox：EntityMailbox.Local/Remote 工厂 + Entity.Mailbox 懒属性 + EntityManager 自动挂 Local（不覆盖已挂 Remote），csx 脚本 Call/CallAsync 同进程零开销、跨节点走 EntityCall 异步回执 + 超时清扫（ProtocolVerify §15.7 全绿） |
-| 18 | 规划 | Bots 集成压测（D8）、脚本层 entityMailbox 跨节点真实集成（D7+）、AOI 优化 |
+| 13 | D1+D3 落地 | FriendHandler 业务层强类型化；EntityCall 加 CallId/超时表/回执关联 + Center 中继 91001/91002 |
+| 14 | D2+D5 落地 | Battle 双轨归一；Center 平滑加权轮询 + 过期负载惩罚 |
+| 15 | D4 落地 | 玩法实体迁移 v2：属主随迁 + 属主绑定 + 孤儿回收 + 玩法实体 ID 节点段 |
+| 16 | D6 落地 | SessionGuard 时间窗 + TokenService SessionSeq + NonceService 一次性 nonce |
+| 17 | D7 落地 | 脚本层 entityMailbox：EntityMailbox.Local/Remote + Entity.Mailbox 懒属性 |
+| 18 | 规划 | Bots 集成压测（D8）、脚本层 entityMailbox 跨节点真实集成 |
+| 19 | S1-S4 + D7'/D8/D9 落地 | 脚本层结构化日志/定时器/边界/热更新钩子 + 客户端-服务端时间同步 + Bots 增强 + ConfigHelper 模板校验 |
+| 20 | KBE machine 化 | Tools/Machine + 节点注册协议 3 字段 + 管理台机器视图 + MachineVerify 第六套件 |
+
+> 历史归档（含 P0~P3 阶段数据快照）见 [Refactor-Summary.md](Refactor-Summary.md)。

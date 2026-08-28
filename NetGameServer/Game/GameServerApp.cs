@@ -355,7 +355,11 @@ namespace Game
             int centerPort = ConfigHelper.GetConfig<int>("CenterPort") == 0 ? 31306 : ConfigHelper.GetConfig<int>("CenterPort");
             string centerHost = ConfigHelper.GetConfig<string>("CenterHost") ?? "127.0.0.1";
             string gameHost = ConfigHelper.GetConfig<string>("GameHost") ?? "127.0.0.1";
-            string nodeId = $"Game-{gameHost}:{port}";
+            // nodeId 优先级：配置（machine 注入） > 按 host:port 派生（保持后向兼容）
+            string nodeId = ConfigHelper.GetConfig<string>("NodeId") ?? $"Game-{gameHost}:{port}";
+            string instanceId = ConfigHelper.GetConfig<string>("InstanceId") ?? string.Empty;
+            string machineId = ConfigHelper.GetConfig<string>("MachineId") ?? string.Empty;
+            string supervisedBy = ConfigHelper.GetConfig<string>("SupervisedBy") ?? string.Empty;
             var centerClient = new TcpClientWrapper(centerHost, centerPort);
 
             centerClient.OnConnected += session =>
@@ -363,7 +367,7 @@ namespace Game
                 Log.Info($"已连接到 Center 服务器 (Host:{centerHost} Port:{centerPort})");
                 // 内部连接认证：先发送认证握手，再注册节点
                 centerClient.SendInternalAuthHandshake(ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret", nodeId);
-                SendRegisterNode(centerClient, nodeId, "Game", gameHost, port, GetCurrentLoad());
+                SendRegisterNode(centerClient, nodeId, "Game", gameHost, port, GetCurrentLoad(), instanceId, machineId, supervisedBy);
 
                 centerHeartbeatCts?.Cancel();
                 centerHeartbeatCts = new System.Threading.CancellationTokenSource();
@@ -421,10 +425,15 @@ namespace Game
         /// <param name="host">节点主机或 IP。</param>
         /// <param name="port">节点监听端口。</param>
         /// <param name="currentLoad">节点当前负载值（例如并发连接数或任务数）。</param>
-        private static void SendRegisterNode(TcpClientWrapper centerClient, string nodeId, string nodeType, string host, int port, int currentLoad)
+        /// <param name="instanceId">实例 ID（machine 注入；可空）。</param>
+        /// <param name="machineId">托管本节点的 Machine 进程 ID（可空）。</param>
+        /// <param name="supervisedBy">托管方类型（可空）。</param>
+        private static void SendRegisterNode(TcpClientWrapper centerClient, string nodeId, string nodeType, string host, int port, int currentLoad,
+            string instanceId = "", string machineId = "", string supervisedBy = "")
         {
             long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            string signatureSource = $"{nodeId}|{nodeType}|{host}|{port}|{currentLoad}|{timestamp}";
+            // 协议扩展（迭代 20）：Machine 注入字段参与签名源
+            string signatureSource = $"{nodeId}|{nodeType}|{host}|{port}|{currentLoad}|{instanceId}|{machineId}|{supervisedBy}|{timestamp}";
             var registerRequest = new CenterRegisterNodeRequest
             {
                 NodeId = nodeId,
@@ -433,6 +442,9 @@ namespace Game
                 Port = port,
                 CurrentLoad = currentLoad,
                 Timestamp = timestamp,
+                InstanceId = instanceId,
+                MachineId = machineId,
+                SupervisedBy = supervisedBy,
                 Signature = ComputeCenterSignature(signatureSource)
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(registerRequest);

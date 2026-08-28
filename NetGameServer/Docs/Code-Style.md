@@ -5,40 +5,65 @@
 
 ---
 
-## 一、入口写法：何时用顶级语句，何时用 `class + static Main`
+## 一、入口写法：所有 `Program.cs` 用 `class + static Main`
 
-### 1.1 顶级语句（Top-Level Statements）
+### 1.1 `class + static Main`（唯一约定）
 
-**用途**：单文件可执行入口（节点服务器、工具、测试套件）。
+**用途**：所有 `OutputType=Exe` 的项目入口（节点服务器、工具、测试套件）。
 
-`OutputType=Exe` 的项目，入口就是一个 3~10 行的 `HostBuilder` / `App.Run`，
-用顶级语句比 `class Program { static void Main(string[] args) { ... } }`
-少 5 行样板，可读性更高——这是 .NET 6+ 官方推荐写法。
+每个 `Program.cs` 显式包成 `namespace <目录名>;` + `internal static class Program` + `static async Task<int> Main(string[] args)`。
+这样：
+
+- 入口语义显式（一眼看出这是进程入口，不是普通类）
+- 嵌套的辅助类（DTO / 工具类）以 `internal sealed class` 形式直接放在 `Program` 内
+- 与其他业务/框架 `.cs` 写法一致（`namespace + class`）
+- IDE 跳转、StackTrace、断点定位更稳定
 
 **典型场景**：
 
-- 节点入口（`Gateway/Program.cs` / `Login/Program.cs` / ...）：只做配置加载 + `App.Run()`
-- 工具入口（`Protogen/Program.cs` / `Tools/Supervisor/Program.cs`）：只做参数解析 + 执行
+- 节点入口（`Gateway/Program.cs` / `Login/Program.cs` / ...）：配置加载 + `App.Run()`
+- 工具入口（`Protogen/Program.cs` / `Tools/Supervisor/Program.cs` / `Tools/Machine/Program.cs`）：参数解析 + 执行
 - **测试套件**（`Tests/ProtocolVerify/Program.cs` 等）：20~30 段验证串联，共享变量
-  与中间状态，顶级语句避免把状态在多个 `static` 方法间传来传去。
+  与中间状态放在 `Main` 方法体内（顶级语句风格的代码块可以无缝塞进 `Main`）
 
-**约定**：所有 `OutputType=Exe` 的项目入口都用顶级语句，不需要 `static void Main` 包装。
+**禁止**：
 
-### 1.2 `class + static Main`
+- ❌ 顶级语句（`OutputType=Exe` 项目里也用 `class + static Main`，不要依赖 .NET 自动合成入口）
+- ❌ `internal static class Program` 同时被其他项目的验证套件通过 `XXX.Program.Main(...)` 跨项目调用 —— 跨项目被调用的工具入口必须是 `public static class Program` + `public static Main`（如 `Protogen` / `Tools/Supervisor` / `Tools/Machine`，分别被 `Protogen` / `Tests/SupervisorVerify` / `Tests/MachineVerify` 调用）
+- ❌ 嵌套在 `Program` 内的 public DTO 类被外部依赖时仍藏在 `Program` 里（应抽到独立 `.cs`）
 
-**用途**：需要被其他项目复用入口逻辑、或需要在同一进程内跑多个隔离的 `Main`。
+### 1.2 模板
 
-本仓库目前没有这种场景——所有入口都是进程唯一的单文件可执行。
+```csharp
+using ...;
 
-### 1.3 `Program.cs` 的可执行性
+namespace Gateway;   // 根命名空间 = 目录名
 
-`Program.cs` 文件本身**可以执行**（顶级语句），这与"业务代码"放在其他 `.cs` 里
+/// <summary>
+/// 网关服务器入口：一句话描述。
+/// </summary>
+internal static class Program
+{
+    static async Task<int> Main(string[] args)
+    {
+        // 业务代码（顶级语句风格的代码块直接放在这里）
+        ...
+        return 0;
+    }
+}
+```
+
+工具/同步入口用 `static int Main(string[] args)`（无 `async`）；异步入口用 `static async Task<int> Main`。
+
+### 1.3 `Program.cs` 与其他 `.cs` 的关系
+
+`Program.cs` 文件本身**可以执行**（`OutputType=Exe`），这与"业务代码"放在其他 `.cs` 里
 （class、namespace、partial）并不冲突：业务代码是 **library**（被节点项目引用），
-`Program.cs` 是 **executable entry**（进程启动点）。两者的写法约定不同：
+`Program.cs` 是 **executable entry**（进程启动点）。两者的写法约定相同（都是 `namespace + class`）：
 
 | 类型 | 文件 | 写法 | 例子 |
 |---|---|---|---|
-| 入口 | `*/Program.cs` | 顶级语句 | `Gateway/Program.cs` |
+| 入口 | `*/Program.cs` | `namespace + internal static class Program` + `static (async Task<int>)? Main` | `Gateway/Program.cs` |
 | 业务 | `*/Handlers/*.cs` / `*/Managers/*.cs` | `namespace + class` | `Battle/Handlers/RoomHandler.cs` |
 | 框架 | `Framework/*/*.cs` | `namespace + class` | `Framework/Framework.Entity/Entity.cs` |
 | 脚本 | `GameLogic/scripts/*.csx` | `EntityScriptBase` 继承 + 顶级 `return new XxxScript()` | `Skill.csx` |
@@ -109,14 +134,8 @@
 
 1. 改代码 → 改对应文档（README / Docs/*.md）
 2. `dotnet build NetGameServer.slnx` → 0 错误
-3. 跑五套验证：
-   ```bash
-   dotnet run --project Tests/ProtocolVerify  -c Release
-   dotnet run --project Tests/NetworkVerify   -c Release
-   dotnet run --project Tests/ScriptHostVerify -c Release
-   dotnet run --project Tests/LoggerVerify    -c Release
-   dotnet run --project Tests/SupervisorVerify -c Release
-   ```
+3. 跑六套验证（命令见 [README.md](../../README.md) §快速开始）：
+   - ProtocolVerify / NetworkVerify / ScriptHostVerify / LoggerVerify / SupervisorVerify / MachineVerify
 4. 提交信息格式：`迭代N：<主题>` 或 `fix: <主题>` / `doc: <主题>` / `refactor: <主题>`
 5. 单 commit 单主题，避免大杂烩
 

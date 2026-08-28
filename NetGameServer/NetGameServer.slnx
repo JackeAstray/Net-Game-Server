@@ -18,7 +18,9 @@
   <Project Path="Tests/LoggerVerify/LoggerVerify.csproj" />
   <Project Path="Tests/NetworkVerify/NetworkVerify.csproj" />
   <Project Path="Tests/SupervisorVerify/SupervisorVerify.csproj" />
+  <Project Path="Tests/MachineVerify/MachineVerify.csproj" />
   <Project Path="Tools/Supervisor/Supervisor.csproj" />
+  <Project Path="Tools/Machine/Machine.csproj" />
   <Project Path="Bots/Bots.csproj" />
   <Project Path="Logger/Logger.csproj" />
 </Solution>

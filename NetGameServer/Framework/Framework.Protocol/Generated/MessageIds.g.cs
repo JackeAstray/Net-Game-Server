@@ -16,6 +16,10 @@ public static class MessageIds
     public const int BattleLeaveRoomResult = 40005;
     /// <summary>40006 ScriptAction -> Battle</summary>
     public const int ScriptAction = 40006;
+    /// <summary>40010 ClientTimeSync -> Battle</summary>
+    public const int ClientTimeSync = 40010;
+    /// <summary>40011 ServerTimeSync -> Battle</summary>
+    public const int ServerTimeSync = 40011;
     /// <summary>40101 EntitySync -> Battle</summary>
     public const int EntitySync = 40101;
     /// <summary>40102 EntityEnterViewNotify -> Battle</summary>

@@ -56,14 +56,16 @@ th,td{border:1px solid #333;padding:5px 8px;text-align:left}th{background:#222}
 <h1>Net-Game-Server 管理台 <span id="ts"></span></h1>
 <div class="card" id="health"></div>
 <div class="card"><h2>节点</h2><table><thead><tr><th>节点ID</th><th>类型</th><th>地址</th><th>负载</th><th>心跳</th><th>连接</th></tr></thead><tbody id="nodes"></tbody></table></div>
+<div class="card"><h2>机器/进程总览（KBE machine 化，迭代 20）</h2><table><thead><tr><th>机器ID</th><th>托管方</th><th>总节点</th><th>Battle</th><th>Game</th><th>Gateway</th><th>Login</th><th>DB</th><th>Center</th><th>在线</th></tr></thead><tbody id="machines"></tbody></table></div>
 <div class="card"><h2>房间</h2><table><thead><tr><th>房间ID</th><th>名称</th><th>类型</th><th>Battle节点</th><th>人数</th><th>状态</th><th>房主</th></tr></thead><tbody id="rooms"></tbody></table></div>
 <script>
 async function refresh(){
   try{
-    const [h,n,s,r]=await Promise.all([
+    const [h,n,s,c,r]=await Promise.all([
       fetch('/api/center/health').then(x=>x.json()),
       fetch('/api/center/nodes').then(x=>x.json()),
       fetch('/api/center/summary').then(x=>x.json()),
+      fetch('/api/center/cluster').then(x=>x.json()),
       fetch('/api/center/rooms').then(x=>x.json())
     ]);
     document.getElementById('ts').textContent='更新于 '+new Date().toLocaleTimeString()+'（每5秒自动刷新）';
@@ -73,6 +75,12 @@ async function refresh(){
       const tr=document.createElement('tr');
       tr.innerHTML='<td>'+node.nodeId+'</td><td>'+node.nodeType+'</td><td>'+node.host+':'+node.port+'</td><td>'+node.currentLoad+'</td><td>'+new Date(node.lastHeartbeat).toLocaleTimeString()+'</td><td class="'+(node.isConnected?'ok':'bad')+'">'+(node.isConnected?'在线':'离线')+'</td>';
       nt.appendChild(tr);
+    }
+    const mt=document.querySelector('#machines'); mt.innerHTML='';
+    for(const m of c.machines){
+      const tr=document.createElement('tr');
+      tr.innerHTML='<td>'+m.machineId+'</td><td>'+(m.supervisedBy||'-')+'</td><td>'+m.totalNodes+'</td><td>'+m.battle+'</td><td>'+m.game+'</td><td>'+m.gateway+'</td><td>'+m.login+'</td><td>'+m.db+'</td><td>'+m.center+'</td><td class="'+(m.online===m.totalNodes?'ok':'bad')+'">'+m.online+'/'+m.totalNodes+'</td>';
+      mt.appendChild(tr);
     }
     const rt=document.querySelector('#rooms'); rt.innerHTML='';
     for(const room of r){

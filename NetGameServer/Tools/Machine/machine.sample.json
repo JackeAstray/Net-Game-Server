@@ -1,0 +1,79 @@
+{
+  "_comment": "Machine 拓扑样例（对标 KBE machine/kbengine.xml）：声明本机要托管的全部节点进程，支持同类型多实例（replicas）。",
+  "_comment_replicas": "replicas 字段可选：未设置时该类型起 1 个实例；设置后按索引从 0 起自动展开为 replicas 个实例，每个实例自动注入 --instance-id 与端口递增（portStep 步进）。",
+  "_comment_dependsOn": "dependsOn 字段可选：声明依赖的节点名（必须是同拓扑中的另一节点名），machine 会按依赖拓扑排序启动，依赖未就绪时阻塞后续节点。",
+  "_comment_probe": "probe 字段可选：tcp 探针（探 host:port 通则视为就绪），machine 启动子进程后会等待 probe 成功再启动依赖该节点的其它节点。",
+  "_comment_machineId": "machineId：本机唯一标识，会以 --machine-id 注入所有子节点；supervisedBy：注入 --supervised-by（默认 'machine'）。",
+  "machineId": "machine-A",
+  "supervisedBy": "machine",
+  "logDirectory": "machine-logs",
+  "restartDelayMs": 2000,
+  "maxRestartsPerMinute": 10,
+  "probeTimeoutMs": 30000,
+  "probeIntervalMs": 200,
+  "nodes": [
+    {
+      "name": "DB",
+      "type": "DB",
+      "file": "DB.exe",
+      "args": [],
+      "workingDirectory": "Publish/DB",
+      "port": 31305,
+      "replicas": 1,
+      "portStep": 0,
+      "dependsOn": [],
+      "probe": { "host": "127.0.0.1", "port": 31305 }
+    },
+    {
+      "name": "Center",
+      "type": "Center",
+      "file": "Center.exe",
+      "args": [],
+      "workingDirectory": "Publish/Center",
+      "port": 31306,
+      "replicas": 1,
+      "dependsOn": [ "DB" ]
+    },
+    {
+      "name": "Login",
+      "type": "Login",
+      "file": "Login.exe",
+      "args": [],
+      "workingDirectory": "Publish/Login",
+      "port": 31302,
+      "replicas": 1,
+      "dependsOn": [ "Center" ]
+    },
+    {
+      "name": "Game",
+      "type": "Game",
+      "file": "Game.exe",
+      "args": [],
+      "workingDirectory": "Publish/Game",
+      "port": 31304,
+      "replicas": 1,
+      "dependsOn": [ "DB", "Center" ]
+    },
+    {
+      "name": "Battle",
+      "type": "Battle",
+      "file": "Battle.exe",
+      "args": [],
+      "workingDirectory": "Publish/Battle",
+      "port": 31307,
+      "replicas": 3,
+      "portStep": 1,
+      "dependsOn": [ "Center" ]
+    },
+    {
+      "name": "Gateway",
+      "type": "Gateway",
+      "file": "Gateway.exe",
+      "args": [],
+      "workingDirectory": "Publish/Gateway",
+      "port": 31300,
+      "replicas": 1,
+      "dependsOn": [ "Login", "Game", "Battle" ]
+    }
+  ]
+}

@@ -3,9 +3,8 @@
 > 强类型数据访问层（`DbDispatcher` + MemoryPack/JSON 双格式），
 > 默认实现为按 EntityType 分目录的文件持久化（用于崩溃恢复 + 单元测试），
 > 生产可替换为 MySQL/Redis 后端（接口与实现分离）。
-
-项目总览与能力描述见 [README.md](../../README.md) §模块详解。
-本文件聚焦**代码定位、关键文件、注意事项、排错**。
+>
+> 项目总览见 [README.md](../../README.md)，协议约束见 [Protocol.md](Protocol.md)。
 
 ## 职责边界
 

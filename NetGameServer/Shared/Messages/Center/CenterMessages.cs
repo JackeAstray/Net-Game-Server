@@ -466,6 +466,23 @@ namespace Shared.Messages.Center
         [JsonPropertyName("timestamp")]
         public long Timestamp { get; set; }
 
+        // ===== Machine 注入字段（KBE machine 化，对标 KBEngine machine 进程模型）=====
+        // InstanceId：节点实例 ID（同类型多实例时由 machine 注入，如 "Battle-1#2" → 实例序号 2）
+        //   - 业务侧继续使用 NodeId 作主键（保持兼容）；InstanceId 仅做管理面分组/展示
+        //   - 空字符串表示"未由 machine 托管"（手工启动 / 旧客户端），签名源按空串参与，不破坏后向兼容
+        [JsonPropertyName("instanceId")]
+        public string InstanceId { get; set; } = string.Empty;
+
+        // MachineId：托管本节点的 Machine 进程 ID（机器/集群标识，如 "machine-A"）
+        //   - 用于管理台按机器聚合 + Machine 进程自识别
+        [JsonPropertyName("machineId")]
+        public string MachineId { get; set; } = string.Empty;
+
+        // SupervisedBy：托管方类型（"machine" / "supervisor" / "none"）
+        //   - 留出未来 k8s/docker 等其它托管方扩展位
+        [JsonPropertyName("supervisedBy")]
+        public string SupervisedBy { get; set; } = string.Empty;
+
         [JsonPropertyName("signature")]
         public string Signature { get; set; } = string.Empty;
     }

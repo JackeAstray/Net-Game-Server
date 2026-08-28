@@ -9,7 +9,7 @@ namespace Protogen;
 /// </summary>
 public static class Program
 {
-    public static int Main(string[] args)
+    private static int Main(string[] args)
     {
         if (args.Length < 2)
         {

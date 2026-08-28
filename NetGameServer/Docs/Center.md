@@ -2,17 +2,16 @@
 
 > 集群控制平面：节点注册 / 心跳 / 负载均衡 / 匹配 / 实体迁移协调 / EntityCall 中继。
 > 所有业务节点（Game/Battle/Login）启动后必须先向 Center 注册才能被集群发现。
-
-项目总览与能力描述见 [README.md](../../README.md) §模块详解 / 节点拓扑。
-本文件聚焦**代码定位、关键文件、注意事项、排错**。
+>
+> 项目总览见 [README.md](../../README.md)。
 
 ## 职责边界
 
 - ✅ 节点注册 / 心跳（10s 间隔）/ 心跳过期剔除
-- ✅ **平滑加权负载均衡**（`GetBestBattleNode`，对标 Nginx SWRR，迭代 14）
+- ✅ 平滑加权负载均衡（`GetBestBattleNode`，对标 Nginx SWRR，迭代 14）
 - ✅ 房间匹配（`MatchHandler`：按 `SceneType` / `MaxPlayers` / `CustomRules`）
-- ✅ **实体迁移协调**（91003 中继 + 91004 回执 + 91005 通知 Gateway 切换路由）
-- ✅ **EntityCall 中继**（91001/91002，按 EntityId 查找目标节点并中继）
+- ✅ 实体迁移协调（91003 中继 + 91004 回执 + 91005 通知 Gateway 切换路由）
+- ✅ EntityCall 中继（91001/91002，按 EntityId 查找目标节点并中继）
 - ❌ 不做场景内逻辑（场景在 Battle 节点）
 - ❌ 不直接处理客户端消息（客户端只走 Gateway）
 

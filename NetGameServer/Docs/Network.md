@@ -2,9 +2,8 @@
 
 > 统一连接抽象（`ISession`）+ TCP/UDP/KCP/WebSocket 四种协议实现 + 零拷贝池化发送。
 > 业务节点不直接用 `System.Net.Sockets`，全部走 `Network.Tcp/Udp/Kcp/WebSockets` 封装。
-
-项目总览与能力描述见 [README.md](../../README.md) §模块详解。
-本文件聚焦**代码定位、关键文件、注意事项、排错**。
+>
+> 项目总览见 [README.md](../../README.md)。
 
 ## 职责边界
 
@@ -15,6 +14,10 @@
 - ✅ 长度帧封包（`Network.Routing.PacketBuilder`）+ 路由元数据（`RouteMetadata`）
 - ❌ 不解析业务消息（业务节点做）
 - ❌ 不做认证（Gateway 做）
+
+## 入口与启动
+
+Network 是 **class library**，不直接启动；被所有节点（Gateway / Login / Center / Game / Battle / DB）和 Bots 引用。
 
 ## 关键文件
 

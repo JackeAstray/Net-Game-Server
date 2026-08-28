@@ -126,6 +126,36 @@ public partial class ScriptAction : IGameMessage
 }
 
 [MemoryPackable]
+public partial class ClientTimeSync : IGameMessage
+{
+    public const int MsgId = 40010;
+    public const string TargetServer = "Battle";
+    int IGameMessage.MessageId => MsgId;
+    /// <summary>序列化为 MemoryPack 二进制负载（不含帧头）。</summary>
+    public byte[] Serialize() => MemoryPackSerializer.Serialize(this);
+    /// <summary>从二进制负载反序列化。</summary>
+    public static ClientTimeSync? Deserialize(ReadOnlySpan<byte> payload) => MemoryPackSerializer.Deserialize<ClientTimeSync>(payload);
+    public long ClientSendMs { get; set; } = default;
+    public long LastServerSendMs { get; set; } = default;
+}
+
+[MemoryPackable]
+public partial class ServerTimeSync : IGameMessage
+{
+    public const int MsgId = 40011;
+    public const string TargetServer = "Battle";
+    int IGameMessage.MessageId => MsgId;
+    /// <summary>序列化为 MemoryPack 二进制负载（不含帧头）。</summary>
+    public byte[] Serialize() => MemoryPackSerializer.Serialize(this);
+    /// <summary>从二进制负载反序列化。</summary>
+    public static ServerTimeSync? Deserialize(ReadOnlySpan<byte> payload) => MemoryPackSerializer.Deserialize<ServerTimeSync>(payload);
+    public long ClientSendMs { get; set; } = default;
+    public long ServerRecvMs { get; set; } = default;
+    public long ServerSendMs { get; set; } = default;
+    public long AuthFrame { get; set; } = default;
+}
+
+[MemoryPackable]
 public partial class EntitySync : IGameMessage
 {
     public const int MsgId = 40101;

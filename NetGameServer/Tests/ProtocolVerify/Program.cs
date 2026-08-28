@@ -3,6 +3,13 @@ using Framework.Protocol.Generated;
 using Framework.Core.Security;
 using System.Text;
 
+namespace ProtocolVerify;
+
+internal static class Program
+{
+    static async Task<int> Main(string[] args)
+    {
+
 // ===== 1. 消息序列化 round-trip 验证 =====
 var loginReq = new Login
 {
@@ -1037,48 +1044,50 @@ if (!dbResolveOk || !dbRequestIdOk) return 1;
 
 Console.WriteLine("\n===== 全部验证通过 =====");
 return 0;
-
-// 测试用会话上下文
-sealed class TestSessionContext : Framework.Protocol.ISessionContext
-{
-    private readonly List<(int, byte[])> sent;
-    public long ClientSessionId => 100;
-    public TestSessionContext(List<(int, byte[])> sent) { this.sent = sent; }
-
-    public void Send(int msgId, ReadOnlyMemory<byte> payload)
-    {
-        sent.Add((msgId, payload.ToArray()));
-        Console.WriteLine($"[dispatcher] Send MsgId={msgId} Len={payload.Length}");
     }
 
-    public void Send(Framework.Protocol.IGameMessage message)
+    // 测试用会话上下文
+    internal sealed class TestSessionContext : Framework.Protocol.ISessionContext
     {
-        byte[] packet = Framework.Protocol.ProtocolCodec.Encode(message);
-        Framework.Protocol.ProtocolCodec.TryParseFrame(packet.AsSpan(4), out int msgId, out var body);
-        sent.Add((msgId, body.ToArray()));
-        Console.WriteLine($"[dispatcher] SendMsg Type={message.GetType().Name} MsgId={msgId}");
+        private readonly List<(int, byte[])> sent;
+        public long ClientSessionId => 100;
+        public TestSessionContext(List<(int, byte[])> sent) { this.sent = sent; }
+
+        public void Send(int msgId, ReadOnlyMemory<byte> payload)
+        {
+            sent.Add((msgId, payload.ToArray()));
+            Console.WriteLine($"[dispatcher] Send MsgId={msgId} Len={payload.Length}");
+        }
+
+        public void Send(Framework.Protocol.IGameMessage message)
+        {
+            byte[] packet = Framework.Protocol.ProtocolCodec.Encode(message);
+            Framework.Protocol.ProtocolCodec.TryParseFrame(packet.AsSpan(4), out int msgId, out var body);
+            sent.Add((msgId, body.ToArray()));
+            Console.WriteLine($"[dispatcher] SendMsg Type={message.GetType().Name} MsgId={msgId}");
+        }
+
+        public void SendTo(long clientSessionId, int msgId, ReadOnlyMemory<byte> payload) => Send(msgId, payload);
     }
 
-    public void SendTo(long clientSessionId, int msgId, ReadOnlyMemory<byte> payload) => Send(msgId, payload);
-}
-
-/// <summary>测试用网关会话（实现 Network.ISession，记录发送数据）。</summary>
-sealed class TestGatewaySession : Network.ISession
-{
-    private readonly List<(int, byte[])> sent;
-    public long SessionId { get; } = 90001;
-    public System.Net.EndPoint? RemoteEndPoint { get; } = new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0);
-    public bool IsConnected => true;
-    public DateTime LastActivityTime { get; set; } = DateTime.UtcNow;
-    public object? UserData { get; set; }
-
-    public TestGatewaySession(List<(int, byte[])> sent) { this.sent = sent; }
-
-    public void Send(ReadOnlyMemory<byte> data)
+    /// <summary>测试用网关会话（实现 Network.ISession，记录发送数据）。</summary>
+    internal sealed class TestGatewaySession : Network.ISession
     {
-        sent.Add((0, data.ToArray())); // 记录原始帧（含长度头，此处仅计数用）
-        Console.WriteLine($"[gateway] Send {data.Length} bytes");
-    }
+        private readonly List<(int, byte[])> sent;
+        public long SessionId { get; } = 90001;
+        public System.Net.EndPoint? RemoteEndPoint { get; } = new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0);
+        public bool IsConnected => true;
+        public DateTime LastActivityTime { get; set; } = DateTime.UtcNow;
+        public object? UserData { get; set; }
 
-    public void Close() { }
+        public TestGatewaySession(List<(int, byte[])> sent) { this.sent = sent; }
+
+        public void Send(ReadOnlyMemory<byte> data)
+        {
+            sent.Add((0, data.ToArray())); // 记录原始帧（含长度头，此处仅计数用）
+            Console.WriteLine($"[gateway] Send {data.Length} bytes");
+        }
+
+        public void Close() { }
+    }
 }

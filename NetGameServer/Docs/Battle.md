@@ -3,9 +3,8 @@
 > 高实时性战斗场景：AOI、帧同步、玩法实体（Player/Skill/Item/Npc/Quest）、
 > 实体迁移 v2（含属主玩法实体随迁 + 孤儿回收 + 玩法实体 ID 节点段）。
 > 单线程 tick 引擎驱动，对应 KBE cellapp。
-
-项目总览与能力描述见 [README.md](../../README.md) §模块详解。
-本文件聚焦**代码定位、关键文件、注意事项、排错**。
+>
+> 项目总览见 [README.md](../../README.md)，脚本层规范见 [GameLogic/scripts/README.md](../GameLogic/scripts/README.md)。
 
 ## 职责边界
 

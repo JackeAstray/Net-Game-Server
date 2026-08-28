@@ -12,6 +12,10 @@ namespace Center.Handlers
         public string Host { get; set; } = string.Empty;
         public int Port { get; set; }
         public int CurrentLoad { get; set; }
+        // ===== Machine 注入字段（KBE machine 化，迭代 20）=====
+        public string InstanceId { get; set; } = string.Empty;
+        public string MachineId { get; set; } = string.Empty;
+        public string SupervisedBy { get; set; } = string.Empty;
         public Network.ISession Session { get; set; } = null!;
         public DateTime LastHeartbeat { get; set; }
     }
@@ -23,6 +27,9 @@ namespace Center.Handlers
         public string Host { get; set; } = string.Empty;
         public int Port { get; set; }
         public int CurrentLoad { get; set; }
+        public string InstanceId { get; set; } = string.Empty;
+        public string MachineId { get; set; } = string.Empty;
+        public string SupervisedBy { get; set; } = string.Empty;
         public DateTime LastHeartbeat { get; set; }
         public bool IsConnected { get; set; }
     }
@@ -45,7 +52,11 @@ namespace Center.Handlers
         /// <param name="host">节点主机地址。</param>
         /// <param name="port">节点端口号。</param>
         /// <param name="session">节点会话对象。</param>
-        public void RegisterNode(string nodeId, string nodeType, string host, int port, Network.ISession session)
+        /// <param name="instanceId">实例 ID（machine 注入，同类型多实例时由 machine 分配；可空）。</param>
+        /// <param name="machineId">托管本节点的 Machine 进程 ID（可空）。</param>
+        /// <param name="supervisedBy">托管方类型："machine" / "supervisor" / "none" / 自定义（可空）。</param>
+        public void RegisterNode(string nodeId, string nodeType, string host, int port, Network.ISession session,
+            string instanceId = "", string machineId = "", string supervisedBy = "")
         {
             var info = new ServerNodeInfo
             {
@@ -55,6 +66,9 @@ namespace Center.Handlers
                 Port = port,
                 Session = session,
                 CurrentLoad = 0,
+                InstanceId = instanceId,
+                MachineId = machineId,
+                SupervisedBy = supervisedBy,
                 LastHeartbeat = DateTime.UtcNow
             };
 
@@ -64,10 +78,13 @@ namespace Center.Handlers
                 oldInfo.LastHeartbeat = DateTime.UtcNow;
                 oldInfo.Host = host;
                 oldInfo.Port = port;
+                oldInfo.InstanceId = instanceId;
+                oldInfo.MachineId = machineId;
+                oldInfo.SupervisedBy = supervisedBy;
                 return oldInfo;
             });
 
-            Log.Info($"节点已注册: [{nodeType}] {nodeId} at {host}:{port}");
+            Log.Info($"节点已注册: [{nodeType}] {nodeId} at {host}:{port} (machine={machineId}, instance={instanceId}, supervisedBy={supervisedBy})");
         }
 
         /// <summary>
@@ -312,10 +329,14 @@ namespace Center.Handlers
                     Host = node.Host,
                     Port = node.Port,
                     CurrentLoad = node.CurrentLoad,
+                    InstanceId = node.InstanceId,
+                    MachineId = node.MachineId,
+                    SupervisedBy = node.SupervisedBy,
                     LastHeartbeat = node.LastHeartbeat,
                     IsConnected = node.Session.IsConnected
                 })
-                .OrderBy(node => node.NodeType)
+                .OrderBy(node => node.MachineId)
+                .ThenBy(node => node.NodeType)
                 .ThenBy(node => node.NodeId)
                 .ToList();
         }
@@ -376,6 +397,9 @@ namespace Center.Handlers
                         Host = node.Host,
                         Port = node.Port,
                         CurrentLoad = 0,
+                        InstanceId = node.InstanceId,
+                        MachineId = node.MachineId,
+                        SupervisedBy = node.SupervisedBy,
                         Session = null!,
                         LastHeartbeat = DateTime.UtcNow
                     });

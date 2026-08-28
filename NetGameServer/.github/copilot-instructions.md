@@ -1,14 +1,19 @@
 # Copilot Instructions
 
-## 项目指南
-- 客户端应匹配服务端协议，不要改服务端去适配客户端。优先保持服务端协议稳定，按服务端定义实现客户端行为与报文格式。
-- When a user asks how to handle receiving messages with TCP, KCP, and WebSockets (like for login, registration, etc.), they want to ensure the gateway supports multiple listening protocols and aggregates their incoming connections and data events into the existing routing pipeline appropriately. This typically involves instantiating `TcpServer`, `UdpServer` (for UDP/KCP), and `WebSocketServer`, binding their `OnSessionConnected`, `OnDataReceived`, and `OnSessionDisconnected` events to the common underlying logic, and starting them on required ports via `NetworkManager`.
-- For login, registration, and password/nickname changes via a persistent connection in Unity instead of HTTP, build a network packet with length + MsgId (e.g., 10001 for login-related actions), payload, and send it through the client instance. The server gateway routes it based on MsgId (like 10000-19999 for Login). Deserialize responses locally. 
-- The Login Server currently only exposes HTTP APIs for user endpoints (Controllers/AccountController) and has NOT implemented socket-based incoming Client routing (via MsgId) for Login/Register. The routing logic is set to forward from Gateway to Login, but Login lacks handling those raw bytes from Gateway clients. To support long connections for login/registration, the client expects the LoginServer to map MsgId to the actual Account logic, rather than just HTTP.
-- Implement specific mapping and routing logic on LoginServer for incoming packets, dynamically bypassing the previous standard HTTP logic. Extract `[SessionId(8)][MsgId(4)][Payload]`, match the `MsgId` manually in `OnDataReceived` against the defined `MessageIds.cs` constants (10001, 10003), deserialize to specific Login/Register Requests, and hand them to `LoginHandler` for processing. Pack the result with the matched SessionId and Response MsgId, sending it back to the Gateway. The Gateway needs to listen to `LoginServer` client responses, parse them by `ClientSessionId`, and dispatch them to the correct connected user, preserving the standard `buildPacket` layout.
+> GitHub Copilot / AI 助手在为本仓库生成代码与文档时应遵守的约定。
+> 完整架构与节点说明见 [README.md](../../README.md)、[Docs/*.md](../Docs/)。
 
-## JSON Serialization
-- Standardize all JSON serialization and deserialization across the project by using the custom helper `Shared.Json`. Replace all manual usages of `System.Text.Json.JsonSerializer` with `Shared.Json.SerializeToUtf8Bytes` and `Shared.Json.DeserializeFromUtf8Bytes` in `Login/Program.cs`.
+## 项目原则
 
-## Documentation Language
-- When requested, provide documentation in Chinese language.
+- **协议稳定优先**：客户端应匹配服务端协议，不要改服务端去适配客户端。按服务端 `Protocol/defs/*.def` 定义实现客户端行为与报文格式。
+- **多协议接入**：Gateway 同时监听 TCP / UDP / KCP / WebSocket 四种客户端协议，统一通过 `ISession` 抽象汇聚 `OnSessionConnected` / `OnDataReceived` / `OnSessionDisconnected` 事件，再走 `RouterTable` 分发到 Login/Game/Center/Battle。
+- **强类型消息**：业务消息先在 `Protocol/defs/*.def` 声明，构建时由 `Protogen` 生成强类型类与 `MessageIds` 常量；业务层在 `MessageDispatcher` 注册 `RegisterAsync<TReq, TRes>`，**不要**在 Handler 内再次手动反序列化。
+- **路由元数据**：Gateway 注入 `__clientSessionId` / `__userId` / `__uid` / `__broadcast`，后端用 `RouteMetadata.TryExtract*` 解析。链路格式见 [Protocol.md](../Docs/Protocol.md)。
+- **JSON 兼容**：`MessageDispatcher.RegisterAsync(..., jsonFallback: true)` 兼容旧 JSON 客户端；新业务消息统一走 MemoryPack。**不要**直接调 `System.Text.Json.JsonSerializer`，统一用 `Shared.Json.SerializeToUtf8Bytes` / `DeserializeFromUtf8Bytes`。
+- **登录链路**：客户端经 Gateway 走 `[MsgId(4)][Payload]`（10001=登录、10003=注册），由 Login 节点 `LoginHandler` 处理；HTTP 仅用于无状态管理面接口（如果有），不是客户端主路径。
+- **内部消息保护**：91001~91006、90999 等 `internal="true"` 消息由 Gateway 拒绝客户端伪造；不要在公共客户端协议里复用内部 MsgId。
+
+## 文档语言
+
+- 仓库已有文档以中文为主；新增文档默认中文（除非用户明确要求其他语言）。
+- 文档改动需保持与 [Code-Style.md §八 提交流程](../Docs/Code-Style.md) 一致：改文档 → 改代码 → 跑六套验证套件。

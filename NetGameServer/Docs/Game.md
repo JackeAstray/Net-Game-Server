@@ -3,9 +3,8 @@
 > 通用业务层：背包、公会、社交（好友/聊天/黑名单）、任务等非战斗业务。
 > 强类型消息分发（`GameDispatcher` + MemoryPack/JSON 双格式），
 > 业务方法按业务域拆 partial（`FriendHandler` / `ChatHandler` / ...）。
-
-项目总览与能力描述见 [README.md](../../README.md) §模块详解。
-本文件聚焦**代码定位、关键文件、注意事项、排错**。
+>
+> 项目总览见 [README.md](../../README.md)，编码规范见 [Code-Style.md](Code-Style.md)。
 
 ## 职责边界
 

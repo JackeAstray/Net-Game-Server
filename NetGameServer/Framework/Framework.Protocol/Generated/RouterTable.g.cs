@@ -20,6 +20,8 @@ public static class RouterTable
         [40004] = new MessageRouteInfo(40004, "BattleLeaveRoom", "Battle", typeof(BattleLeaveRoom), false),
         [40005] = new MessageRouteInfo(40005, "BattleLeaveRoomResult", "Battle", typeof(BattleLeaveRoomResult), false),
         [40006] = new MessageRouteInfo(40006, "ScriptAction", "Battle", typeof(ScriptAction), false),
+        [40010] = new MessageRouteInfo(40010, "ClientTimeSync", "Battle", typeof(ClientTimeSync), false),
+        [40011] = new MessageRouteInfo(40011, "ServerTimeSync", "Battle", typeof(ServerTimeSync), false),
         [40101] = new MessageRouteInfo(40101, "EntitySync", "Battle", typeof(EntitySync), false),
         [40102] = new MessageRouteInfo(40102, "EntityEnterViewNotify", "Battle", typeof(EntityEnterViewNotify), false),
         [40103] = new MessageRouteInfo(40103, "EntityLeaveViewNotify", "Battle", typeof(EntityLeaveViewNotify), false),

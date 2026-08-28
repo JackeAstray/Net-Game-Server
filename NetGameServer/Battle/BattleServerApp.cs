@@ -848,6 +848,8 @@ namespace Battle
             // 游戏逻辑脚本宿主（对标 KBE Python 脚本层）：玩法逻辑与底层框架物理分离，可热更新
             string scriptsDir = ConfigHelper.GetConfig<string>("ScriptsDir") ?? Path.Combine(AppContext.BaseDirectory, "scripts");
             var scriptHost = new Framework.Scripting.ScriptHost(scriptsDir);
+            // KBE-Gap-Review S2：把 TickEngine 注入脚本宿主，csx 才能用 AddTimer 代替 tick%N 轮询
+            scriptHost.AttachTickEngine(tickEngine);
             scriptHost.Start();
             BattleServerApp.scriptHost = scriptHost;
 
@@ -924,7 +926,9 @@ namespace Battle
             });
 
             // 新协议分发器：强类型消息 + MemoryPack（JSON 兼容回退），消灭手写 switch
-            dispatcher = Battle.Handlers.MessageRouter.BuildDispatcher(roomHandler, entitySyncHandler, battleMainHandler, frameSyncManager);
+            // KBE-Gap-Review D7：时间同步 manager 注入
+            var timeSyncManager = new Battle.Handlers.TimeSyncManager(tickEngine);
+            dispatcher = Battle.Handlers.MessageRouter.BuildDispatcher(roomHandler, entitySyncHandler, battleMainHandler, frameSyncManager, timeSyncManager);
 
             var tcpServer = new TcpServer();
 
@@ -1025,14 +1029,20 @@ namespace Battle
         /// 连接到 Center 服务器，向其注册本节点并维持心跳与事件处理。
         /// </summary>
         /// <remarks>从配置读取 CenterPort、CenterHost 和 BattleHost（分别默认为 31306、127.0.0.1、127.0.0.1）。建立
-        /// TcpClientWrapper，连接成功后发送注册信息、启动每 10 秒一次的心跳上报任务；断开时取消心跳并记录日志，同时处理接收的数据事件。</remarks>
+        /// TcpClientWrapper，连接成功后发送注册信息、启动每 10 秒一次的心跳上报任务；断开时取消心跳并记录日志，同时处理接收的数据事件。
+        /// 协议层（KBE machine 化，迭代 20）：当配置中存在 NodeId/InstanceId/MachineId/SupervisedBy（由 NodeLaunchArgs 注入）时，
+        /// 将其填入 CenterRegisterNodeRequest 一起上报，便于管理台按机器聚合。</remarks>
         /// <param name="port">用于对外的端口号，用于在注册和状态上报中标识节点。</param>
         private static void ConnectToCenter(int port)
         {
             int centerPort = ConfigHelper.GetConfig<int>("CenterPort") == 0 ? 31306 : ConfigHelper.GetConfig<int>("CenterPort");
             string centerHost = ConfigHelper.GetConfig<string>("CenterHost") ?? "127.0.0.1";
             string battleHost = ConfigHelper.GetConfig<string>("BattleHost") ?? "127.0.0.1";
-            string nodeId = $"Battle-{battleHost}:{port}";
+            // nodeId 优先级：配置（machine 注入） > 按 host:port 派生（保持后向兼容）
+            string nodeId = ConfigHelper.GetConfig<string>("NodeId") ?? $"Battle-{battleHost}:{port}";
+            string instanceId = ConfigHelper.GetConfig<string>("InstanceId") ?? string.Empty;
+            string machineId = ConfigHelper.GetConfig<string>("MachineId") ?? string.Empty;
+            string supervisedBy = ConfigHelper.GetConfig<string>("SupervisedBy") ?? string.Empty;
             CurrentNodeId = nodeId;
             centerClient = new TcpClientWrapper(centerHost, centerPort);
 
@@ -1041,7 +1051,7 @@ namespace Battle
                 Log.Info($"已连接到 Center 服务器 (Host:{centerHost} Port:{centerPort})");
                 // 内部连接认证：先发送认证握手，再注册节点
                 centerClient.SendInternalAuthHandshake(ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret", nodeId);
-                SendRegisterNode(centerClient, nodeId, "Battle", battleHost, port, GetCurrentLoad());
+                SendRegisterNode(centerClient, nodeId, "Battle", battleHost, port, GetCurrentLoad(), instanceId, machineId, supervisedBy);
 
                 centerHeartbeatCts?.Cancel();
                 centerHeartbeatCts = new System.Threading.CancellationTokenSource();
@@ -1153,10 +1163,15 @@ namespace Battle
         /// <param name="host">节点的主机名或 IP 地址。</param>
         /// <param name="port">节点的监听端口。</param>
         /// <param name="currentLoad">节点当前的负载值，用于负载均衡或监控。</param>
-        private static void SendRegisterNode(TcpClientWrapper centerClient, string nodeId, string nodeType, string host, int port, int currentLoad)
+        /// <param name="instanceId">实例 ID（machine 注入；可空）。</param>
+        /// <param name="machineId">托管本节点的 Machine 进程 ID（可空）。</param>
+        /// <param name="supervisedBy">托管方类型（"machine" / "supervisor" / "none" / 自定义；可空）。</param>
+        private static void SendRegisterNode(TcpClientWrapper centerClient, string nodeId, string nodeType, string host, int port, int currentLoad,
+            string instanceId = "", string machineId = "", string supervisedBy = "")
         {
             long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            string signatureSource = $"{nodeId}|{nodeType}|{host}|{port}|{currentLoad}|{timestamp}";
+            // 协议扩展（迭代 20）：Machine 注入字段参与签名源；空字符串同样参与，Center 侧拼串一致才能通过
+            string signatureSource = $"{nodeId}|{nodeType}|{host}|{port}|{currentLoad}|{instanceId}|{machineId}|{supervisedBy}|{timestamp}";
             var registerRequest = new CenterRegisterNodeRequest
             {
                 NodeId = nodeId,
@@ -1165,6 +1180,9 @@ namespace Battle
                 Port = port,
                 CurrentLoad = currentLoad,
                 Timestamp = timestamp,
+                InstanceId = instanceId,
+                MachineId = machineId,
+                SupervisedBy = supervisedBy,
                 Signature = ComputeCenterSignature(signatureSource)
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(registerRequest);

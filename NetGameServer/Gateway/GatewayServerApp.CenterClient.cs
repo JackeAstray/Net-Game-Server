@@ -36,12 +36,16 @@ namespace Gateway
             string centerHost = ConfigHelper.GetConfig<string>("CenterHost") ?? "127.0.0.1";
             int centerPort = ConfigHelper.GetConfig<int>("CenterPort") == 0 ? 31306 : ConfigHelper.GetConfig<int>("CenterPort");
             string gatewayHost = ConfigHelper.GetConfig<string>("GatewayHost") ?? "127.0.0.1";
-            string nodeId = $"Gateway-{gatewayHost}:{port}";
+            // nodeId 优先级：配置（machine 注入） > 按 host:port 派生（保持后向兼容）
+            string nodeId = ConfigHelper.GetConfig<string>("NodeId") ?? $"Gateway-{gatewayHost}:{port}";
+            string instanceId = ConfigHelper.GetConfig<string>("InstanceId") ?? string.Empty;
+            string machineId = ConfigHelper.GetConfig<string>("MachineId") ?? string.Empty;
+            string supervisedBy = ConfigHelper.GetConfig<string>("SupervisedBy") ?? string.Empty;
 
             centerClient.OnConnected += session =>
             {
                 Shared.Log.Info($"Gateway 节点生命周期已挂载到 Center 连接 (Host:{centerHost} Port:{centerPort})");
-                SendRegisterNode(centerClient, nodeId, "Gateway", gatewayHost, port, Gateway.Managers.GatewaySessionManager.Instance.GetOnlineCount());
+                SendRegisterNode(centerClient, nodeId, "Gateway", gatewayHost, port, Gateway.Managers.GatewaySessionManager.Instance.GetOnlineCount(), instanceId, machineId, supervisedBy);
 
                 centerHeartbeatCts?.Cancel();
                 centerHeartbeatCts = new CancellationTokenSource();
@@ -80,10 +84,15 @@ namespace Gateway
         /// <param name="host">节点的主机名或 IP 地址。</param>
         /// <param name="port">节点监听的端口号。</param>
         /// <param name="currentLoad">节点当前的负载值。</param>
-        private static void SendRegisterNode(TcpClientWrapper centerClient, string nodeId, string nodeType, string host, int port, int currentLoad)
+        /// <param name="instanceId">实例 ID（machine 注入；可空）。</param>
+        /// <param name="machineId">托管本节点的 Machine 进程 ID（可空）。</param>
+        /// <param name="supervisedBy">托管方类型（可空）。</param>
+        private static void SendRegisterNode(TcpClientWrapper centerClient, string nodeId, string nodeType, string host, int port, int currentLoad,
+            string instanceId = "", string machineId = "", string supervisedBy = "")
         {
             long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            string signatureSource = $"{nodeId}|{nodeType}|{host}|{port}|{currentLoad}|{timestamp}";
+            // 协议扩展（迭代 20）：Machine 注入字段参与签名源
+            string signatureSource = $"{nodeId}|{nodeType}|{host}|{port}|{currentLoad}|{instanceId}|{machineId}|{supervisedBy}|{timestamp}";
             var registerRequest = new CenterRegisterNodeRequest
             {
                 NodeId = nodeId,
@@ -92,6 +101,9 @@ namespace Gateway
                 Port = port,
                 CurrentLoad = currentLoad,
                 Timestamp = timestamp,
+                InstanceId = instanceId,
+                MachineId = machineId,
+                SupervisedBy = supervisedBy,
                 Signature = ComputeCenterSignature(signatureSource)
             };
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(registerRequest);

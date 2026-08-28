@@ -2,15 +2,15 @@
 
 > 账号体系：注册、登录、Token 签发、登录限流。
 > 通过 TCP 与 DB 节点交互（DB 链路 `[MsgId(4)][RequestId(8)][Payload]`，见 [Protocol.md](Protocol.md)）。
-
-项目总览与能力描述见 [README.md](../../README.md) §模块详解。
+>
+> 项目总览见 [README.md](../../README.md)，编码规范见 [Code-Style.md](Code-Style.md)。
 
 ## 职责边界
 
 - ✅ HTTP / Socket 双协议接入（HTTP 用于无状态接口如注册/查询；Socket 经 Gateway 转发）
 - ✅ 账号密码校验（凭据走 DB 节点查表）
-- ✅ **HMAC-SHA256 Token 签发**（含 `SessionSeq=1`，迭代 16 起单调序号防重放）
-- ✅ **登录限流**（按账号维度，失败计数 + 冷却）
+- ✅ HMAC-SHA256 Token 签发（含 `SessionSeq=1`，迭代 16 起单调序号防重放）
+- ✅ 登录限流（按账号维度，失败计数 + 冷却）
 - ❌ 不做角色/背包/公会（业务下沉到 Game 节点）
 - ❌ 不验证 `SessionSeq` 单调性（Verify 是 TokenService 的能力，Login 只签发不消费）
 

@@ -505,7 +505,8 @@ namespace Center.Handlers
                             return Task.CompletedTask;
                         }
 
-                        NodeManager.Instance.RegisterNode(req.NodeId, req.NodeType, req.Host, req.Port, session);
+                        NodeManager.Instance.RegisterNode(req.NodeId, req.NodeType, req.Host, req.Port, session,
+                            req.InstanceId, req.MachineId, req.SupervisedBy);
                         NodeManager.Instance.UpdateLoad(req.NodeId, req.CurrentLoad);
                     }
                     else
@@ -553,10 +554,11 @@ namespace Center.Handlers
         /// <summary>
         /// 验证注册请求的签名并校验时间戳有效性。
         /// </summary>
-        /// <remarks>先通过 IsTimestampValid 验证时间戳，再将 NodeId、NodeType、Host、Port、CurrentLoad 和 Timestamp
-        /// 以管道分隔组合为源字符串，调用 ComputeSignature 生成期望签名，最后使用 FixedTimeEquals 进行常量时间比较以抵抗定时攻击。</remarks>
-        /// <param name="req">要验证签名的 CenterRegisterNodeRequest 实例，包含节点标识、类型、主机、端口、当前负载、时间戳和签名。</param>
-        /// <returns>如果时间戳有效且签名与按 NodeId|NodeType|Host|Port|CurrentLoad|Timestamp 计算的期望签名在固定时间比较下相等，则返回 true；否则返回 false。</returns>
+        /// <remarks>先通过 IsTimestampValid 验证时间戳，再将 NodeId、NodeType、Host、Port、CurrentLoad、InstanceId、MachineId、SupervisedBy
+        /// 和 Timestamp 以管道分隔组合为源字符串，调用 ComputeSignature 生成期望签名，最后使用 FixedTimeEquals 进行常量时间比较以抵抗定时攻击。
+        /// 协议扩展（迭代 20）：Machine 注入字段（InstanceId/MachineId/SupervisedBy）参与签名源，旧字段拼串保持原位以保证后向兼容（仅增字段）。</remarks>
+        /// <param name="req">要验证签名的 CenterRegisterNodeRequest 实例，包含节点标识、类型、主机、端口、当前负载、机器字段和时间戳。</param>
+        /// <returns>如果时间戳有效且签名与按 NodeId|NodeType|Host|Port|CurrentLoad|InstanceId|MachineId|SupervisedBy|Timestamp 计算的期望签名在固定时间比较下相等，则返回 true；否则返回 false。</returns>
         private static bool VerifyRegisterSignature(CenterRegisterNodeRequest req)
         {
             if (!IsTimestampValid(req.Timestamp) || string.IsNullOrWhiteSpace(req.Signature))
@@ -564,7 +566,7 @@ namespace Center.Handlers
                 return false;
             }
 
-            string source = $"{req.NodeId}|{req.NodeType}|{req.Host}|{req.Port}|{req.CurrentLoad}|{req.Timestamp}";
+            string source = $"{req.NodeId}|{req.NodeType}|{req.Host}|{req.Port}|{req.CurrentLoad}|{req.InstanceId}|{req.MachineId}|{req.SupervisedBy}|{req.Timestamp}";
             string expected = ComputeSignature(source);
             return FixedTimeEquals(expected, req.Signature);
         }

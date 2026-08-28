@@ -18,7 +18,8 @@ namespace Battle.Handlers
             RoomHandler roomHandler,
             EntitySyncHandler entitySyncHandler,
             BattleMainHandler battleMainHandler,
-            FrameSyncManager? frameSyncManager)
+            FrameSyncManager? frameSyncManager,
+            TimeSyncManager? timeSyncManager = null)
         {
             var dispatcher = new Framework.Protocol.MessageDispatcher();
 
@@ -105,6 +106,19 @@ namespace Battle.Handlers
                     Battle.BattleServerApp.DispatchEntityScriptAction(msg.EntityId, msg.Method, args);
                 },
                 jsonFallback: true);
+
+            // 时间同步（KBE-Gap-Review D7）：客户端发 ClientTimeSync → 服务端回 ServerTimeSync
+            // 客户端按 NTP 公式估算 RTT/offset，多点采样取中位数更稳。
+            if (timeSyncManager != null)
+            {
+                dispatcher.RegisterSync<Framework.Protocol.Generated.ClientTimeSync>(
+                    (ctx, msg) =>
+                    {
+                        var res = timeSyncManager.HandleSync(msg);
+                        ctx.Send(res);
+                    },
+                    jsonFallback: true);
+            }
 
             // 断线重连恢复（网关内部消息）：取消实体挂起，恢复在线（对标 KBE 断线恢复）
             dispatcher.RegisterSync<Framework.Protocol.Generated.PlayerSessionResume>(

@@ -6,6 +6,8 @@
 //
 // 玩法：玩家击杀 Npc 累计经验达到阈值 → 任务完成 → 奖励写入全局数据（由框架/客户端读取）
 // 客户端通过 ScriptAction(40006) 消息调用 QueryProgress 查询进度。
+//
+// KBE-Gap-Review 落地：S1 结构化日志 + S3 边界 + S4 热更新（Quest 本身已是事件驱动，保留）
 
 using System;
 using Framework.Entity;
@@ -14,44 +16,54 @@ using Framework.Scripting;
 public class QuestScript : EntityScriptBase
 {
     public override string EntityType => "Quest";
+    public override int ScriptVersion => 2;
 
-    private const int ExpThreshold = 20; // 击杀 1 只 Npc（20 经验）即完成任务
+    private const int ExpThreshold = 20;
+    private const int MaxExp = int.MaxValue; // KBE-Gap-Review S3：经验上限
 
     private bool completed;
 
-    public override void OnCreate(Framework.Entity.Entity entity)
+    public override void OnCreate(Entity entity)
     {
-        entity.Set("Hp", 1);        // Quest 实体：用 Hp 存完成状态占位
-        entity.Set("Score", 0);     // Score 存当前任务进度（经验）
-        entity.Set("MaxHp", ExpThreshold); // MaxHp 存任务目标
-        Console.WriteLine($"[脚本] Quest {entity.EntityId} 创建，目标经验={ExpThreshold}");
+        entity.Set("Hp", 1);
+        entity.Set("Score", 0);
+        entity.Set("MaxHp", ExpThreshold);
+        Log.Info("Quest", "Quest {EntityId} 创建，目标经验={Threshold}", entity.EntityId, ExpThreshold);
     }
 
     /// <summary>
-    /// 全局数据变更事件（框架在 ScriptHost.SetGlobal 后触发，对本类型每个实体各调用一次）：
-    /// 事件驱动完成任务，替代原每 5 tick 轮询全局数据的做法。
+    /// 全局数据变更事件（KBE 风格回调，事件驱动，不轮询）。
     /// </summary>
-    public override void OnGlobalChanged(Framework.Entity.Entity entity, string key, object? value)
+    public override void OnGlobalChanged(Entity entity, string key, object? value)
     {
         if (completed || key != "TotalExpDropped") return;
 
         int exp = value is int e ? e : 0;
-        entity.Set("Score", Math.Min(exp, ExpThreshold));
+        // KBE-Gap-Review S3：边界钳制
+        int clampedExp = Math.Clamp(exp, 0, MaxExp);
+        MathClampSet(entity, "Score", Math.Min(clampedExp, ExpThreshold), 0, ExpThreshold);
         if (exp < ExpThreshold) return;
 
         completed = true;
-        entity.Set("Hp", 0); // 标记完成
-        // 任务奖励：写入全局数据（框架/客户端可读取）
-        Framework.Scripting.ScriptHost.Current?.SetGlobal("QuestCompleted", true);
-        Console.WriteLine($"[脚本] Quest {entity.EntityId} 完成！奖励已发放（事件驱动）");
+        entity.Set("Hp", 0);
+        ScriptHost.Current?.SetGlobal("QuestCompleted", true);
+        Log.Info("Quest", "Quest {EntityId} 完成！奖励已发放（事件驱动）", entity.EntityId);
     }
 
-    public override void OnMessage(Framework.Entity.Entity entity, string method, object?[] args)
+    public override void OnMessage(Entity entity, string method, object?[] args)
     {
         if (method == "QueryProgress")
         {
-            Console.WriteLine($"[脚本] Quest {entity.EntityId} 进度: {entity.Get<int>("Score")}/{entity.Get<int>("MaxHp")}");
+            Log.Info("Quest", "Quest {EntityId} 进度: {Score}/{Max}",
+                entity.EntityId, entity.Get<int>("Score"), entity.Get<int>("MaxHp"));
         }
+    }
+
+    public override void OnReload(Entity entity, object? oldState)
+    {
+        // KBE-Gap-Review S4：热更新后 completed 状态保留（如未完成则重置）
+        if (!completed) entity.Set("Hp", 1);
+        Log.Info("Quest", "Quest {EntityId} 脚本热更新完成，completed={Done}", entity.EntityId, completed);
     }
 }
 

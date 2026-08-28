@@ -4,6 +4,8 @@
 > 改玩法只改 `.csx`，框架零改动；文件保存即热更新（ScriptHost 防抖重编译）。
 > Battle 服务器在场景创建/玩家加入时自动生成 Npc/Quest/Skill/Item 实体并绑定脚本
 > （见 Battle/Entities/GameplayEntityDefs.cs），玩家实体（Player）绑定 Avatar.csx —— 脚本在生产运行时真实生效。
+>
+> 项目总览见 [README.md](../../README.md)，节点职责见 [Battle.md](../../Docs/Battle.md)，编码规范见 [Code-Style.md](../../Docs/Code-Style.md)。
 
 ## 一、脚本编写约定
 
