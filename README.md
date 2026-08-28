@@ -22,6 +22,10 @@
 - **跨进程实体调用（EntityCall）**：调用方通过 `EntityCall.CallAsync` 发起，自动分配 callId、
   注册到 `EntityCallHub` 超时表，调用经 Center 中继到目标节点（91001/91002），目标节点执行后
   携带同一 callId 回执，框架自动关联回执或超时（Battle tick 周期清扫超时）。
+- **脚本层 Mailbox（csx 友好）**：`entity.Mailbox.Call/CallAsync(method, args, cb)` 在 csx 脚本中
+  直接调实体方法：同进程零开销同步执行（Local 路径），跨节点走 EntityCall 异步回执 +
+  超时清扫（Remote 路径）。`EntityManager` 注册实体时自动挂 Local Mailbox；
+  `AttachMailbox` 显式挂 Remote（迁移后源节点视角）。对标 KBE entityMailboxComponent / cellMailbox。
 - **实体在线迁移**：玩家主实体 + **属主玩法实体（Skill/Item）** 同包随迁
   （`EntityMigrateRequest.OwnedEntities`），目标节点原子恢复并完成属主绑定；源节点迁移成功后
   回收本地副本；离场/离房路径自动回收孤儿（无主玩法实体）。玩法实体 ID 含节点派生段，
@@ -195,10 +199,12 @@ NetGameServer/
   `InternalAuthFilter`（节点间 HMAC + 120s 时间戳防重放）/ `LeaderElection`（主备争锁）。
 - **Framework.Protocol**：`MessageDispatcher`（配置化注册 + MemoryPack/JSON 双格式）/
   `IGameMessage`（统一序列化接口）/ `ProtocolCodec`（帧解析）。
-- **Framework.Entity**：`Entity`（属性 + 脏标记 + 方法注册）/ `EntityDef`（属性声明 + 同步作用域）/
-  `EntityManager`（O(1) 增删查）/ `PropertyCodec`（全量/增量序列化）/
-  `EntityCall`（callId 分配 + CallAsync 回调）/`EntityCallHub`（静态 pending-call 表 + 超时清扫）/
-  `EntityCall.Mailbox`（远程执行入口）。
+- **Framework.Entity**：`Entity`（属性 + 脏标记 + 方法注册 + **Mailbox 脚本入口**）/
+  `EntityDef`（属性声明 + 同步作用域）/
+  `EntityManager`（O(1) 增删查 + 按类型二级索引）/ `PropertyCodec`（全量/增量序列化）/
+  `EntityCall`（callId 分配 + CallAsync 回调）/
+  `EntityCallHub`（静态 pending-call 表 + 超时清扫）/
+  **`EntityMailbox`**（Local/Remote 双路径，csx 脚本入口）。
 - **Framework.Tick**：`TickEngine`（固定频率主循环 + 微秒级 timer）。
 - **Framework.Scripting**：`ScriptHost`（csx 加载/重载/OnCreate/OnDestroy/OnMessage/OnPropertyChanged 事件总线）。
 

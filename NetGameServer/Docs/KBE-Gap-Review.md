@@ -1,9 +1,9 @@
 # 服务器与 KBEngine 差距核查（KBE-Gap-Review）
 
 > 本文档由最初的「逐文件差距核查」演进为**现状快照 + 可优化路线**。
-> 前 16 轮迭代已将原始核查中的绝大多数差距落地（P0/P1/P2 全部处理），
+> 前 17 轮迭代已将原始核查中的绝大多数差距落地（P0/P1/P2 全部处理），
 > 本版聚焦两件事：**① 服务器 ↔ KBE 现状对比；② 仍可优化的脚本与设计模式**。
-> 涉及文件均给路径/行号，可直接据此迭代。最后更新：迭代 16。
+> 涉及文件均给路径/行号，可直接据此迭代。最后更新：迭代 17。
 
 ---
 
@@ -32,7 +32,7 @@
 
 ---
 
-## 二、已对齐能力（16 轮迭代成果）
+## 二、已对齐能力（17 轮迭代成果）
 
 - **P0 数据竞争清零**：消息全部收编 `OrderedTaskQueue`/Channel 单线程串行（迭代3）；备份注册泄漏、join 全量扫盘、派遣器锁竞争修复（迭代1）。
 - **性能热路径**：属性名 UTF-8 预缓存、MessageDispatcher 免锁读、备份序列化移出主循环、SceneManager 玩家-场景反索引、零拷贝写队列 + 背压（迭代1/3/4/8）。
@@ -46,6 +46,7 @@
 - **Center 平滑加权负载均衡（迭代14）**：SWRR（权重=100-load）+ 心跳过期剔除 + 权重表周期清理，持续偏向低负载 Battle 节点。
 - **玩法实体迁移 v2（迭代15）**：属主玩法实体（Skill/Item）与玩家主实体同包随迁 + 属主绑定 + 孤儿回收（CompleteMigrateOut/LeaveScene/离房三条路径），玩法实体 ID 加节点段保证跨节点不撞 ID。
 - **客户端会话侧防重放（迭代16）**：SessionGuard 时间窗（lifetime+idle）由 Gateway 客户端入口强制；TokenService 嵌入 SessionSeq 单调序号拒旧 token 重放；NonceService 一次性 nonce 缓存（带 TTL 周期 GC）补齐 TokenService 文档此前承诺。
+- **脚本层 entityMailbox（迭代17）**：`EntityMailbox.Local/Remote` + `Entity.Mailbox` 懒属性，csx 脚本 `entity.Mailbox.Call/CallAsync(method, args, cb)` 同进程零开销、跨节点走 EntityCall 链路，对标 KBE entityMailboxComponent / cellMailbox。
 
 ---
 
@@ -71,6 +72,7 @@
 | D5 | **负载均衡升级** | ✅ 迭代14 已落地：`GetBestBattleNode`（`Center/Handlers/NodeManager.cs:157`）改平滑加权轮询（权重=100-load）+ 心跳过期剔除 + 周期清理权重表 | 与 Nginx SWRR 对齐，持续偏向低负载节点 |
 | D5 | **负载均衡升级** | `GetBestBattleNode` 按 CurrentLoad 升序（`Center/Handlers/NodeManager.cs:157`） | 加平滑加权 / 最小连接 / 过期负载惩罚 |
 | D6 | **客户端会话侧防重放** | ✅ 迭代16 已落地：① `SessionGuard.IsSessionValid` 时间窗（lifetime ≤2h / idle ≤15min），Gateway 客户端入口按 `CreatedAt` 强制判定，超窗关连接；② `TokenService` 嵌入 `SessionSeq` 单调序号（payload 5 字段），`Verify(token, AntiReplayState)` 拒绝旧 seq 重放，登录发放 seq=1；③ `NonceService` 一次性 nonce 缓存（带 TTL + 周期 GC，TokenService 文档此前承诺的 NonceService 本轮补齐）；ProtocolVerify §3 全绿 | 客户端会话重放面补齐 |
+| D7 | **脚本层 entityMailbox 封装** | ✅ 迭代17 已落地：`EntityMailbox.Local/Remote` 工厂 + `Entity.Mailbox` 懒属性 + `EntityManager.AddOrUpdateEntity` 自动挂 Local Mailbox + `AttachMailboxIfAbsent` 不覆盖已挂 Remote。脚本层 `entity.Mailbox.Call/CallAsync(method, args, cb)` 同进程零开销同步执行，跨节点经 sendAction → EntityCallHub 异步回执 + 超时清扫（对标 KBE entityMailboxComponent / cellMailbox）；ProtocolVerify §15.7 全绿 | 脚本可直接调实体方法并拿回执/超时，无需手写 91001/91002 |
 | D7 | **时间同步协议** | 帧同步有权威帧号/时间戳，但无客户端-服务端时钟对齐 | 加 NTP 式 offset 协商，客户端延迟补偿 / 确定性回放更准 |
 | D8 | **Bots 集成压测** | Bots 仅协议级；迭代11 压测为进程内 | Bots 走真实 Gateway→Battle 链路多机器人跑分 |
 | D9 | **配置模板/缓存** | ConfigHelper reloadOnChange 已开，但无模板校验、每次 `GetConfig` 重新查节（`Shared/ConfigHelper.cs:29`） | 加配置模板定义 + 校验 + 节缓存 |
@@ -97,4 +99,5 @@
 | 14 | D2+D5 落地 | Battle 双轨归一（移除旧 JSON 路由字典，CenterCreateScene/CenterDestroyScene 迁移强类型分发）；Center 平滑加权轮询 + 过期负载惩罚（ProtocolVerify §17b 通过） |
 | 15 | D4 落地 | 玩法实体迁移 v2：EntityMigrateRequest 增 OwnedEntities 同包随迁 + 属主绑定 + RecycleOwnedEntities 三路径孤儿回收 + 玩法实体 ID 节点段防跨节点撞 ID（ProtocolVerify §15.6 + NetworkVerify 全绿） |
 | 16 | D6 落地 | 客户端会话侧防重放：SessionGuard 时间窗（lifetime+idle，Gateway 入口强制）+ TokenService SessionSeq 单调序号拒旧重放 + NonceService 一次性 nonce 缓存（ProtocolVerify §3 全绿） |
-| 17 | 规划 | Bots 集成压测（D8）、脚本层 entityMailbox 封装（D7） |
+| 17 | D7 落地 | 脚本层 entityMailbox：EntityMailbox.Local/Remote 工厂 + Entity.Mailbox 懒属性 + EntityManager 自动挂 Local（不覆盖已挂 Remote），csx 脚本 Call/CallAsync 同进程零开销、跨节点走 EntityCall 异步回执 + 超时清扫（ProtocolVerify §15.7 全绿） |
+| 18 | 规划 | Bots 集成压测（D8）、脚本层 entityMailbox 跨节点真实集成（D7+）、AOI 优化 |

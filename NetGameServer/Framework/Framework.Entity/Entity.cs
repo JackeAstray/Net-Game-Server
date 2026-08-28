@@ -33,6 +33,38 @@ public sealed class Entity
     /// </summary>
     public long OwnerClientId { get; set; }
 
+    private EntityMailbox? mailbox;
+
+    /// <summary>
+    /// 实体 Mailbox（对标 KBE entityMailbox / cellMailbox）：
+    /// 脚本层入口，通过 <see cref="EntityMailbox.Call"/> / <see cref="EntityMailbox.CallAsync"/>
+    /// 调用本实体方法（Local 同步）或远端实体方法（Remote 异步回执）。
+    /// 由 <see cref="EntityManager.AddOrUpdateEntity"/> 在注册时挂载 Local Mailbox；宿主可显式
+    /// <see cref="AttachMailbox"/> 替换为 Remote Mailbox（迁移后源节点视角）。
+    /// 未挂载时访问会抛 <see cref="InvalidOperationException"/>。
+    /// </summary>
+    public EntityMailbox Mailbox => mailbox ?? throw new InvalidOperationException(
+        $"Entity[{TypeName}:{EntityId}] Mailbox 未挂载（须经 EntityManager.AddOrUpdateEntity 注册）");
+
+    /// <summary>
+    /// 显式挂载 Mailbox（迁移/跨节点场景使用）。
+    /// 通常宿主在 <see cref="EntityManager.AddOrUpdateEntity"/> 时通过 <see cref="AttachMailboxIfAbsent"/>
+    /// 自动挂 Local Mailbox；仅在需要替换为 Remote Mailbox 时显式调用 <see cref="AttachMailbox"/>。
+    /// </summary>
+    public void AttachMailbox(EntityMailbox newMailbox) => mailbox = newMailbox;
+
+    /// <summary>
+    /// 仅在 Mailbox 未挂载时挂载（供 <see cref="EntityManager.AddOrUpdateEntity"/> 自动挂 Local 用）。
+    /// 不会覆盖宿主已显式挂的 Remote Mailbox。
+    /// </summary>
+    public void AttachMailboxIfAbsent(EntityMailbox newMailbox)
+    {
+        if (mailbox == null)
+        {
+            mailbox = newMailbox;
+        }
+    }
+
     /// <summary>
     /// 属性变更事件（Entity.Set 触发；SetSilent 不触发）。
     /// 参数：属性名、旧值、新值。供脚本层事件总线（OnPropertyChanged）消费，替代轮询。

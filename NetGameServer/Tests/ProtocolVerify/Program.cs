@@ -673,6 +673,71 @@ Directory.Delete(persistDir, recursive: true);
     if (!restoreOk) return 1;
 }
 
+// ===== 15.7 实体 Mailbox（D7 脚本层 mailbox 封装：Local 同步 + Remote 异步回执 + 超时） =====
+{
+    // Local 路径：EntityManager + Entity "Calc" 注册 method "Double" 返回 args[0]*2
+    var localMgr = new Framework.Entity.EntityManager();
+    var calc = new Framework.Entity.EntityDef { Name = "Calc" }
+        .Add("Score", Framework.Entity.EntityPropertyType.Int32);
+    var calcEntity = calc.CreateEntity(8001);
+    calcEntity.RegisterMethod("Double", args => (int)args[0]! * 2);
+    localMgr.AddOrUpdateEntity(8001, calcEntity);
+
+    bool localOk = false; object? localResult = null;
+    calcEntity.Mailbox.CallAsync("Double", new object?[] { 21 }, (ok, res) => { localOk = ok; localResult = res; });
+    bool localCheck = calcEntity.Mailbox.IsLocal && localOk && (int)localResult! == 42;
+    Console.WriteLine($"Mailbox Local 同步回执: IsLocal={calcEntity.Mailbox.IsLocal} ok={localOk} res={localResult} (期望 True/True/42)");
+    if (!localCheck) return 1;
+
+    // Remote 路径：mock sendAction 捕获 EntityRemoteCall，验证 CallId>0 + Args
+    var remoteMgr = new Framework.Entity.EntityManager();
+    var dummy = new Framework.Entity.EntityDef { Name = "Dummy" };
+    var dummyEntity = dummy.CreateEntity(8002);
+    dummyEntity.RegisterMethod("Echo", args => args.Length > 0 ? args[0] : null);
+    remoteMgr.AddOrUpdateEntity(8002, dummyEntity);
+
+    var captured = new List<Framework.Protocol.Generated.EntityRemoteCall>();
+    bool remoteOk = false; object? remoteResult = null; long capturedCallId = 0;
+    var remoteMailbox = Framework.Entity.EntityMailbox.Remote(8002, "Battle-B-127.0.0.1:31308", call => captured.Add(call));
+    dummyEntity.AttachMailbox(remoteMailbox); // 显式挂 Remote（覆盖 EntityManager 自动挂的 Local）
+    long cid = dummyEntity.Mailbox.CallAsync("Echo", new object?[] { "hello" }, (ok, res) => { remoteOk = ok; remoteResult = res; }, timeoutMs: 5000);
+    capturedCallId = captured.Count > 0 ? captured[0].CallId : 0;
+    bool remoteSent = captured.Count == 1 && capturedCallId == cid && cid > 0 && captured[0].MethodName == "Echo";
+    // 喂回执
+    Framework.Entity.EntityCallHub.HandleResult(new Framework.Protocol.Generated.EntityRemoteCallResult
+    {
+        CallId = capturedCallId,
+        EntityId = 8002,
+        MethodName = "Echo",
+        Success = true,
+        Result = Framework.Entity.ArgCodec.Serialize(new object?[] { "world" })
+    });
+    bool remoteCheck = remoteSent && remoteOk && (string)remoteResult! == "world" && !dummyEntity.Mailbox.IsLocal && dummyEntity.Mailbox.IsRemote;
+    Console.WriteLine($"Mailbox Remote 异步回执: 发送={remoteSent} CallId={capturedCallId} ok={remoteOk} res={remoteResult} IsRemote={dummyEntity.Mailbox.IsRemote} (期望 True/>0/True/world/True)");
+    if (!remoteCheck) return 1;
+
+    // Remote 超时：CallAsync timeoutMs=50 不回执 → SweepExpired → cb(false,null) + PendingCount 清零
+    bool timeoutFired = false;
+    dummyEntity.Mailbox.CallAsync("Never", new object?[] { 1 }, (ok, res) => { if (!ok && res == null) timeoutFired = true; }, timeoutMs: 50);
+    int pendingBefore = Framework.Entity.EntityCallHub.PendingCount;
+    int swept = Framework.Entity.EntityCallHub.SweepExpired(DateTime.UtcNow.AddSeconds(5));
+    int pendingAfter = Framework.Entity.EntityCallHub.PendingCount;
+    bool timeoutCheck = timeoutFired && pendingBefore >= 1 && swept >= 1 && pendingAfter < pendingBefore;
+    Console.WriteLine($"Mailbox Remote 超时: 回调={timeoutFired} 待回执 {pendingBefore}->{pendingAfter} 清理={swept} (期望 True/>=1/&lt;/&gt;=1)");
+    if (!timeoutCheck) return 1;
+
+    // AttachMailboxIfAbsent 不覆盖已挂 Remote（迁移场景：先挂 Remote 的实体再注册到 EntityManager，Mailbox 保持 Remote）
+    var migrateSrc = new Framework.Entity.EntityDef { Name = "Src" }.CreateEntity(8003);
+    migrateSrc.RegisterMethod("Hello", args => "hi");
+    var captured2 = new List<Framework.Protocol.Generated.EntityRemoteCall>();
+    migrateSrc.AttachMailbox(Framework.Entity.EntityMailbox.Remote(8003, "Battle-C-127.0.0.1:31309", call => captured2.Add(call)));
+    var mgr2 = new Framework.Entity.EntityManager();
+    mgr2.AddOrUpdateEntity(8003, migrateSrc); // 注册到本地 Manager，但 Mailbox 应保持 Remote
+    bool keepRemoteCheck = !migrateSrc.Mailbox.IsLocal && migrateSrc.Mailbox.IsRemote;
+    Console.WriteLine($"AttachMailboxIfAbsent 不覆盖: IsLocal={migrateSrc.Mailbox.IsLocal} IsRemote={migrateSrc.Mailbox.IsRemote} (期望 False/True)");
+    if (!keepRemoteCheck) return 1;
+}
+
 // ===== 16. Center 配置化分发集成验证（MatchHandler 真实链路） =====
 var centerMatchHandler = new Center.Handlers.MatchHandler();
 var centerDispatcher = Center.Handlers.CenterDispatcher.BuildDispatcher(centerMatchHandler);

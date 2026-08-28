@@ -21,6 +21,9 @@ namespace Framework.Entity
         /// <summary>添加或更新实体。</summary>
         public void AddOrUpdateEntity(long entityId, Entity entity)
         {
+            // D7 脚本层 Mailbox：注册时若实体未挂 Mailbox 则挂 Local Mailbox（不覆盖已显式挂的 Remote Mailbox）
+            entity.AttachMailboxIfAbsent(EntityMailbox.Local(entityId, this));
+
             entities[entityId] = entity;
             var byType = entitiesByType.GetOrAdd(entity.TypeName, _ => new ConcurrentDictionary<long, Entity>());
             byType[entityId] = entity;
