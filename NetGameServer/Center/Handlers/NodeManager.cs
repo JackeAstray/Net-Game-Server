@@ -180,6 +180,17 @@ namespace Center.Handlers
         }
 
         /// <summary>
+        /// 根据节点会话反查节点 ID（Center 中继回源时把消息路由回发起节点）。
+        /// </summary>
+        /// <param name="session">节点会话（注册时记录在 ServerNodeInfo.Session）。</param>
+        /// <returns>匹配的节点 ID；无匹配返回 null。</returns>
+        public string? GetNodeIdBySession(Network.ISession session)
+        {
+            var node = nodes.Values.FirstOrDefault(n => n.Session == session);
+            return node?.NodeId;
+        }
+
+        /// <summary>
         /// 按类型检索第一个在线节点（实体迁移中继/通知用，对标 KBE cellappmgr 节点表）。
         /// </summary>
         /// <param name="nodeType">节点类型（"Battle"/"Game"/"Gateway"）。</param>

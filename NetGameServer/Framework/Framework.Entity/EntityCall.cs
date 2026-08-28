@@ -17,6 +17,9 @@ public delegate object? EntityMethodHandler(object?[] args);
 /// </summary>
 public sealed class EntityCall
 {
+    /// <summary>无操作回调（异步调用未提供回调时的默认占位）。</summary>
+    private static readonly Action<bool, object?> NoopCallback = static (_, _) => { };
+
     /// <summary>目标节点 ID（如 "Battle-127.0.0.1:31307"；null 表示本节点）</summary>
     public string? TargetNodeId { get; }
 
@@ -42,9 +45,45 @@ public sealed class EntityCall
         new(entityId, targetNodeId, sendAction);
 
     /// <summary>
-    /// 调用远端实体方法。参数经 PropertyCodec 的通用值序列化打包。
+    /// 调用远端实体方法（fire-and-forget，无回执/超时）。参数经 PropertyCodec 的通用值序列化打包。
+    /// 需要回执/超时的调用请使用 <see cref="CallAsync"/>。
     /// </summary>
     public void Call(string methodName, params object?[] args)
+    {
+        SendCall(methodName, args, callId: 0);
+    }
+
+    /// <summary>
+    /// 异步调用远端实体方法并等待回执（对标 KBE EntityCall 带回调调用）：
+    /// - 分配唯一 CallId 并注册到 EntityCallHub（含超时截止）
+    /// - 远端处理后将 EntityRemoteCallResult（携带同一 CallId）回传
+    /// - 回执到达 → onComplete(Success=true, Result)；超时未回执 → onComplete(Success=false, null)
+    /// 宿主需周期调用 EntityCallHub.SweepExpired 驱动超时判定。
+    /// </summary>
+    /// <returns>本次调用的 CallId（0 表示发送失败）。</returns>
+    public long CallAsync(string methodName, object?[] args, Action<bool, object?>? onComplete, int timeoutMs = 5000)
+    {
+        if (sendAction == null)
+        {
+            Log.Warn($"EntityCall 未配置发送委托，异步调用被忽略 EntityId:{EntityId} Method:{methodName}");
+            return 0;
+        }
+
+        long callId = EntityCallHub.NextCallId();
+        EntityCallHub.Register(callId, new EntityCallHub.PendingCall
+        {
+            CallId = callId,
+            TargetNodeId = TargetNodeId,
+            MethodName = methodName,
+            DeadlineUtc = DateTime.UtcNow.AddMilliseconds(Math.Max(1, timeoutMs)),
+            Callback = onComplete ?? NoopCallback
+        });
+
+        SendCall(methodName, args, callId);
+        return callId;
+    }
+
+    private void SendCall(string methodName, object?[] args, long callId)
     {
         if (sendAction == null)
         {
@@ -58,7 +97,8 @@ public sealed class EntityCall
             TargetNodeId = TargetNodeId ?? string.Empty,
             EntityId = EntityId,
             MethodName = methodName,
-            Args = argBytes
+            Args = argBytes,
+            CallId = callId
         });
     }
 }

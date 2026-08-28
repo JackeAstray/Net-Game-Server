@@ -19,12 +19,10 @@ namespace Game.Handlers
         /// </summary>
         /// <remarks>在校验失败时会向客户端发送失败响应。若校验通过，会向 DB 服务发送 DbResolveUserByUniqueId 请求并在 pending 中设置
         /// IsInviteResolve 与 InviteRoomId。依赖 PlayerSessionManager 和 GameServerApp.DbClient。</remarks>
-        /// <param name="sessionBase">客户端会话基类（期望为 ClientSessionWrapper），用于发送响应并获取会话标识。</param>
-        /// <param name="payload">请求负载的只读字节内存，反序列化为 InviteGameRequest。</param>
-        internal static void HandleInviteGameRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        /// <param name="session">客户端会话基类（期望为 ClientSessionWrapper），用于发送响应并获取会话标识。</param>
+        /// <param name="req">强类型请求对象（由分发层反序列化后直接传入）。</param>
+        internal static void HandleInviteGameRequest(ClientSessionWrapper session, InviteGameRequest? req)
         {
-            if (sessionBase is not ClientSessionWrapper session) return;
-            var req = Shared.Json.DeserializeFromUtf8Bytes<InviteGameRequest>(payload.Span);
             if (req == null)
             {
                 SendSimpleResponse(session, MessageIds.InviteGameRes, new InviteGameResponse { Success = false, Message = "请求格式无效" });
@@ -238,10 +236,8 @@ namespace Game.Handlers
             }
         }
 
-        internal static void HandleInviteGameAckRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleInviteGameAckRequest(ClientSessionWrapper session, InviteGameAckRequest? req)
         {
-            if (sessionBase is not ClientSessionWrapper session) return;
-            var req = Shared.Json.DeserializeFromUtf8Bytes<InviteGameAckRequest>(payload.Span);
             if (req == null)
             {
                 SendSimpleResponse(session, MessageIds.InviteGameAckRes, new InviteGameAckResponse { Success = false, Message = "请求格式无效" });

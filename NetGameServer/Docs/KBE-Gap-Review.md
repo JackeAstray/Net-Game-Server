@@ -1,9 +1,9 @@
 # 服务器与 KBEngine 差距核查（KBE-Gap-Review）
 
 > 本文档由最初的「逐文件差距核查」演进为**现状快照 + 可优化路线**。
-> 前 12 轮迭代已将原始核查中的绝大多数差距落地（P0/P1/P2 全部处理），
+> 前 13 轮迭代已将原始核查中的绝大多数差距落地（P0/P1/P2 全部处理），
 > 本版聚焦两件事：**① 服务器 ↔ KBE 现状对比；② 仍可优化的脚本与设计模式**。
-> 涉及文件均给路径/行号，可直接据此迭代。最后更新：迭代 12。
+> 涉及文件均给路径/行号，可直接据此迭代。最后更新：迭代 13。
 
 ---
 
@@ -21,7 +21,7 @@
 | 帧同步 | 场景推进 + 空帧心跳 | 每场景 FrameCounter + 权威帧号/时间戳空帧（迭代3） | ✅ |
 | 负载均衡 | 平滑加权分配 | `GetBestBattleNode` 按 CurrentLoad 升序消费（C3 已落地，算法粗糙） | ◐ |
 | 防重放 | 时间戳窗口 + HMAC | Center 节点注册/上报 120s 窗 + HMAC（已有）；客户端会话侧缺 | ◐ |
-| EntityCall | 跨进程实体调用 + 超时回调 | 91001/91002 本地回环验证（ProtocolVerify §11）；**无超时/回执**（B5 未闭环） | ◐ |
+| EntityCall | 跨进程实体调用 + 超时回调 | 91001/91002 跨进程中继（Center 路由）+ callId + 超时表 + 回执关联（迭代13，ProtocolVerify §11b） | ✅ |
 | 时间同步 | 客户端-服务端时钟对齐 | 权威帧号/时间戳已具备；**时钟对齐协商缺**（B6） | ✗ |
 | 配置 | 模板 + 校验 + 热重载 | reloadOnChange 已开；**无模板校验、无缓存**（B7） | ◐ |
 | Profile/告警 | tick 耗时 + 慢消息告警 | TickEngine 统计 + 慢 tick 告警（迭代5） | ✅ |
@@ -32,7 +32,7 @@
 
 ---
 
-## 二、已对齐能力（12 轮迭代成果）
+## 二、已对齐能力（13 轮迭代成果）
 
 - **P0 数据竞争清零**：消息全部收编 `OrderedTaskQueue`/Channel 单线程串行（迭代3）；备份注册泄漏、join 全量扫盘、派遣器锁竞争修复（迭代1）。
 - **性能热路径**：属性名 UTF-8 预缓存、MessageDispatcher 免锁读、备份序列化移出主循环、SceneManager 玩家-场景反索引、零拷贝写队列 + 背压（迭代1/3/4/8）。
@@ -40,6 +40,8 @@
 - **可靠性**：断线重连 + 超时踢线（迭代5）；静态分片 + 玩家实体跨节点迁移（迭代7/9）；Leader 选举（已有）。
 - **运维**：Supervisor 进程看护 + 管理台仪表盘 + 慢 tick 告警（迭代6）。
 - **工程**：MatchHandler/DbQueryHandler/GatewayServerApp/LoginHandler/FriendHandler 巨型类按业务域拆 partial；Game 分发层强类型化；五套件（协议/脚本/日志/网络/监管）全绿。
+- **业务层强类型化（迭代13）**：Game FriendHandler 业务方法改收强类型请求对象，与 DB `DbQueryHandler` 对齐，去掉二次序列化热路径损耗。
+- **EntityCall 完整链路（迭代13）**：callId + 超时表 + 回执关联 + Center 中继 91001/91002 真实跨进程调用（对标 KBE EntityCall/Mailbox 回执与超时）。
 
 ---
 
@@ -58,9 +60,9 @@
 
 | # | 项 | 现状 | 建议 |
 |---|---|---|---|
-| D1 | **FriendHandler 业务层强类型化** | 分发层已强类型，但业务层 `MemoryPack→反序列化→JSON 再序列化→byte[] 入口再解析`（`Game/Handlers/GameDispatcher.cs` → `HandleXxxRequest(ISession, ReadOnlyMemory<byte>)`） | 业务方法改收强类型请求对象，去掉二次序列化（迭代13 首要） |
+| D1 | **FriendHandler 业务层强类型化** | ✅ 迭代13 已落地：业务方法改收强类型请求对象（`ClientSessionWrapper session, XxxRequest? req`），去掉 `MemoryPack→反序列化→JSON 再序列化→byte[] 再反序列化` 二次序列化；旧路由仅保留反序列化适配层（`FriendHandler.RegisterRequest`） | 与 DB `DbQueryHandler` 强类型业务层对齐（Game 13 条好友/黑名单/申请/邀请消息） |
 | D2 | **Battle 双轨清理** | 强类型 dispatcher 与旧 `MessageRouter.BuildHandlers` JSON 字典并存（`Battle/Handlers/MessageRouter.cs:20`） | 确认无遗留依赖后移除旧字典，JSON 兼容由 `jsonFallback` 承担 |
-| D3 | **EntityCall 超时/回执** | `EntityCall.Call` fire-and-forget，无 callId/超时表（`Framework/Framework.Entity/EntityCall.cs`） | 加 callId + 超时表 + 回执关联；并上 91001/91002 真实跨进程链路 |
+| D3 | **EntityCall 超时/回执** | ✅ 迭代13 已落地：defs 增 `CallId`（91001/91002）→ `EntityCallHub` 超时表 + 回执关联 + `CallAsync` 回调 → `EntityManager.ExecuteRemoteCall` → Center 中继 91001/91002 真实跨进程链路（`CenterDispatcher` / `BattleServerApp.HandleEntityRemoteCallIn`），Battle tick 每 0.5s 清超时 | 框架/协议/Center/Battle 全链路已接；真实多节点集群联调可在启动全部节点后验证 |
 | D4 | **玩法实体迁移 v2** | 迭代9 仅玩家主实体跨节点；Skill/Item/Npc 及属主绑定、孤儿回收未覆盖 | v1 机制推广到玩法实体 + 孤儿项回收 |
 | D5 | **负载均衡升级** | `GetBestBattleNode` 按 CurrentLoad 升序（`Center/Handlers/NodeManager.cs:157`） | 加平滑加权 / 最小连接 / 过期负载惩罚 |
 | D6 | **客户端会话侧防重放** | 仅 Center 节点侧有 120s 窗口 + HMAC；Token/SessionId 路径无 | 会话令牌加时间窗 + 单调序号 |
@@ -86,4 +88,5 @@
 | 10 | 巨型类拆分 | Match/DbQuery/Gateway/LoginHandler 拆 partial + Login 强类型收尾（三-14） |
 | 11 | 补测试 + 真 bug | Battle 压测 / 并发注入 / 热迁移测试；RoomHandler 人数误计玩法实体 bug 修复 |
 | 12 | Game 同构拆分 | FriendHandler（1519 行）拆 6 个 partial 按业务域（零逻辑改动） |
-| 13 | 规划 | 玩法实体迁移 v2（D4）、FriendHandler 业务层强类型化（D1）、EntityCall 实战（D3） |
+| 13 | D1+D3 落地 | FriendHandler 业务层强类型化（去二次序列化，Game 13 条消息，与 DB 对齐）；EntityCall 加 CallId/超时表/回执关联 + Center 中继 91001/91002 真实跨进程链路（ProtocolVerify §11b 通过） |
+| 14 | 规划 | 玩法实体迁移 v2（D4）、Battle 双轨清理（D2）、Center 平滑加权负载均衡（D5） |

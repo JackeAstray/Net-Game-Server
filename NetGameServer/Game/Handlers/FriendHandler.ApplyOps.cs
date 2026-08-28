@@ -14,10 +14,8 @@ namespace Game.Handlers
     /// </summary>
     public static partial class FriendHandler
     {
-        internal static void HandleFriendApplyRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleFriendApplyRequest(ClientSessionWrapper session, FriendApplyRequest? req)
         {
-            if (sessionBase is not ClientSessionWrapper session) return;
-            var req = Shared.Json.DeserializeFromUtf8Bytes<FriendApplyRequest>(payload.Span);
             if (req == null)
             {
                 SendSimpleResponse(session, MessageIds.FriendApplyRes, new FriendApplyResponse { Success = false, Message = "请求格式无效" });
@@ -60,10 +58,8 @@ namespace Game.Handlers
             }
         }
 
-        internal static void HandleFriendApplyListRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleFriendApplyListRequest(ClientSessionWrapper session, FriendApplyListRequest? req)
         {
-            if (sessionBase is not ClientSessionWrapper session) return;
-            var req = Shared.Json.DeserializeFromUtf8Bytes<FriendApplyListRequest>(payload.Span);
             if (req == null)
             {
                 SendSimpleResponse(session, MessageIds.FriendApplyListRes, new FriendApplyListResponse { Success = false, Message = "请求格式无效" });
@@ -94,10 +90,8 @@ namespace Game.Handlers
             }
         }
 
-        internal static void HandleFriendApplyHandleRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleFriendApplyHandleRequest(ClientSessionWrapper session, FriendApplyHandleRequest? req)
         {
-            if (sessionBase is not ClientSessionWrapper session) return;
-            var req = Shared.Json.DeserializeFromUtf8Bytes<FriendApplyHandleRequest>(payload.Span);
             if (req == null)
             {
                 SendSimpleResponse(session, MessageIds.FriendApplyHandleRes, new FriendApplyHandleResponse { Success = false, Message = "请求格式无效" });

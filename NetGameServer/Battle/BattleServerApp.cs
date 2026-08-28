@@ -613,6 +613,101 @@ namespace Battle
         }
 
         /// <summary>
+        /// 处理实体远程调用入（目标 Battle）：定位实体并执行方法（对标 KBE 远端实体方法调用）。
+        /// CallId=0（fire-and-forget）返回 null（无需回执）；否则返回携带同一 CallId 的回执。
+        /// 须在 tick 线程调用（Center 中继消息经入站队列串行消费）。
+        /// </summary>
+        public static Framework.Protocol.Generated.EntityRemoteCallResult? HandleEntityRemoteCallIn(Framework.Protocol.Generated.EntityRemoteCall call)
+        {
+            try
+            {
+                var scene = sceneManager?.FindSceneByEntityId(call.EntityId);
+                var entity = scene?.EntityManager.GetEntity(call.EntityId);
+                if (entity == null)
+                {
+                    Log.Warning($"实体远程调用未找到目标实体 EntityId:{call.EntityId} Method:{call.MethodName}");
+                    return BuildRemoteCallResult(call, false, null);
+                }
+
+                object?[] args = Framework.Entity.ArgCodec.Deserialize(call.Args);
+                var (handled, result) = entity.InvokeMethod(call.MethodName, args);
+                Log.Info($"实体远程调用执行 EntityId:{call.EntityId} Method:{call.MethodName} handled:{handled}");
+                return BuildRemoteCallResult(call, handled, handled ? result : null);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, $"实体远程调用入处理异常 EntityId:{call.EntityId} Method:{call.MethodName}");
+                return BuildRemoteCallResult(call, false, null);
+            }
+        }
+
+        /// <summary>构造远程调用回执（CallId=0 时返回 null，无需回执）。</summary>
+        private static Framework.Protocol.Generated.EntityRemoteCallResult? BuildRemoteCallResult(
+            Framework.Protocol.Generated.EntityRemoteCall call, bool success, object? result)
+        {
+            if (call.CallId == 0)
+            {
+                return null;
+            }
+            return new Framework.Protocol.Generated.EntityRemoteCallResult
+            {
+                CallId = call.CallId,
+                EntityId = call.EntityId,
+                MethodName = call.MethodName,
+                Success = success,
+                Result = success ? Framework.Entity.ArgCodec.Serialize(new object?[] { result }) : Array.Empty<byte>()
+            };
+        }
+
+        /// <summary>向 Center 回 91002 实体远程调用回执（Center 中继回源 Battle，调用方完成回执/超时）。</summary>
+        public static void SendEntityRemoteCallResult(Framework.Protocol.Generated.EntityRemoteCallResult result)
+        {
+            if (centerClient == null)
+            {
+                return;
+            }
+            byte[] payload = result.Serialize();
+            byte[] packet = PacketBuilder.BuildPacket(Framework.Protocol.Generated.MessageIds.EntityRemoteCallResult, payload, out int totalLength);
+            try
+            {
+                Network.PacketSender.Send(centerClient, packet, totalLength);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "发送实体远程调用回执失败");
+            }
+        }
+
+        /// <summary>
+        /// 创建跨节点实体引用（经 Center 中继 91001，对标 KBE EntityCallAbstract）：
+        /// 供业务/脚本调用 targetNodeId 节点上 entityId 实体的方法，可用 CallAsync 等待回执。
+        /// </summary>
+        public static Framework.Entity.EntityCall CreateRemoteEntityCall(string targetNodeId, long entityId)
+        {
+            return Framework.Entity.EntityCall.Remote(targetNodeId, entityId, SendEntityRemoteCallToCenter);
+        }
+
+        /// <summary>把 EntityRemoteCall 消息发送到 Center（Center 中继目标 Battle）。</summary>
+        private static void SendEntityRemoteCallToCenter(Framework.Protocol.Generated.EntityRemoteCall call)
+        {
+            if (centerClient == null)
+            {
+                Log.Warn($"实体远程调用发送失败：未连接 Center EntityId:{call.EntityId} Method:{call.MethodName}");
+                return;
+            }
+            byte[] payload = call.Serialize();
+            byte[] packet = PacketBuilder.BuildPacket(Framework.Protocol.Generated.MessageIds.EntityRemoteCall, payload, out int totalLength);
+            try
+            {
+                Network.PacketSender.Send(centerClient, packet, totalLength);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "发送实体远程调用失败");
+            }
+        }
+
+        /// <summary>
         /// 加载配置，构建场景与消息处理器，注册并启动战斗服务器的 TCP 网络，处理会话连接/断开与数据接收并分发内部消息，随后连接到中心服。
         /// </summary>
         /// <remarks>使用 ConfigManager 加载配置；若未配置端口则使用默认端口 31307。初始化
@@ -684,6 +779,16 @@ namespace Battle
                     backupService.Tick();
                     // 脚本/AI 驱动的属性变化增量广播（NPC 巡逻、回血、冷却、掉落）
                     entitySyncHandler.TickWitness();
+                }
+
+                // EntityCall 超时判定（对标 KBE 远程调用超时回执）：每 10 tick（0.5s @20Hz）清理一次待回执调用
+                if (frame % 10 == 0)
+                {
+                    int expired = Framework.Entity.EntityCallHub.SweepExpired(DateTime.UtcNow);
+                    if (expired > 0)
+                    {
+                        Log.Warning($"实体远程调用超时清理 {expired} 个（未收到回执）");
+                    }
                 }
 
                 // 性能 Profile（对标 KBE perf）：每 100 tick（5 秒 @20Hz）输出 tick 统计

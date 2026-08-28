@@ -415,8 +415,55 @@ public static class CenterDispatcher
             }
         });
 
+        // ==== 实体远程调用中继（EntityCall：91001 前向 / 91002 回源，对标 KBE EntityCall 跨进程调用） ====
+
+        // 前向 91001：源 Battle -> 目标 Battle（CallId>0 时记录回源路由；目标不可用直接回失败回执）
+        dispatcher.RegisterSync<EntityRemoteCall>((ctx, msg) =>
+        {
+            var originNodeId = NodeManager.Instance.GetNodeIdBySession(((CenterSessionContext)ctx).GatewaySession) ?? string.Empty;
+            var target = NodeManager.Instance.GetNode(msg.TargetNodeId ?? string.Empty);
+            if (target?.Session == null || !target.Session.IsConnected)
+            {
+                Shared.Log.Warning($"实体远程调用中继失败：目标 Battle 节点不可用 TargetNodeId:{msg.TargetNodeId} EntityId:{msg.EntityId} Method:{msg.MethodName}");
+                SendPacketToNode(((CenterSessionContext)ctx).GatewaySession, MessageIds.EntityRemoteCallResult, new EntityRemoteCallResult
+                {
+                    CallId = msg.CallId,
+                    EntityId = msg.EntityId,
+                    MethodName = msg.MethodName,
+                    Success = false,
+                    Result = Array.Empty<byte>()
+                });
+                return;
+            }
+
+            if (msg.CallId != 0 && !string.IsNullOrEmpty(originNodeId))
+            {
+                pendingEntityCallSource[msg.CallId] = originNodeId;
+            }
+            SendPacketToNode(target.Session, MessageIds.EntityRemoteCall, msg);
+            Shared.Log.Info($"Center 中继实体远程调用 CallId:{msg.CallId} -> {msg.TargetNodeId} EntityId:{msg.EntityId} Method:{msg.MethodName}");
+        });
+
+        // 回源 91002：目标 Battle -> 源 Battle（调用方经 EntityCallHub.HandleResult 关联完成回执/超时）
+        dispatcher.RegisterSync<EntityRemoteCallResult>((ctx, msg) =>
+        {
+            if (pendingEntityCallSource.TryRemove(msg.CallId, out var sourceNodeId) && !string.IsNullOrEmpty(sourceNodeId))
+            {
+                var source = NodeManager.Instance.GetNode(sourceNodeId);
+                if (source?.Session != null && source.Session.IsConnected)
+                {
+                    SendPacketToNode(source.Session, MessageIds.EntityRemoteCallResult, msg);
+                    return;
+                }
+            }
+            Shared.Log.Warning($"实体远程调用回源失败：源节点不可用或未记录 CallId:{msg.CallId}");
+        });
+
         return dispatcher;
     }
+
+    /// <summary>进行中的实体远程调用回源路由：CallId -> 源 Battle 节点（91002 回源用）。</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, string> pendingEntityCallSource = new();
 
     /// <summary>进行中的实体迁移：ClientSessionId -> 源 Battle 节点（91004 回源用）。</summary>
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, string> pendingMigrationSource = new();

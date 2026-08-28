@@ -59,25 +59,43 @@ namespace Game.Handlers
         }
 
         /// <summary>
-        /// 向指定的 MessageRouter 注册好友与黑名单相关的消息处理器。
+        /// 向指定的 MessageRouter 注册好友与黑名单相关的消息处理器（旧 JSON 路由回退层）。
         /// </summary>
         ///
         /// <remarks>注册以下消息标识符的处理器：MessageIds.AddFriendReq、MessageIds.RemoveFriendReq、MessageIds.SetFriendRemarkReq、MessageIds.GetFriendsReq、MessageIds.InviteGameReq、MessageIds.AddBlacklistReq、MessageIds.RemoveBlacklistReq、MessageIds.GetBlacklistReq。</remarks>
         /// <param name="router">用于注册消息处理器的 MessageRouter 实例。</param>
         public static void Register(MessageRouter router)
         {
-            router.RegisterHandler(MessageIds.AddFriendReq, (s, p) => HandleAddFriendRequest(s, p));
-            router.RegisterHandler(MessageIds.RemoveFriendReq, (s, p) => HandleRemoveFriendRequest(s, p));
-            router.RegisterHandler(MessageIds.SetFriendRemarkReq, (s, p) => HandleSetFriendRemarkRequest(s, p));
-            router.RegisterHandler(MessageIds.GetFriendsReq, (s, p) => HandleGetFriendsRequest(s, p));
-            router.RegisterHandler(MessageIds.InviteGameReq, (s, p) => HandleInviteGameRequest(s, p));
-            router.RegisterHandler(MessageIds.AddBlacklistReq, (s, p) => HandleAddBlacklistRequest(s, p));
-            router.RegisterHandler(MessageIds.RemoveBlacklistReq, (s, p) => HandleRemoveBlacklistRequest(s, p));
-            router.RegisterHandler(MessageIds.GetBlacklistReq, (s, p) => HandleGetBlacklistRequest(s, p));
-            router.RegisterHandler(MessageIds.FriendApplyReq, (s, p) => HandleFriendApplyRequest(s, p));
-            router.RegisterHandler(MessageIds.FriendApplyListReq, (s, p) => HandleFriendApplyListRequest(s, p));
-            router.RegisterHandler(MessageIds.FriendApplyHandleReq, (s, p) => HandleFriendApplyHandleRequest(s, p));
-            router.RegisterHandler(MessageIds.InviteGameAckReq, (s, p) => HandleInviteGameAckRequest(s, p));
+            RegisterRequest<AddFriendRequest>(router, MessageIds.AddFriendReq, HandleAddFriendRequest);
+            RegisterRequest<RemoveFriendRequest>(router, MessageIds.RemoveFriendReq, HandleRemoveFriendRequest);
+            RegisterRequest<SetFriendRemarkRequest>(router, MessageIds.SetFriendRemarkReq, HandleSetFriendRemarkRequest);
+            RegisterRequest<GetFriendsRequest>(router, MessageIds.GetFriendsReq, HandleGetFriendsRequest);
+            RegisterRequest<InviteGameRequest>(router, MessageIds.InviteGameReq, HandleInviteGameRequest);
+            RegisterRequest<AddBlacklistRequest>(router, MessageIds.AddBlacklistReq, HandleAddBlacklistRequest);
+            RegisterRequest<RemoveBlacklistRequest>(router, MessageIds.RemoveBlacklistReq, HandleRemoveBlacklistRequest);
+            RegisterRequest<GetBlacklistRequest>(router, MessageIds.GetBlacklistReq, HandleGetBlacklistRequest);
+            RegisterRequest<FriendApplyRequest>(router, MessageIds.FriendApplyReq, HandleFriendApplyRequest);
+            RegisterRequest<FriendApplyListRequest>(router, MessageIds.FriendApplyListReq, HandleFriendApplyListRequest);
+            RegisterRequest<FriendApplyHandleRequest>(router, MessageIds.FriendApplyHandleReq, HandleFriendApplyHandleRequest);
+            RegisterRequest<InviteGameAckRequest>(router, MessageIds.InviteGameAckReq, HandleInviteGameAckRequest);
+        }
+
+        /// <summary>
+        /// 旧路由适配：反序列化 JSON 负载后调用强类型业务方法（业务方法保留 req==null 校验并回错误响应）。
+        /// 该路径仅在新协议 Dispatcher 未注册 MsgId 时作为回退使用。
+        /// </summary>
+        private static void RegisterRequest<TReq>(MessageRouter router, int msgId, Action<ClientSessionWrapper, TReq> handler)
+            where TReq : class
+        {
+            router.RegisterHandler(msgId, (s, p) =>
+            {
+                if (s is not ClientSessionWrapper session)
+                {
+                    return;
+                }
+
+                handler(session, Shared.Json.DeserializeFromUtf8Bytes<TReq>(p.Span)!);
+            });
         }
 
         /// <summary>

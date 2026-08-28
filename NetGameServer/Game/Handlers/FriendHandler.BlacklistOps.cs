@@ -21,10 +21,8 @@ namespace Game.Handlers
         /// DB 服务；通过 PlayerSessionManager 获取用户标识。</remarks>
         /// <param name="sessionBase">会话基对象，预期为 ClientSessionWrapper 实例；若不是则忽略请求。</param>
         /// <param name="payload">包含序列化的 AddBlacklistRequest 的 UTF-8 字节负载。</param>
-        internal static void HandleAddBlacklistRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleAddBlacklistRequest(ClientSessionWrapper session, AddBlacklistRequest? req)
         {
-            if (sessionBase is not ClientSessionWrapper session) return;
-            var req = Shared.Json.DeserializeFromUtf8Bytes<AddBlacklistRequest>(payload.Span);
             if (req == null)
             {
                 SendSimpleResponse(session, MessageIds.AddBlacklistRes, new AddBlacklistResponse { Success = false, Message = "请求格式无效" });
@@ -69,10 +67,8 @@ namespace Game.Handlers
         /// DbRemoveBlacklistRequest。</remarks>
         /// <param name="sessionBase">网络会话基对象，预期为 ClientSessionWrapper；用于获取会话 ID 并向客户端发送响应。</param>
         /// <param name="payload">包含 RemoveBlacklistRequest 的 UTF-8 编码序列化字节数据。</param>
-        internal static void HandleRemoveBlacklistRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleRemoveBlacklistRequest(ClientSessionWrapper session, RemoveBlacklistRequest? req)
         {
-            if (sessionBase is not ClientSessionWrapper session) return;
-            var req = Shared.Json.DeserializeFromUtf8Bytes<RemoveBlacklistRequest>(payload.Span);
             if (req == null)
             {
                 SendSimpleResponse(session, MessageIds.RemoveBlacklistRes, new RemoveBlacklistResponse { Success = false, Message = "请求格式无效" });
@@ -117,10 +113,8 @@ namespace Game.Handlers
         /// DbGetBlacklistRequest，并在发送失败时返回错误响应。</remarks>
         /// <param name="sessionBase">会话实例，期望为 ClientSessionWrapper；若不是则忽略请求。</param>
         /// <param name="payload">包含请求的 UTF-8 JSON 字节数据，反序列化为 GetBlacklistRequest。</param>
-        internal static void HandleGetBlacklistRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleGetBlacklistRequest(ClientSessionWrapper session, GetBlacklistRequest? req)
         {
-            if (sessionBase is not ClientSessionWrapper session) return;
-            var req = Shared.Json.DeserializeFromUtf8Bytes<GetBlacklistRequest>(payload.Span);
             if (req == null)
             {
                 SendSimpleResponse(session, MessageIds.GetBlacklistRes, new GetBlacklistResponse { Success = false, Message = "请求格式无效", Blacklists = Array.Empty<BlacklistInfo>() });

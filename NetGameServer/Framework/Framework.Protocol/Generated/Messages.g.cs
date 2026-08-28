@@ -916,6 +916,7 @@ public partial class EntityRemoteCall : IGameMessage
     public long EntityId { get; set; } = default;
     public string MethodName { get; set; } = string.Empty;
     public byte[] Args { get; set; } = Array.Empty<byte>();
+    public long CallId { get; set; } = default;
 }
 
 [MemoryPackable]
@@ -932,6 +933,7 @@ public partial class EntityRemoteCallResult : IGameMessage
     public string MethodName { get; set; } = string.Empty;
     public bool Success { get; set; } = default;
     public byte[] Result { get; set; } = Array.Empty<byte>();
+    public long CallId { get; set; } = default;
 }
 
 [MemoryPackable]

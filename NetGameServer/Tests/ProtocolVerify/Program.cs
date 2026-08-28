@@ -346,6 +346,54 @@ Console.WriteLine($"EntityCall 参数编解码: count={decodedArgs.Length} [{(in
 if (decodedArgs.Length != 7 || (int)decodedArgs[0] != 1 || (string)decodedArgs[1] != "hello"
     || (float)decodedArgs[2] != 3.14f || !(bool)decodedArgs[3] || decodedArgs[5] != null || (long)decodedArgs[6] != 99L) return 1;
 
+// ===== 11b. EntityCall 回执/超时（D3：callId + 超时表 + 回执关联） =====
+// 模拟跨进程异步调用：发送方 EntityCall.Remote → 截获消息 → 接收方 ExecuteRemoteCall → 回执经 EntityCallHub 关联完成
+var receivedCalls = new System.Collections.Generic.List<Framework.Protocol.Generated.EntityRemoteCall>();
+var asyncCall = Framework.Entity.EntityCall.Remote("Battle-test", 9001, call => receivedCalls.Add(call));
+
+int ackCount = 0;
+object? ackValue = null;
+long asyncCallId = asyncCall.CallAsync("AddScore", new object?[] { 10 }, (success, value) =>
+{
+    ackCount++;
+    ackValue = value;
+}, timeoutMs: 5000);
+Console.WriteLine($"EntityCall 异步调用: callId={asyncCallId} pending={Framework.Entity.EntityCallHub.PendingCount} sent={receivedCalls.Count} (期望 >0/1/1)");
+if (asyncCallId <= 0 || receivedCalls.Count != 1 || Framework.Entity.EntityCallHub.PendingCount != 1) return 1;
+
+// 模拟跨进程送达并执行，构造携带同一 CallId 的回执
+var deliveredCall = receivedCalls[0];
+var callResult = callManager.ExecuteRemoteCall(deliveredCall);
+Console.WriteLine($"EntityCall 执行回执: callId={callResult!.CallId} success={callResult.Success} (期望 {asyncCallId}/True)");
+if (callResult == null || callResult.CallId != asyncCallId || !callResult.Success) return 1;
+
+// 回执关联完成回调
+bool ackConsumed = Framework.Entity.EntityCallHub.HandleResult(callResult);
+Console.WriteLine($"EntityCall 回执关联: consumed={ackConsumed} ackCount={ackCount} value={ackValue} Hp={callEntity.Get<int>("Hp")} (期望 True/1/65/65)");
+if (!ackConsumed || ackCount != 1 || (int?)ackValue != 65 || callEntity.Get<int>("Hp") != 65) return 1;
+
+// 超时：注册一个永不回执的调用 → SweepExpired 判定失败（Success=false）
+int timeoutCount = 0;
+bool timeoutSuccess = true;
+long timeoutCallId = asyncCall.CallAsync("AddScore", new object?[] { 100 }, (success, value) =>
+{
+    timeoutCount++;
+    timeoutSuccess = success;
+}, timeoutMs: 50);
+int expired = Framework.Entity.EntityCallHub.SweepExpired(DateTime.UtcNow.AddMilliseconds(200));
+Console.WriteLine($"EntityCall 超时: callId={timeoutCallId} expired={expired} timeoutCount={timeoutCount} timeoutSuccess={timeoutSuccess} pending={Framework.Entity.EntityCallHub.PendingCount} (期望 >0/1/1/False/0)");
+if (timeoutCallId <= 0 || expired != 1 || timeoutCount != 1 || timeoutSuccess || Framework.Entity.EntityCallHub.PendingCount != 0) return 1;
+
+// fire-and-forget（CallId=0）：不注册待回执、接收方无需回执
+var fireAndForget = Framework.Entity.EntityCall.Remote("Battle-test", 9001, call => receivedCalls.Add(call));
+int beforeFaf = Framework.Entity.EntityCallHub.PendingCount;
+fireAndForget.Call("AddScore", 5);
+Console.WriteLine($"EntityCall fire-and-forget: sent={receivedCalls.Count} lastCallId={receivedCalls[^1].CallId} pending={Framework.Entity.EntityCallHub.PendingCount} (期望 3/0/{beforeFaf})");
+if (receivedCalls.Count != 3 || receivedCalls[^1].CallId != 0 || Framework.Entity.EntityCallHub.PendingCount != beforeFaf) return 1;
+// fire-and-forget 不回执：ExecuteRemoteCall 返回 null
+var fafResult = callManager.ExecuteRemoteCall(receivedCalls[^1]);
+if (fafResult != null) return 1;
+
 // ===== 12. MessageDispatcher 配置化分发验证（RouterTable 驱动） =====
 var dispatcher = new Framework.Protocol.MessageDispatcher();
 int loginHandled = 0;

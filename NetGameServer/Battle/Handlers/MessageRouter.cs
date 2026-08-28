@@ -290,6 +290,25 @@ namespace Battle.Handlers
                     Battle.BattleServerApp.StartEntityMigration(msg.ClientSessionId, msg.TargetNodeId);
                 });
 
+            // ==== 实体远程调用（EntityCall：91001 入 / 91002 回执，经 Center 中继） ====
+            // 远程调用入（Center 中继的 91001）：本地执行，非 0 CallId 回 91002 到 Center
+            dispatcher.RegisterSync<Framework.Protocol.Generated.EntityRemoteCall>(
+                (ctx, msg) =>
+                {
+                    var result = Battle.BattleServerApp.HandleEntityRemoteCallIn(msg);
+                    if (result != null)
+                    {
+                        Battle.BattleServerApp.SendEntityRemoteCallResult(result);
+                    }
+                });
+
+            // 远程调用回执（Center 回源的 91002）：关联完成调用方回调（回执/超时）
+            dispatcher.RegisterSync<Framework.Protocol.Generated.EntityRemoteCallResult>(
+                (ctx, msg) =>
+                {
+                    Framework.Entity.EntityCallHub.HandleResult(msg);
+                });
+
             return dispatcher;
         }
 

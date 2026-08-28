@@ -19,10 +19,8 @@ namespace Game.Handlers
         /// </summary>
         /// <param name="sessionBase">当前的网络会话。</param>
         /// <param name="payload">客户端发送的请求数据。</param>
-        internal static void HandleAddFriendRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        internal static void HandleAddFriendRequest(ClientSessionWrapper session, AddFriendRequest? req)
         {
-            if (sessionBase is not ClientSessionWrapper session) return;
-            var req = Shared.Json.DeserializeFromUtf8Bytes<AddFriendRequest>(payload.Span);
             if (req == null)
             {
                 SendSimpleResponse(session, MessageIds.AddFriendRes, new AddFriendResponse { Success = false, Message = "请求格式无效" });
@@ -65,12 +63,10 @@ namespace Game.Handlers
         /// 处理来自客户端的删除好友请求：验证会话与请求格式，检查登录状态和数据库连接，构建并转发删除好友的数据库请求；在失败时返回相应的错误响应。
         /// </summary>
         /// <remarks>方法通过发送消息与数据库服务交互并向客户端发送响应；在会话未绑定、请求无效或 DB 未连接时返回错误响应。</remarks>
-        /// <param name="sessionBase">会话对象；应为 ClientSessionWrapper，用于获取会话标识并发送响应。</param>
-        /// <param name="payload">包含请求的 UTF-8 JSON 负载，用于反序列化为 RemoveFriendRequest。</param>
-        internal static void HandleRemoveFriendRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        /// <param name="session">会话对象；应为 ClientSessionWrapper，用于获取会话标识并发送响应。</param>
+        /// <param name="req">强类型请求对象（由分发层反序列化后直接传入，不再做二次序列化）。</param>
+        internal static void HandleRemoveFriendRequest(ClientSessionWrapper session, RemoveFriendRequest? req)
         {
-            if (sessionBase is not ClientSessionWrapper session) return;
-            var req = Shared.Json.DeserializeFromUtf8Bytes<RemoveFriendRequest>(payload.Span);
             if (req == null)
             {
                 SendSimpleResponse(session, MessageIds.RemoveFriendRes, new RemoveFriendResponse { Success = false, Message = "请求格式无效" });
@@ -114,12 +110,10 @@ namespace Game.Handlers
         /// <remarks>在请求格式无效、会话未登录或未绑定、数据库未连接或 FriendUniqueId 为空时发送 SetFriendRemarkRes 的失败响应。构建
         /// DbSetFriendRemarkRequest（包含 UserId、FriendUniqueId（已修剪）和 Remark）并通过 TrySendDbRequest 转发为
         /// DbSetFriendRemarkReq；若发送失败则返回失败响应。</remarks>
-        /// <param name="sessionBase">会话接口实例，期望为 ClientSessionWrapper 类型；若非该类型则忽略请求。</param>
-        /// <param name="payload">包含 UTF-8 编码的 JSON 请求数据，反序列化为 SetFriendRemarkRequest。</param>
-        internal static void HandleSetFriendRemarkRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        /// <param name="session">会话接口实例，期望为 ClientSessionWrapper 类型；若非该类型则忽略请求。</param>
+        /// <param name="req">强类型请求对象（由分发层反序列化后直接传入）。</param>
+        internal static void HandleSetFriendRemarkRequest(ClientSessionWrapper session, SetFriendRemarkRequest? req)
         {
-            if (sessionBase is not ClientSessionWrapper session) return;
-            var req = Shared.Json.DeserializeFromUtf8Bytes<SetFriendRemarkRequest>(payload.Span);
             if (req == null)
             {
                 SendSimpleResponse(session, MessageIds.SetFriendRemarkRes, new SetFriendRemarkResponse { Success = false, Message = "请求格式无效" });
@@ -163,12 +157,10 @@ namespace Game.Handlers
         /// </summary>
         /// <remarks>在请求格式无效、会话未登录或数据库服务不可用时发送相应的失败响应；在验证通过且数据库可用时构造 DbGetFriendsRequest
         /// 并尝试发送到数据库服务。</remarks>
-        /// <param name="sessionBase">客户端的网络会话基对象（Network.ISession），方法会将其转换为 ClientSessionWrapper 以继续处理。</param>
-        /// <param name="payload">只读的字节内存，包含 JSON 编码的 GetFriendsRequest，方法从中反序列化请求数据。</param>
-        internal static void HandleGetFriendsRequest(global::Network.ISession sessionBase, ReadOnlyMemory<byte> payload)
+        /// <param name="session">客户端的网络会话基对象（Network.ISession），方法会将其转换为 ClientSessionWrapper 以继续处理。</param>
+        /// <param name="req">强类型请求对象（由分发层反序列化后直接传入）。</param>
+        internal static void HandleGetFriendsRequest(ClientSessionWrapper session, GetFriendsRequest? req)
         {
-            if (sessionBase is not ClientSessionWrapper session) return;
-            var req = Shared.Json.DeserializeFromUtf8Bytes<GetFriendsRequest>(payload.Span);
             if (req == null)
             {
                 SendSimpleResponse(session, MessageIds.GetFriendsRes, new GetFriendsResponse { Success = false, Message = "请求格式无效", Friends = Array.Empty<FriendInfo>() });

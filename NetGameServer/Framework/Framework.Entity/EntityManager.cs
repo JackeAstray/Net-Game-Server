@@ -87,5 +87,29 @@ namespace Framework.Entity
             object?[] args = ArgCodec.Deserialize(call.Args);
             return entity.InvokeMethod(call.MethodName, args);
         }
+
+        /// <summary>
+        /// 执行远程调用并构造回执（对标 KBE EntityRemoteCall 回执）：
+        /// - CallId == 0（fire-and-forget）→ 返回 null，无需回执
+        /// - 否则返回携带同一 CallId 的 EntityRemoteCallResult（Success=实体/方法是否执行成功）
+        /// 接收方把返回值经节点链路回传给调用方，调用方经 EntityCallHub.HandleResult 关联完成。
+        /// </summary>
+        public Framework.Protocol.Generated.EntityRemoteCallResult? ExecuteRemoteCall(Framework.Protocol.Generated.EntityRemoteCall call)
+        {
+            var (handled, result) = DispatchRemoteCall(call);
+            if (call.CallId == 0)
+            {
+                return null;
+            }
+
+            return new Framework.Protocol.Generated.EntityRemoteCallResult
+            {
+                CallId = call.CallId,
+                EntityId = call.EntityId,
+                MethodName = call.MethodName,
+                Success = handled,
+                Result = handled ? ArgCodec.Serialize(new object?[] { result }) : Array.Empty<byte>()
+            };
+        }
     }
 }

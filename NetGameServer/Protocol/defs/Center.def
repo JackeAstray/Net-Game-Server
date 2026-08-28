@@ -282,12 +282,15 @@
     <Field name="Signature" type="string" />
   </Message>
 
-  <!-- ==== 跨进程实体远程调用（对标 KBE EntityCall/Mailbox） ==== -->
+  <!-- ==== 跨进程实体远程调用（对标 KBE EntityCall/Mailbox） ====
+       CallId：调用方分配的请求 ID（0 表示 fire-and-forget，无需回执）；
+       非 0 时接收方必须回 EntityRemoteCallResult 携带同一 CallId，调用方据此关联回执/超时。 -->
   <Message id="91001" name="EntityRemoteCall" target="All" internal="true">
     <Field name="TargetNodeId" type="string" />
     <Field name="EntityId" type="int64" />
     <Field name="MethodName" type="string" />
     <Field name="Args" type="bytes" />
+    <Field name="CallId" type="int64" />
   </Message>
 
   <Message id="91002" name="EntityRemoteCallResult" target="All" internal="true">
@@ -295,6 +298,7 @@
     <Field name="MethodName" type="string" />
     <Field name="Success" type="bool" />
     <Field name="Result" type="bytes" />
+    <Field name="CallId" type="int64" />
   </Message>
 
   <!-- ==== 实体在线迁移（C2 第二阶段：冻结-序列化-搬迁-恢复，Center 协调中继，对标 KBE cellapp 实体搬迁） ====
