@@ -1,24 +1,49 @@
-﻿# Login 登录服务器
+# Login 登录节点
 
-`Login` 服务负责账号体系相关业务，包括登录、注册、密码管理与基础账号资料处理。
+> 账号体系：注册、登录、Token 签发、登录限流。
+> 通过 TCP 与 DB 节点交互（DB 链路 `[MsgId(4)][RequestId(8)][Payload]`，见 [Protocol.md](Protocol.md)）。
 
-## 能力范围
-- **HTTP API**：对外提供无状态接口（如账号注册、查询、管理）。
-- **Socket 路由处理**：接收 `Gateway` 转发的长连接消息并按 `MsgId` 分发。
-- **账号数据协作**：通过 `DB` 服务完成账号校验、写入与状态更新。
+项目总览与能力描述见 [README.md](../../README.md) §模块详解。
 
-## Socket 路由约束
-`Login` 从网关接收的数据格式为：
-- `[ClientSessionId(8)][MsgId(4)][Payload]`
+## 职责边界
 
-推荐流程：
-1. 解析 `ClientSessionId` 与 `MsgId`。
-2. 基于 `MessageIds` 进行显式映射（如 `10001` 登录、`10003` 注册）。
-3. 反序列化请求体并交由登录业务处理器执行。
-4. 将响应打包为 `[ClientSessionId(8)][ResponseMsgId(4)][Payload]` 回传网关。
+- ✅ HTTP / Socket 双协议接入（HTTP 用于无状态接口如注册/查询；Socket 经 Gateway 转发）
+- ✅ 账号密码校验（凭据走 DB 节点查表）
+- ✅ **HMAC-SHA256 Token 签发**（含 `SessionSeq=1`，迭代 16 起单调序号防重放）
+- ✅ **登录限流**（按账号维度，失败计数 + 冷却）
+- ❌ 不做角色/背包/公会（业务下沉到 Game 节点）
+- ❌ 不验证 `SessionSeq` 单调性（Verify 是 TokenService 的能力，Login 只签发不消费）
 
-## 与 DB 通信协议
-- 请求/响应统一：`[MsgId(4)][RequestId(8)][Payload]`
+## 入口与启动
 
-## 启动依赖
-`Login` 在启动阶段通常需要与 `DB` 建立可用连接（例如同步 UID 相关初始状态），建议先启动 `DB` 再启动 `Login`。
+- 启动入口：`Login/Program.cs`（顶级语句）
+- 监听端口默认 `31302`（`LoginPort`）
+- 启动依赖：**DB 必须先启动**（登录要查账号表）
+
+## 关键文件
+
+| 文件 | 职责 |
+|---|---|
+| `Login/Program.cs` | 启动入口 |
+| `Login/LoginServerApp.cs` | 节点主类（partial） |
+| `Login/Handlers/LoginHandler.cs` | 登录业务：`HandleLoginRequestAsync` + `IssueToken(userId, uid)` / `VerifyToken(token)` |
+| `Login/Managers/` | SessionManager 等 |
+
+## 注意事项
+
+- **Token 密钥**：`TokenSecret` 从配置读取（缺省时用随机 GUID——重启后旧 Token 全部失效，保证安全）。
+  生产环境**必须**显式配置固定密钥，否则重启会强制所有用户重登。
+- **限流维度**：当前是账号维度本地计数（`LoginHandler.TryGetThrottleRemaining`）。
+  多实例部署时各实例独立计数，可换 Redis 集中计数。
+- **限流 vs Token 校验**：`HandleLoginRequestAsync` 是登录链路（计限流），
+  `VerifyToken` 是后续业务校验（不计限流），不要混用。
+- **登录成功不直发 Token 字段名修改**：客户端按 `LoginResponse.Token` 取，字段重命名要同步客户端。
+
+## 排错
+
+| 症状 | 可能原因 | 排查 |
+|---|---|---|
+| 登录返回 `账号不能为空` | `request.Account` trim 后空 | 看 `LoginHandler.HandleLoginRequestAsync` 入参校验 |
+| 登录返回失败但密码正确 | DB 节点未启动 / 链路断 | 看 `dbClient.OnConnected` 是否触发；看 `Network/Routing` 链路 |
+| Token 立即失效 | `TokenSecret` 用了随机密钥且重启了 | 显式配置 `TokenSecret` 持久化 |
+| 限流触发但用户没暴力破解 | 限流计数未清（重启进程会清） | 多实例部署需集中计数（Redis） |

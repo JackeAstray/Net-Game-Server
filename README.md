@@ -273,12 +273,18 @@ dotnet run --project Tests/SupervisorVerify -c Release  # 进程看护
 - 跨节点调用（EntityCall/迁移）用 callId + 超时表保证最终一致；超时由 tick 周期清扫并回调。
 
 ### 文档导航
+各模块的职责/关键文件/注意事项/排错见：
 - [Gateway.md](NetGameServer/Docs/Gateway.md) / [Login.md](NetGameServer/Docs/Login.md) /
   [Center.md](NetGameServer/Docs/Center.md) / [Game.md](NetGameServer/Docs/Game.md) /
   [Battle.md](NetGameServer/Docs/Battle.md) / [DB.md](NetGameServer/Docs/DB.md) /
   [Network.md](NetGameServer/Docs/Network.md) / [Shared.md](NetGameServer/Docs/Shared.md)
-- [Refactor-Summary.md](NetGameServer/Docs/Refactor-Summary.md) — 重构对照与验证结果
+
+设计 / 规范 / 规划：
+- [Protocol.md](NetGameServer/Docs/Protocol.md) — 协议约束红线（帧格式/链路/禁止项）
+- [Code-Style.md](NetGameServer/Docs/Code-Style.md) — 编码规范与约定（命名/入口写法/并发/错误处理）
+- [Refactor-Summary.md](NetGameServer/Docs/Refactor-Summary.md) — P0~P3 重构历史归档
 - [KBE-Gap-Review.md](NetGameServer/Docs/KBE-Gap-Review.md) — 对标 KBEngine 的能力差异与可优化路线
+- [GameLogic/scripts/README.md](NetGameServer/GameLogic/scripts/README.md) — 业务脚本层（csx）规范
 
 ---
 
