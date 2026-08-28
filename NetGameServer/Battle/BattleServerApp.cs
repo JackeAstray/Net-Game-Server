@@ -27,6 +27,12 @@ namespace Battle
         /// <summary>挂起玩家（断线重连）：clientSessionId -> 挂起截止时间（Ticks）。</summary>
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, long> suspendedPlayers = new();
 
+        /// <summary>实体迁移中的玩家会话（冻结集合）：迁移期间该会话的入站消息暂缓（对标 KBE 冻结实体迁移）。</summary>
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, byte> migratingSessions = new();
+
+        /// <summary>挂到 tick 线程执行的动作（实体状态访问必须在单线程内进行）。</summary>
+        private static readonly System.Collections.Concurrent.ConcurrentQueue<Action> tickActions = new();
+
         /// <summary>通知游戏逻辑脚本：实体创建（加入场景）。</summary>
         public static void NotifyEntityCreated(Framework.Entity.Entity entity)
         {
@@ -274,6 +280,22 @@ namespace Battle
             }
         }
 
+        /// <summary>tick 线程排空待执行动作（实体迁移等需在单线程内访问实体状态）。</summary>
+        private static void DrainTickActions()
+        {
+            while (tickActions.TryDequeue(out var action))
+            {
+                try
+                {
+                    action();
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "tick 动作执行异常");
+                }
+            }
+        }
+
         /// <summary>
         /// 在 tick 线程内处理一条入站消息：新协议分发优先（强类型 + MemoryPack/JSON 双格式兼容），旧路由回退。
         /// 所有 Battle 处理器均同步完成（Task.FromResult/CompletedTask），此处安全使用 GetResult 串行执行。
@@ -287,6 +309,13 @@ namespace Battle
 
             try
             {
+                // 冻结实体迁移：迁移中的会话消息暂缓（丢弃），等迁移完成/回滚后恢复
+                if (originalSessionId > 0 && migratingSessions.ContainsKey(originalSessionId))
+                {
+                    Log.Debug($"客户端会话 {originalSessionId} 正在实体迁移，消息暂缓 MsgId:{msgId}");
+                    return;
+                }
+
                 if (dispatcher != null && dispatcher.TryDispatch(new Battle.Handlers.BattleSessionContext(session, originalSessionId), msgId, payload).GetAwaiter().GetResult())
                 {
                     Log.Debug("Battle 新协议分发完成 MsgId:{MsgId} ClientSessionId:{ClientSessionId}", msgId, originalSessionId);
@@ -353,6 +382,233 @@ namespace Battle
             clientGatewaySessions.TryRemove(clientSessionId, out _);
         }
 
+        // ===== 实体在线迁移（C2 第二阶段：冻结-序列化-搬迁-恢复，Center 协调中继，对标 KBE cellapp 实体搬迁） =====
+
+        /// <summary>在 tick 线程上执行动作（实体状态访问必须在单线程内进行）。</summary>
+        public static void RunOnTick(Action action)
+        {
+            if (action != null)
+            {
+                tickActions.Enqueue(action);
+            }
+        }
+
+        /// <summary>该客户端会话是否处于实体迁移冻结中。</summary>
+        public static bool IsClientMigrating(long clientSessionId) => migratingSessions.ContainsKey(clientSessionId);
+
+        private static void FreezeClientSession(long clientSessionId) => migratingSessions[clientSessionId] = 0;
+
+        private static void UnfreezeClientSession(long clientSessionId) => migratingSessions.TryRemove(clientSessionId, out _);
+
+        /// <summary>序列化玩家实体全部属性（含 CELL_PRIVATE 内部状态）为迁移负载；实体不存在返回 null。</summary>
+        public static byte[]? SerializeEntityForMigration(long clientSessionId)
+        {
+            var scene = sceneManager?.GetSceneByPlayer(clientSessionId);
+            var entity = scene?.EntityManager.GetEntity(clientSessionId);
+            if (entity == null)
+            {
+                return null;
+            }
+            return Framework.Entity.PropertyCodec.SerializeAllValues(entity.CopyValues(), entity.Def, onlySyncToClient: false);
+        }
+
+        /// <summary>按实体类型名解析定义（迁移恢复用）。</summary>
+        private static Framework.Entity.EntityDef? ResolveEntityDef(string typeName) => typeName switch
+        {
+            "Player" => Battle.Entities.PlayerEntityDef.Def,
+            "Npc" => Battle.Entities.GameplayEntityDefs.Npc,
+            "Quest" => Battle.Entities.GameplayEntityDefs.Quest,
+            "Skill" => Battle.Entities.GameplayEntityDefs.Skill,
+            "Item" => Battle.Entities.GameplayEntityDefs.Item,
+            _ => null
+        };
+
+        /// <summary>
+        /// 在目标场景恢复迁移实体（含场景绑定/AOI/脚本 OnCreate 通知）。返回恢复的实体；失败返回 null。
+        /// v1 说明：仅迁移玩家主实体（EntityId = ClientSessionId）；Skill/Item/Npc 等玩法实体暂不跨节点搬迁。
+        /// </summary>
+        public static Framework.Entity.Entity? RestoreMigratedEntity(long entityId, string entityType, string sceneId, byte[] props)
+        {
+            var scene = sceneManager?.GetScene(sceneId);
+            if (scene == null)
+            {
+                Log.Warning($"实体迁移恢复失败：目标场景不存在 SceneId:{sceneId}");
+                return null;
+            }
+            if (scene.EntityManager.GetEntity(entityId) != null)
+            {
+                Log.Warning($"实体迁移恢复失败：实体已存在 EntityId:{entityId} SceneId:{sceneId}");
+                return null;
+            }
+            var def = ResolveEntityDef(entityType);
+            if (def == null)
+            {
+                Log.Warning($"实体迁移恢复失败：未知实体类型 {entityType}");
+                return null;
+            }
+
+            var entity = def.CreateEntity(entityId);
+            Framework.Entity.PropertyCodec.DeserializeInto(entity, props, applyDirty: false);
+            if (string.Equals(entityType, "Player", StringComparison.Ordinal))
+            {
+                entity.OwnerClientId = entityId; // 玩家实体：属主 = 会话 ID = 实体 ID
+                sceneManager.BindPlayerToScene(entityId, sceneId);
+            }
+            RegisterSceneEntity(scene, entity);
+            Log.Info($"实体迁移恢复完成 EntityId:{entityId} Type:{entityType} Scene:{sceneId}");
+            return entity;
+        }
+
+        /// <summary>向 Center 回 91004 迁移结果。</summary>
+        private static void SendMigrateResult(bool success, long clientSessionId, long entityId, string newNodeId, string message)
+        {
+            if (centerClient == null)
+            {
+                return;
+            }
+            var res = new Framework.Protocol.Generated.EntityMigrateResult
+            {
+                Success = success,
+                ClientSessionId = clientSessionId,
+                EntityId = entityId,
+                NewNodeId = newNodeId,
+                Message = message
+            };
+            byte[] payload = res.Serialize();
+            byte[] packet = PacketBuilder.BuildPacket(Framework.Protocol.Generated.MessageIds.EntityMigrateResult, payload, out int totalLength);
+            try
+            {
+                Network.PacketSender.Send(centerClient, packet, totalLength);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "发送实体迁移结果失败");
+            }
+        }
+
+        /// <summary>处理迁移入（目标 Battle）：恢复实体 + 回 91004 到 Center。</summary>
+        public static void HandleEntityMigrateIn(Framework.Protocol.Generated.EntityMigrateRequest req)
+        {
+            try
+            {
+                var entity = RestoreMigratedEntity(
+                    req.EntityId,
+                    req.EntityType ?? string.Empty,
+                    req.SceneId ?? string.Empty,
+                    req.Props ?? Array.Empty<byte>());
+                SendMigrateResult(entity != null, req.ClientSessionId, req.EntityId, CurrentNodeId, entity != null ? "迁移成功" : "迁移恢复失败");
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, $"实体迁移入处理异常 EntityId:{req.EntityId}");
+                SendMigrateResult(false, req.ClientSessionId, req.EntityId, CurrentNodeId, ex.Message);
+            }
+        }
+
+        /// <summary>处理迁移出结果（源 Battle）：成功则移除本地实体；失败解除冻结（回滚）。</summary>
+        public static void HandleEntityMigrateOutResult(Framework.Protocol.Generated.EntityMigrateResult res)
+        {
+            if (res.Success)
+            {
+                CompleteMigrateOut(res.ClientSessionId);
+            }
+            else
+            {
+                UnfreezeClientSession(res.ClientSessionId);
+                Log.Warning($"实体迁移失败，已回滚解除冻结 ClientSessionId:{res.ClientSessionId} Reason:{res.Message}");
+            }
+        }
+
+        /// <summary>完成迁移出：移除本地实体/场景绑定/AOI + 通知周边 + 解除冻结（v1：玩家主实体）。</summary>
+        private static void CompleteMigrateOut(long clientSessionId)
+        {
+            UnfreezeClientSession(clientSessionId);
+            var scene = sceneManager?.GetSceneByPlayer(clientSessionId);
+            if (scene == null)
+            {
+                sceneManager?.UnbindPlayer(clientSessionId);
+                Log.Info($"实体迁移出完成（无场景）ClientSessionId:{clientSessionId}");
+                return;
+            }
+
+            var entity = scene.EntityManager.GetEntity(clientSessionId);
+            if (entity != null)
+            {
+                NotifyEntityDestroyed(entity);
+            }
+
+            var gatewaySession = GetGatewaySessionByClient(clientSessionId);
+            if (gatewaySession != null)
+            {
+                entitySyncHandler?.OnPlayerLeave(clientSessionId, gatewaySession);
+            }
+            else
+            {
+                scene.EntityManager.RemoveEntity(clientSessionId);
+                scene.AoiManager?.RemoveEntity(clientSessionId);
+                sceneManager.UnbindPlayer(clientSessionId);
+            }
+            UnbindClientGateway(clientSessionId);
+            SyncRoomPlayerCount(scene.SceneId);
+            Log.Info($"实体迁移出完成，源节点已移除实体 ClientSessionId:{clientSessionId}");
+        }
+
+        /// <summary>
+        /// 发起实体迁移（源 Battle）：冻结会话 → 序列化 → 发 91003 到 Center（Center 中继目标节点）。
+        /// 结果经 91004 异步回到 tick 线程（HandleEntityMigrateOutResult）：成功移除本地实体，失败回滚解冻。
+        /// 注意：须在 tick 线程调用（或经 RunOnTick 排队），因为序列化读取实体状态。
+        /// </summary>
+        public static void StartEntityMigration(long clientSessionId, string targetNodeId)
+        {
+            if (centerClient == null)
+            {
+                Log.Warning($"实体迁移失败：未连接 Center ClientSessionId:{clientSessionId}");
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(targetNodeId) || targetNodeId == CurrentNodeId)
+            {
+                Log.Warning($"实体迁移目标节点无效 TargetNodeId:{targetNodeId} ClientSessionId:{clientSessionId}");
+                return;
+            }
+            if (migratingSessions.ContainsKey(clientSessionId))
+            {
+                Log.Warning($"实体迁移已在进行 ClientSessionId:{clientSessionId}");
+                return;
+            }
+
+            var scene = sceneManager?.GetSceneByPlayer(clientSessionId);
+            var entity = scene?.EntityManager.GetEntity(clientSessionId);
+            if (scene == null || entity == null)
+            {
+                Log.Warning($"实体迁移失败：玩家实体不存在 ClientSessionId:{clientSessionId}");
+                return;
+            }
+
+            FreezeClientSession(clientSessionId);
+            var req = new Framework.Protocol.Generated.EntityMigrateRequest
+            {
+                SourceNodeId = CurrentNodeId,
+                TargetNodeId = targetNodeId,
+                ClientSessionId = clientSessionId,
+                EntityId = clientSessionId,
+                EntityType = entity.TypeName,
+                SceneId = scene.SceneId,
+                Props = Framework.Entity.PropertyCodec.SerializeAllValues(entity.CopyValues(), entity.Def, onlySyncToClient: false)
+            };
+            byte[] payload = req.Serialize();
+            byte[] packet = PacketBuilder.BuildPacket(Framework.Protocol.Generated.MessageIds.EntityMigrateRequest, payload, out int totalLength);
+            try
+            {
+                Network.PacketSender.Send(centerClient, packet, totalLength);
+                Log.Info($"实体迁移发起 ClientSessionId:{clientSessionId} -> {targetNodeId} Scene:{scene.SceneId}");
+            }
+            catch (Exception ex)
+            {
+                UnfreezeClientSession(clientSessionId);
+                Log.Error(ex, $"实体迁移发起失败 ClientSessionId:{clientSessionId}");
+            }
+        }
+
         /// <summary>
         /// 加载配置，构建场景与消息处理器，注册并启动战斗服务器的 TCP 网络，处理会话连接/断开与数据接收并分发内部消息，随后连接到中心服。
         /// </summary>
@@ -412,6 +668,7 @@ namespace Battle
             // 入站消息排空（mailbox）→ 脚本 OnTick → 备份平滑分摊 → Witness 增量广播
             tickEngine.OnTick += frame =>
             {
+                DrainTickActions();
                 DrainInboundMessages();
 
                 if (sceneManager != null)

@@ -120,6 +120,14 @@ public static class MessageIds
     public const int EntityRemoteCall = 91001;
     /// <summary>91002 EntityRemoteCallResult -> All [internal]</summary>
     public const int EntityRemoteCallResult = 91002;
+    /// <summary>91003 EntityMigrateRequest -> All [internal]</summary>
+    public const int EntityMigrateRequest = 91003;
+    /// <summary>91004 EntityMigrateResult -> All [internal]</summary>
+    public const int EntityMigrateResult = 91004;
+    /// <summary>91005 EntityMigrateRouted -> All [internal]</summary>
+    public const int EntityMigrateRouted = 91005;
+    /// <summary>91006 EntityMigrateCommand -> Battle [internal]</summary>
+    public const int EntityMigrateCommand = 91006;
     /// <summary>1000 DbGetMaxUid -> Db [internal]</summary>
     public const int DbGetMaxUid = 1000;
     /// <summary>1100 DbGetMaxUidResult -> Db [internal]</summary>

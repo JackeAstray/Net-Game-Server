@@ -596,6 +596,26 @@ namespace Gateway
                 Shared.Log.Debug("Gateway <- Center 收到回包 MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} Remote:{Remote}", msgId, data.Length, payloadLength, session.RemoteEndPoint);
                 byte[] payload = data.Slice(4).ToArray();
 
+                // 实体迁移（91005）：Center 通知切换玩家 Battle 节点绑定（对标 KBE cellappmgr 实体搬迁后的路由更新）。
+                // 内部控制消息无客户端路由元数据，须在元数据提取之前处理。
+                if (msgId == Framework.Protocol.Generated.MessageIds.EntityMigrateRouted)
+                {
+                    try
+                    {
+                        var routed = MemoryPackSerializer.Deserialize<Framework.Protocol.Generated.EntityMigrateRouted>(payload.AsSpan());
+                        if (routed != null && routed.ClientSessionId > 0 && !string.IsNullOrWhiteSpace(routed.NewNodeId))
+                        {
+                            clientBattleNodeBindings[routed.ClientSessionId] = routed.NewNodeId;
+                            Shared.Log.Info($"Gateway 实体迁移更新玩家 Battle 绑定 ClientSessionId:{routed.ClientSessionId} -> {routed.NewNodeId}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Shared.Log.Warning($"Gateway 解析 EntityMigrateRouted 失败: {ex.Message}");
+                    }
+                    return;
+                }
+
                 bool broadcast = Shared.RouteMetadata.TryExtractBroadcast(payload, out bool broadcastFlag, out var payloadAfterBroadcast) && broadcastFlag;
                 if (broadcast)
                 {

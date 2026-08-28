@@ -499,6 +499,30 @@ Console.WriteLine($"删除实体: 剩余文件数={recoverService.Count("Player"
 if (recoverService.Count("Player") != 4) return 1;
 Directory.Delete(persistDir, recursive: true);
 
+// ===== 15.5 实体在线迁移：属性全量序列化（含 CELL_PRIVATE 内部状态）→ 恢复回环 =====
+{
+    var migDef = new Framework.Entity.EntityDef { Name = "Player" }
+        .Add("Hp", Framework.Entity.EntityPropertyType.Int32)
+        .Add("Nickname", Framework.Entity.EntityPropertyType.String)
+        .Add("Position", Framework.Entity.EntityPropertyType.Float3)
+        .Add("Equipment", Framework.Entity.EntityPropertyType.Int32List, syncToClient: false); // 内部状态也要迁移
+    var migSrc = migDef.CreateEntity(777);
+    migSrc.Set("Hp", 88);
+    migSrc.Set("Nickname", "Migrant");
+    migSrc.Set("Position", new Framework.Entity.Float3(1, 2, 3));
+    migSrc.Set("Equipment", new List<int> { 7, 8, 9 });
+
+    byte[] migProps = Framework.Entity.PropertyCodec.SerializeAllValues(migSrc.CopyValues(), migDef, onlySyncToClient: false);
+    var migDst = migDef.CreateEntity(777);
+    Framework.Entity.PropertyCodec.DeserializeInto(migDst, migProps, applyDirty: false);
+    bool migOk = migDst.Get<int>("Hp") == 88
+        && migDst.Get<string>("Nickname") == "Migrant"
+        && migDst.Get<Framework.Entity.Float3>("Position").Equals(new Framework.Entity.Float3(1, 2, 3))
+        && migDst.Get<List<int>>("Equipment").SequenceEqual(new[] { 7, 8, 9 });
+    Console.WriteLine($"实体迁移: Props={migProps.Length}B 恢复 Hp={migDst.Get<int>("Hp")} Nick={migDst.Get<string>("Nickname")} Equip={string.Join(",", migDst.Get<List<int>>("Equipment"))} (期望 88/Migrant/7,8,9)");
+    if (!migOk) return 1;
+}
+
 // ===== 16. Center 配置化分发集成验证（MatchHandler 真实链路） =====
 var centerMatchHandler = new Center.Handlers.MatchHandler();
 var centerDispatcher = Center.Handlers.CenterDispatcher.BuildDispatcher(centerMatchHandler);

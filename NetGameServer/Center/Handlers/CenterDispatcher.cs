@@ -357,7 +357,83 @@ public static class CenterDispatcher
             });
         }, jsonFallback: true);
 
+        // ==== 实体在线迁移（C2 第二阶段：Center 协调中继，对标 KBE cellappmgr 实体搬迁） ====
+
+        // 中继 91003：源 Battle -> 目标 Battle（目标恢复实体后回 91004）
+        dispatcher.RegisterSync<EntityMigrateRequest>((ctx, msg) =>
+        {
+            var target = NodeManager.Instance.GetNode(msg.TargetNodeId ?? string.Empty);
+            if (target?.Session == null || !target.Session.IsConnected)
+            {
+                Shared.Log.Warning($"实体迁移中继失败：目标 Battle 节点不可用 TargetNodeId:{msg.TargetNodeId} ClientSessionId:{msg.ClientSessionId}");
+                SendPacketToNode(((CenterSessionContext)ctx).GatewaySession, MessageIds.EntityMigrateResult, new EntityMigrateResult
+                {
+                    Success = false,
+                    ClientSessionId = msg.ClientSessionId,
+                    EntityId = msg.EntityId,
+                    NewNodeId = msg.TargetNodeId ?? string.Empty,
+                    Message = "目标 Battle 节点不可用"
+                });
+                return;
+            }
+
+            if (msg.ClientSessionId > 0)
+            {
+                pendingMigrationSource[msg.ClientSessionId] = msg.SourceNodeId ?? string.Empty;
+            }
+            SendPacketToNode(target.Session, MessageIds.EntityMigrateRequest, msg);
+            Shared.Log.Info($"Center 中继实体迁移 ClientSessionId:{msg.ClientSessionId} -> {msg.TargetNodeId} EntityType:{msg.EntityType} PropsBytes:{msg.Props?.Length ?? 0}");
+        });
+
+        // 回源 91004：目标 Battle -> 源 Battle（成功则源节点移除本地实体）；成功时同步通知 Gateway 切换绑定
+        dispatcher.RegisterSync<EntityMigrateResult>((ctx, msg) =>
+        {
+            if (msg.Success)
+            {
+                var gateway = NodeManager.Instance.GetNodeByType("Gateway");
+                if (gateway?.Session != null)
+                {
+                    SendPacketToNode(gateway.Session, MessageIds.EntityMigrateRouted, new EntityMigrateRouted
+                    {
+                        ClientSessionId = msg.ClientSessionId,
+                        NewNodeId = msg.NewNodeId ?? string.Empty
+                    });
+                    Shared.Log.Info($"Center 通知 Gateway 切换玩家 Battle 绑定 ClientSessionId:{msg.ClientSessionId} -> {msg.NewNodeId}");
+                }
+            }
+
+            if (pendingMigrationSource.TryRemove(msg.ClientSessionId, out var sourceNodeId)
+                && !string.IsNullOrEmpty(sourceNodeId))
+            {
+                var source = NodeManager.Instance.GetNode(sourceNodeId);
+                if (source?.Session != null && source.Session.IsConnected)
+                {
+                    SendPacketToNode(source.Session, MessageIds.EntityMigrateResult, msg);
+                    return;
+                }
+                Shared.Log.Warning($"实体迁移回源失败：源 Battle 节点不可用 SourceNodeId:{sourceNodeId}");
+            }
+        });
+
         return dispatcher;
+    }
+
+    /// <summary>进行中的实体迁移：ClientSessionId -> 源 Battle 节点（91004 回源用）。</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, string> pendingMigrationSource = new();
+
+    /// <summary>向指定节点会话发送一条内部消息包（[MsgId][MemoryPack 负载]）。</summary>
+    private static void SendPacketToNode(Network.ISession session, int msgId, IGameMessage message)
+    {
+        byte[] payload = message.Serialize();
+        byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
+        try
+        {
+            session.Send(packet.AsSpan(0, totalLength).ToArray());
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+        }
     }
 
     private static GenRoomInfo MapRoom(Shared.Messages.Center.RoomInfo r)

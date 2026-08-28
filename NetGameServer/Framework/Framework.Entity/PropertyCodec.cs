@@ -273,11 +273,15 @@ public static class PropertyCodec
     }
 
     /// <summary>
-    /// 从已脱离实体的属性快照序列化全部 SyncToClient 属性（备份服务用，对标迭代 8 三-10 修正）：
+    /// 从已脱离实体的属性快照序列化属性块（备份服务/实体迁移用，对标迭代 8 三-10 修正）：
     /// 主循环线程先把实体属性浅拷贝为快照（O(属性数)），序列化在后台队列线程执行，不再阻塞主循环，
     /// 也不在工作线程读活实体（消除与 tick 线程的数据竞争）。
     /// </summary>
-    public static byte[] SerializeAllValues(IReadOnlyDictionary<string, object?> values, EntityDef def)
+    /// <param name="values">已脱离实体的属性快照（Entity.CopyValues 产物）。</param>
+    /// <param name="def">实体定义（提供属性名/类型/顺序）。</param>
+    /// <param name="onlySyncToClient">true 只序列化客户端可见属性（备份/增量语义）；
+    /// false 序列化全部属性（实体在线迁移需要保留 CELL_PRIVATE 内部状态）。</param>
+    public static byte[] SerializeAllValues(IReadOnlyDictionary<string, object?> values, EntityDef def, bool onlySyncToClient = true)
     {
         using var ms = new MemoryStream(64);
         Span<byte> scratch = stackalloc byte[16];
@@ -289,7 +293,7 @@ public static class PropertyCodec
         int count = 0;
         foreach (var prop in def.Properties.Values)
         {
-            if (!prop.SyncToClient)
+            if (onlySyncToClient && !prop.SyncToClient)
             {
                 continue;
             }

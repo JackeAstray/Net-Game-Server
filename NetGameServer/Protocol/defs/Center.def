@@ -297,6 +297,40 @@
     <Field name="Result" type="bytes" />
   </Message>
 
+  <!-- ==== 实体在线迁移（C2 第二阶段：冻结-序列化-搬迁-恢复，Center 协调中继，对标 KBE cellapp 实体搬迁） ====
+       流程：
+         源 Battle 发 91003 到 Center，Center 中继 91003 到目标 Battle（恢复实体）；
+         目标 Battle 回 91004 到 Center，Center 回源 91004（成功则源 Battle 本地移除实体），
+         Center 同时发 91005 到 Gateway（切换 clientSessionId 到新 Battle 节点绑定）；
+         管理侧 Center 发 91006 到源 Battle（触发指定会话迁往目标节点） -->
+  <Message id="91003" name="EntityMigrateRequest" target="All" internal="true">
+    <Field name="SourceNodeId" type="string" />
+    <Field name="TargetNodeId" type="string" />
+    <Field name="ClientSessionId" type="int64" />
+    <Field name="EntityId" type="int64" />
+    <Field name="EntityType" type="string" />
+    <Field name="SceneId" type="string" />
+    <Field name="Props" type="bytes" />
+  </Message>
+
+  <Message id="91004" name="EntityMigrateResult" target="All" internal="true">
+    <Field name="Success" type="bool" />
+    <Field name="ClientSessionId" type="int64" />
+    <Field name="EntityId" type="int64" />
+    <Field name="NewNodeId" type="string" />
+    <Field name="Message" type="string" />
+  </Message>
+
+  <Message id="91005" name="EntityMigrateRouted" target="All" internal="true">
+    <Field name="ClientSessionId" type="int64" />
+    <Field name="NewNodeId" type="string" />
+  </Message>
+
+  <Message id="91006" name="EntityMigrateCommand" target="Battle" internal="true">
+    <Field name="ClientSessionId" type="int64" />
+    <Field name="TargetNodeId" type="string" />
+  </Message>
+
   <!-- ==== 房间数据结构 ==== -->
   <Struct name="RoomMemberInfo">
     <Field name="UserId" type="int32" />

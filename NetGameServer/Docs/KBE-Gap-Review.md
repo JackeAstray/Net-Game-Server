@@ -408,10 +408,29 @@
   （ProtocolVerify 覆盖 OrderedTaskQueue 20 任务/4 key 严格保序 + 实体备份/恢复回环；NetworkVerify
   覆盖 Battle 全链路 + 断线重连 + 静态分片）。
 
-### 迭代 9（规划）——路线剩余项
+### 迭代 9 —— 实体在线迁移 C2 第二阶段（v1 完成）
 
-- **五-7/C2 实体在线迁移（第二阶段）**：静态分片已落地，进一步做实体迁移（冻结-序列化-搬迁-恢复，
-  EntityPersistenceService 已有序列化基础），需要新增迁移协议与跨节点测试。
+- **五-7/C2 实体在线迁移（第二阶段）**：在迭代 7 静态分片之上补齐实体在线迁移
+  （冻结-序列化-搬迁-恢复，Center 协调中继，对标 KBE cellapp 实体搬迁）。
+  - 协议（Protocol/defs/Center.def，内部消息 target=All/Battle）：91003 EntityMigrateRequest
+    （SourceNodeId/TargetNodeId/ClientSessionId/EntityId/EntityType/SceneId/Props bytes）→
+    91004 EntityMigrateResult → 91005 EntityMigrateRouted（Gateway 重绑定）→
+    91006 EntityMigrateCommand（管理侧触发迁移）。
+  - 流程：源 Battle 冻结会话 + 序列化全部属性（含 CELL_PRIVATE 内部状态）→ 91003 → Center 中继到
+    目标 Battle → 目标恢复实体（场景绑定/AOI/脚本 OnCreate）→ 回 91004 → Center 回源 + 成功时
+    91005 通知 Gateway 切换 clientSessionId → 新 Battle 节点绑定；源 Battle 收到成功结果移除本地
+    实体（失败回滚解冻）。
+  - 关键点：Battle 单线程约束——`RunOnTick` 排队到 tick 线程执行；迁移中会话入站消息冻结暂缓
+    （migratingSessions 集合）；`PropertyCodec.SerializeAllValues` 增加 onlySyncToClient:false
+    全属性序列化（迁移负载）；Center 用 NodeManager 节点表做中继回源（pendingMigrationSource 记录
+    源节点）；Gateway 在 centerClient OnDataReceived 早于路由元数据提取处处理 91005。
+  - v1 范围：仅迁移玩家主实体（EntityId = ClientSessionId，规避跨节点玩法 ID 碰撞）；Skill/Item/Npc
+    等玩法实体暂不跨节点搬迁（孤儿项接受为 v1 限制，后续版本补玩法实体迁移与断线重连衔接）。
+- 验证：`dotnet build` 0 错误；五套件全部通过（ProtocolVerify 覆盖实体迁移属性全量序列化→恢复回环
+  Props=76B；NetworkVerify Part5 伪 Center 下发 91005 后 Gateway 玩家消息 A→B 重绑定）。
+
+### 迭代 10（规划）——路线剩余项
+
 - **三-14 巨型单体类拆分**：MatchHandler（54KB）/ LoginHandler（41KB）/ DbQueryHandler（71KB）/
   GatewayServerApp（45KB）按业务模块拆分，并全部迁移 MessageDispatcher 强类型风格。
 

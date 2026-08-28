@@ -429,13 +429,31 @@ Console.WriteLine("== 静态分片：Gateway 多 Battle 节点路由 ==");
     StartFakeBattleNode(31421, "BAT-B");
 
     // 伪 Center：响应匹配请求，分配节点 B（Battle-127.0.0.1:31421）
+    // 额外支持实体迁移：CategoryId="MIGRATE:<target-node-id>" 时向 Gateway 下发 91005 切换玩家绑定
     var fakeCenter = new TcpServer();
     fakeCenter.OnDataReceived += (session, data) =>
     {
         if (data.Length < 4) return;
         int msgId = BitConverter.ToInt32(data.Span.Slice(0, 4));
         if (msgId != GenIds.CenterMatch) return;
-        if (!Shared.RouteMetadata.TryExtractClientSessionId(data.Slice(4), out long clientSessionId, out _)) return;
+        if (!Shared.RouteMetadata.TryExtractClientSessionId(data.Slice(4), out long clientSessionId, out var matchClean)) return;
+        var matchMsg = MemoryPackSerializer.Deserialize<CenterMatch>(matchClean.AsSpan());
+
+        // 实体迁移重绑定：只下发 91005（EntityMigrateRouted），不走普通匹配回包
+        if (matchMsg != null && matchMsg.CategoryId != null && matchMsg.CategoryId.StartsWith("MIGRATE:"))
+        {
+            string targetNodeId = matchMsg.CategoryId.Substring("MIGRATE:".Length);
+            var routedNotify = new Framework.Protocol.Generated.EntityMigrateRouted
+            {
+                ClientSessionId = clientSessionId,
+                NewNodeId = targetNodeId
+            };
+            byte[] routedPayload = routedNotify.Serialize();
+            byte[] routedPacket = PacketBuilder.BuildPacket(GenIds.EntityMigrateRouted, routedPayload, out int routedLen);
+            Network.PacketSender.Send(session, routedPacket, routedLen);
+            return;
+        }
+
         var res = new CenterMatchResult
         {
             Success = true,
@@ -521,6 +539,63 @@ Console.WriteLine("== 静态分片：Gateway 多 Battle 节点路由 ==");
         await Task.WhenAny(readGw, Task.Delay(1000));
         gwClient.Close();
     }
+}
+
+// ========== 第五部分：实体在线迁移（91005 协议 + Gateway 玩家 Battle 节点绑定切换） ==========
+// 源/目标 Battle 由伪节点（31420/31421）扮演、Center 由伪节点（31999）扮演、Gateway 为真实实例。
+// 验证：迁移成功后 Center 下发 EntityMigrateRouted(91005) → Gateway 把该玩家的战斗消息改路由到新节点。
+Console.WriteLine("== 实体迁移：Gateway 接收 91005 后切换玩家 Battle 节点绑定 ==");
+{
+    using var migClient = new TcpClient();
+    await migClient.ConnectAsync("127.0.0.1", 31400);
+    var ms = migClient.GetStream();
+    var mr = new LengthPrefixedPacketReader();
+    var mb = new byte[8192];
+    var migMarkers = new ConcurrentQueue<string>();
+    var readMig = Task.Run(async () =>
+    {
+        while (true)
+        {
+            int n = await ms.ReadAsync(mb);
+            if (n == 0) break;
+            mr.Append(mb.AsSpan(0, n));
+            while (mr.TryReadPacket(out var pkt))
+            {
+                if (pkt.Length < 4) continue;
+                int msgId = BitConverter.ToInt32(pkt.Span.Slice(0, 4));
+                if (msgId == 40099)
+                {
+                    migMarkers.Enqueue(System.Text.Encoding.UTF8.GetString(pkt.Slice(4).Span));
+                }
+            }
+        }
+    });
+
+    void SendMig(int msgId, byte[] payload)
+    {
+        byte[] packet = PacketBuilder.BuildPacket(msgId, payload, out int len);
+        ms.Write(packet.AsSpan(0, len));
+        System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+    }
+
+    await Task.Delay(500);
+
+    // 1. 未绑定 → 默认节点 A
+    SendMig(GenIds.BattleJoin, new BattleJoin { RoomId = "mig-default" }.Serialize());
+    bool migGotA = await WaitUntil(() => migMarkers.Any(m => m.StartsWith("BAT-A")), TimeSpan.FromSeconds(5));
+    Check(migGotA, "迁移前消息路由到默认节点 A");
+
+    // 2. 模拟迁移完成：Center 向 Gateway 下发 91005，把本客户端绑定切换到节点 B
+    SendMig(GenIds.CenterMatch, new CenterMatch { CategoryId = "MIGRATE:Battle-127.0.0.1:31421" }.Serialize());
+    await Task.Delay(300); // 等待 91005 经伪 Center 到达 Gateway 并完成绑定切换
+
+    // 3. 绑定切换后，后续战斗消息路由到节点 B
+    SendMig(GenIds.BattleJoin, new BattleJoin { RoomId = "mig-after" }.Serialize());
+    bool migGotB = await WaitUntil(() => migMarkers.Any(m => m.StartsWith("BAT-B")), TimeSpan.FromSeconds(5));
+    Check(migGotB, "迁移重绑定后消息路由到节点 B");
+
+    await Task.WhenAny(readMig, Task.Delay(1000));
+    migClient.Close();
 }
 
 Console.WriteLine(failures == 0 ? "\n===== NetworkVerify 全部通过 =====" : $"\n===== NetworkVerify 失败 {failures} 项 =====");

@@ -935,6 +935,70 @@ public partial class EntityRemoteCallResult : IGameMessage
 }
 
 [MemoryPackable]
+public partial class EntityMigrateRequest : IGameMessage
+{
+    public const int MsgId = 91003;
+    public const string TargetServer = "All";
+    int IGameMessage.MessageId => MsgId;
+    /// <summary>序列化为 MemoryPack 二进制负载（不含帧头）。</summary>
+    public byte[] Serialize() => MemoryPackSerializer.Serialize(this);
+    /// <summary>从二进制负载反序列化。</summary>
+    public static EntityMigrateRequest? Deserialize(ReadOnlySpan<byte> payload) => MemoryPackSerializer.Deserialize<EntityMigrateRequest>(payload);
+    public string SourceNodeId { get; set; } = string.Empty;
+    public string TargetNodeId { get; set; } = string.Empty;
+    public long ClientSessionId { get; set; } = default;
+    public long EntityId { get; set; } = default;
+    public string EntityType { get; set; } = string.Empty;
+    public string SceneId { get; set; } = string.Empty;
+    public byte[] Props { get; set; } = Array.Empty<byte>();
+}
+
+[MemoryPackable]
+public partial class EntityMigrateResult : IGameMessage
+{
+    public const int MsgId = 91004;
+    public const string TargetServer = "All";
+    int IGameMessage.MessageId => MsgId;
+    /// <summary>序列化为 MemoryPack 二进制负载（不含帧头）。</summary>
+    public byte[] Serialize() => MemoryPackSerializer.Serialize(this);
+    /// <summary>从二进制负载反序列化。</summary>
+    public static EntityMigrateResult? Deserialize(ReadOnlySpan<byte> payload) => MemoryPackSerializer.Deserialize<EntityMigrateResult>(payload);
+    public bool Success { get; set; } = default;
+    public long ClientSessionId { get; set; } = default;
+    public long EntityId { get; set; } = default;
+    public string NewNodeId { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+public partial class EntityMigrateRouted : IGameMessage
+{
+    public const int MsgId = 91005;
+    public const string TargetServer = "All";
+    int IGameMessage.MessageId => MsgId;
+    /// <summary>序列化为 MemoryPack 二进制负载（不含帧头）。</summary>
+    public byte[] Serialize() => MemoryPackSerializer.Serialize(this);
+    /// <summary>从二进制负载反序列化。</summary>
+    public static EntityMigrateRouted? Deserialize(ReadOnlySpan<byte> payload) => MemoryPackSerializer.Deserialize<EntityMigrateRouted>(payload);
+    public long ClientSessionId { get; set; } = default;
+    public string NewNodeId { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+public partial class EntityMigrateCommand : IGameMessage
+{
+    public const int MsgId = 91006;
+    public const string TargetServer = "Battle";
+    int IGameMessage.MessageId => MsgId;
+    /// <summary>序列化为 MemoryPack 二进制负载（不含帧头）。</summary>
+    public byte[] Serialize() => MemoryPackSerializer.Serialize(this);
+    /// <summary>从二进制负载反序列化。</summary>
+    public static EntityMigrateCommand? Deserialize(ReadOnlySpan<byte> payload) => MemoryPackSerializer.Deserialize<EntityMigrateCommand>(payload);
+    public long ClientSessionId { get; set; } = default;
+    public string TargetNodeId { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
 public partial class DbFriendInfo
 {
     public int FriendUserId { get; set; } = default;

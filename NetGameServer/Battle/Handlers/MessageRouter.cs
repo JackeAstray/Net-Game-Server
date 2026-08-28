@@ -268,6 +268,28 @@ namespace Battle.Handlers
                 },
                 jsonFallback: true);
 
+            // ==== 实体在线迁移（C2 第二阶段：冻结-序列化-搬迁-恢复） ====
+            // 迁移入（Center 中继的 91003）：目标 Battle 恢复实体并回 91004
+            dispatcher.RegisterSync<Framework.Protocol.Generated.EntityMigrateRequest>(
+                (ctx, msg) =>
+                {
+                    Battle.BattleServerApp.HandleEntityMigrateIn(msg);
+                });
+
+            // 迁移出结果（Center 回源的 91004）：成功移除本地实体，失败回滚解冻
+            dispatcher.RegisterSync<Framework.Protocol.Generated.EntityMigrateResult>(
+                (ctx, msg) =>
+                {
+                    Battle.BattleServerApp.HandleEntityMigrateOutResult(msg);
+                });
+
+            // 迁移命令（Center 下发的 91006）：触发指定会话迁往目标节点（负载均衡/管理侧）
+            dispatcher.RegisterSync<Framework.Protocol.Generated.EntityMigrateCommand>(
+                (ctx, msg) =>
+                {
+                    Battle.BattleServerApp.StartEntityMigration(msg.ClientSessionId, msg.TargetNodeId);
+                });
+
             return dispatcher;
         }
 

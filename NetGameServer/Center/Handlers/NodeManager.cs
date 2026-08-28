@@ -180,6 +180,17 @@ namespace Center.Handlers
         }
 
         /// <summary>
+        /// 按类型检索第一个在线节点（实体迁移中继/通知用，对标 KBE cellappmgr 节点表）。
+        /// </summary>
+        /// <param name="nodeType">节点类型（"Battle"/"Game"/"Gateway"）。</param>
+        /// <returns>第一个该类型且已连接的节点，无则 null。</returns>
+        public ServerNodeInfo? GetNodeByType(string nodeType)
+        {
+            return nodes.Values.FirstOrDefault(n =>
+                n.NodeType.Equals(nodeType, StringComparison.OrdinalIgnoreCase) && n.Session.IsConnected);
+        }
+
+        /// <summary>
         /// 返回节点集合中的元素数量。
         /// </summary>
         /// <returns>集合中的节点数。</returns>
