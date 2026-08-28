@@ -463,8 +463,20 @@
   PVP(10) 房间实际只能容纳 2 名玩家；改为 GetPlayerCount 反索引只统计真实玩家。
 - 验证：`dotnet build` 0 错误；五套件全部通过。
 
-### 迭代 12（规划）——后续增强项
+### 迭代 12 —— Game FriendHandler 同构拆分（完成）
 
-- 玩法实体跨节点迁移（Skill/Item/Npc）v2、Game 服务器 ChatHandler/FriendHandler 同构拆分、
-  跨进程 EntityCall（91001/91002）实战应用等。
+- **Game 服务器 ChatHandler/FriendHandler 同构拆分**：FriendHandler（1519 行）按业务域拆为
+  6 个 partial 文件（零逻辑改动）：
+  - `FriendHandler.cs`（基础：字段/请求状态/旧注册表/共享 DB 辅助）+ `FriendOps.cs`（好友增删改查/
+    缓存/在线）+ `BlacklistOps.cs`（黑名单/封禁判断）+ `ApplyOps.cs`（好友申请）+ `InviteOps.cs`
+    （游戏邀请/回执/去重限流/离线补发）+ `DbResponse.cs`（DB 回包统一入口）。
+  - ChatHandler（195 行）体量小，无需拆分。
+- 强类型化进度：Game 分发层（GameDispatcher）已全量生成协议注册；业务层仍走 JSON 负载
+  （MemoryPack→JSON 二次序列化），作为后续收尾项。
+- 验证：`dotnet build` 0 错误；五套件全部通过；方法集原/新 31 个逐一比对一致。
+
+### 迭代 13（规划）——后续增强项
+
+- 玩法实体跨节点迁移（Skill/Item/Npc）v2、FriendHandler 业务层强类型化收尾
+  （去掉 MemoryPack→JSON 二次序列化）、跨进程 EntityCall（91001/91002）实战应用等。
 
