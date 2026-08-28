@@ -99,6 +99,9 @@ public static class Log
         if (sink != null) sink("WARN", Format(template, values));
     }
 
+    /// <summary>Warn 的别名（业务层惯例使用 Warning）。</summary>
+    public static void Warning(string template, params object?[] values) => Warn(template, values);
+
     public static void Error(string template, params object?[] values)
     {
         if (!Serilog.Log.IsEnabled(LogEventLevel.Error)) return;
@@ -114,6 +117,25 @@ public static class Log
         var sink = LogSink;
         if (sink != null) sink("ERROR", $"{Format(template, values)} Exception:{ex.Message}");
     }
+
+    public static void Fatal(string template, params object?[] values)
+    {
+        if (!Serilog.Log.IsEnabled(LogEventLevel.Fatal)) return;
+        Serilog.Log.Fatal(template, values);
+        var sink = LogSink;
+        if (sink != null) sink("FATAL", Format(template, values));
+    }
+
+    public static void Fatal(Exception ex, string template, params object?[] values)
+    {
+        if (!Serilog.Log.IsEnabled(LogEventLevel.Fatal)) return;
+        Serilog.Log.Fatal(ex, template, values);
+        var sink = LogSink;
+        if (sink != null) sink("FATAL", $"{Format(template, values)} Exception:{ex.Message}");
+    }
+
+    /// <summary>关闭并刷新所有日志接收器（进程退出时调用）。</summary>
+    public static void CloseAndFlush() => Serilog.Log.CloseAndFlush();
 
     private static string Format(string template, object?[] values)
     {

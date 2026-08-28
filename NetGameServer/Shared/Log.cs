@@ -1,204 +1,87 @@
-using Serilog;
-using Serilog.Events;
-
 namespace Shared
 {
     /// <summary>
-    /// 日志帮助类，提供对 Serilog 的封装
-    /// 性能约定：所有方法在日志级别被禁用时零成本返回（不格式化），
-    /// 热路径调用请使用模板形式（Log.Debug("... {Field}", value)）而非字符串插值。
+    /// 日志门面（业务层入口）——统一转发到 Framework.Core.Log 单一配置源。
+    ///
+    /// 设计说明（对标迭代 8 三-7 修正）：
+    /// 历史上 Shared.Log 与 Framework.Core.Log 各自 CloseAndFlush + 重设全局 Serilog Logger，
+    /// 谁后配置谁生效（文件路径还不同：logs/log.txt vs logs/framework.log），输出不稳定；
+    /// 且 Shared.Log 的静态构造函数会在任意代码首次触碰时把全局 Logger 重置回默认路径，
+    /// 静默覆盖进程启动时已配置好的 Logger。
+    /// 本类现在是纯转发门面：不持有配置、不重设 Logger，所有调用转发到 Framework.Core.Log。
+    /// 每个进程只需在启动时调用一次 Configure（业务层入口 Program 均调用本类的 Configure）。
+    /// 转发同时修复了业务层日志不触发 LogSink（远程聚合）的缺口——Framework.Core.Log 的
+    /// LogSink 事件现在对业务日志同样生效。
     /// </summary>
     public static class Log
     {
-        private static bool enableConsoleLog = true;
-        private static string logFilePath = "logs/log.txt";
-
-        static Log()
-        {
-            ConfigureLogger("Information");
-        }
-
         /// <summary>Debug 级别是否启用（热路径日志守卫用）。</summary>
-        public static bool IsDebugEnabled => Serilog.Log.IsEnabled(LogEventLevel.Debug);
+        public static bool IsDebugEnabled => Framework.Core.Log.IsDebugEnabled;
 
         /// <summary>Verbose 级别是否启用（热路径日志守卫用）。</summary>
-        public static bool IsVerboseEnabled => Serilog.Log.IsEnabled(LogEventLevel.Verbose);
+        public static bool IsVerboseEnabled => Framework.Core.Log.IsVerboseEnabled;
 
         /// <summary>Information 级别是否启用。</summary>
-        public static bool IsInfoEnabled => Serilog.Log.IsEnabled(LogEventLevel.Information);
+        public static bool IsInfoEnabled => Framework.Core.Log.IsInfoEnabled;
 
         /// <summary>
-        /// 重新配置日志，允许设置是否输出到控制台以及日志文件路径
+        /// 配置并初始化日志（转发到单一配置源）。进程启动时调用一次。
         /// </summary>
-        /// <param name="enableConsoleLog">是否启用控制台输出</param>
-        /// <param name="logFilePath">日志文件路径，默认为 logs/log.txt</param>
-        /// <param name="minimumLevel">最低日志级别（"Verbose"/"Debug"/"Information"/"Warning"/"Error"，默认 Information）</param>
+        /// <param name="enableConsoleLog">是否启用控制台输出（仅 Error 及以上）。</param>
+        /// <param name="logFilePath">日志文件路径。</param>
+        /// <param name="minimumLevel">最低日志级别（"Verbose"/"Debug"/"Information"/"Warning"/"Error"，默认 Information）。</param>
         public static void Configure(bool enableConsoleLog = true, string logFilePath = "logs/log.txt", string minimumLevel = "Information")
-        {
-            Log.enableConsoleLog = enableConsoleLog;
-            Log.logFilePath = logFilePath;
-            ConfigureLogger(minimumLevel);
-        }
+            => Framework.Core.Log.Configure(enableConsoleLog, logFilePath, minimumLevel);
 
-        /// <summary>
-        /// 为应用程序配置Serilog日志记录器，包括文件和可选的控制台日志记录。
-        /// </summary>
-        /// <remarks>
-        /// 将最低日志级别设置为参数指定级别，并将日志写入具有每日滚动功能的文件间隔。
-        /// 如果启用了控制台日志，日志也会写入控制台。必须调用此方法在记录之前，确保正确的记录器初始化
-        /// </remarks>
-        private static void ConfigureLogger(string minimumLevel)
-        {
-            var configuration = new LoggerConfiguration()
-                .MinimumLevel.Is(ParseLevel(minimumLevel));
-
-            // 将文件 sink 包装为异步写入，减少同步 I/O 阻塞的风险
-            configuration.WriteTo.Async(a => a.File(logFilePath,
-                rollingInterval: RollingInterval.Day,
-                retainedFileCountLimit: 10,
-                fileSizeLimitBytes: 10 * 1024 * 1024,
-                rollOnFileSizeLimit: true));
-
-            // 控制台 sink 仅输出 Error 及以上级别，并使用异步写入以降低阻塞风险
-            if (Log.enableConsoleLog)
-            {
-                configuration.WriteTo.Async(a => a.Console(restrictedToMinimumLevel: LogEventLevel.Error));
-            }
-
-            // 如果已存在活动的Logger，先刷新并关闭释放资源（避免重复配置导致文件被占用或线程泄漏）
-            Serilog.Log.CloseAndFlush();
-            Serilog.Log.Logger = configuration.CreateLogger();
-        }
-
-        private static LogEventLevel ParseLevel(string? level) => level?.Trim().ToLowerInvariant() switch
-        {
-            "verbose" or "trace" => LogEventLevel.Verbose,
-            "debug" => LogEventLevel.Debug,
-            "warning" or "warn" => LogEventLevel.Warning,
-            "error" => LogEventLevel.Error,
-            "fatal" => LogEventLevel.Fatal,
-            _ => LogEventLevel.Information
-        };
-
-        /// <summary>
-        /// 记录一条信息级别的日志
-        /// </summary>
-        /// <param name="messageTemplate">消息模板</param>
+        /// <summary>记录一条信息级别的日志。</summary>
         public static void Info(string messageTemplate)
-        {
-            if (!Serilog.Log.IsEnabled(LogEventLevel.Information)) return;
-            Serilog.Log.Information(messageTemplate);
-        }
+            => Framework.Core.Log.Info(messageTemplate);
 
-        /// <summary>
-        /// 记录一条信息级别的日志，带有格式化的属性值
-        /// </summary>
-        /// <param name="messageTemplate">消息模板</param>
-        /// <param name="propertyValues">属性值数组</param>
+        /// <summary>记录一条信息级别的日志，带有格式化属性值。</summary>
         public static void Info(string messageTemplate, params object[] propertyValues)
-        {
-            if (!Serilog.Log.IsEnabled(LogEventLevel.Information)) return;
-            Serilog.Log.Information(messageTemplate, propertyValues);
-        }
+            => Framework.Core.Log.Info(messageTemplate, propertyValues);
 
-        /// <summary>
-        /// 记录一条调试级别的日志
-        /// </summary>
-        /// <param name="messageTemplate">消息模板</param>
+        /// <summary>记录一条调试级别的日志。</summary>
         public static void Debug(string messageTemplate)
-        {
-            if (!Serilog.Log.IsEnabled(LogEventLevel.Debug)) return;
-            Serilog.Log.Debug(messageTemplate);
-        }
+            => Framework.Core.Log.Debug(messageTemplate);
 
-        /// <summary>
-        /// 记录一条调试级别的日志，带有格式化的属性值
-        /// </summary>
-        /// <param name="messageTemplate">消息模板</param>
-        /// <param name="propertyValues">属性值数组</param>
+        /// <summary>记录一条调试级别的日志，带有格式化属性值。</summary>
         public static void Debug(string messageTemplate, params object[] propertyValues)
-        {
-            if (!Serilog.Log.IsEnabled(LogEventLevel.Debug)) return;
-            Serilog.Log.Debug(messageTemplate, propertyValues);
-        }
+            => Framework.Core.Log.Debug(messageTemplate, propertyValues);
 
-        /// <summary>
-        /// 记录一条警告级别的日志
-        /// </summary>
-        /// <param name="messageTemplate">消息模板</param>
+        /// <summary>记录一条警告级别的日志。</summary>
         public static void Warning(string messageTemplate)
-        {
-            if (!Serilog.Log.IsEnabled(LogEventLevel.Warning)) return;
-            Serilog.Log.Warning(messageTemplate);
-        }
+            => Framework.Core.Log.Warning(messageTemplate);
 
-        /// <summary>
-        /// 记录一条警告级别的日志，带有格式化的属性值
-        /// </summary>
-        /// <param name="messageTemplate">消息模板</param>
-        /// <param name="propertyValues">属性值数组</param>
+        /// <summary>记录一条警告级别的日志，带有格式化属性值。</summary>
         public static void Warning(string messageTemplate, params object[] propertyValues)
-        {
-            if (!Serilog.Log.IsEnabled(LogEventLevel.Warning)) return;
-            Serilog.Log.Warning(messageTemplate, propertyValues);
-        }
+            => Framework.Core.Log.Warning(messageTemplate, propertyValues);
 
-        /// <summary>
-        /// 记录一条错误级别的日志
-        /// </summary>
-        /// <param name="messageTemplate">消息模板</param>
+        /// <summary>Warn 别名。</summary>
+        public static void Warn(string messageTemplate, params object[] propertyValues)
+            => Framework.Core.Log.Warn(messageTemplate, propertyValues);
+
+        /// <summary>记录一条错误级别的日志。</summary>
         public static void Error(string messageTemplate)
-        {
-            if (!Serilog.Log.IsEnabled(LogEventLevel.Error)) return;
-            Serilog.Log.Error(messageTemplate);
-        }
+            => Framework.Core.Log.Error(messageTemplate);
 
-        /// <summary>
-        /// 记录一条错误级别的日志，带有格式化的属性值
-        /// </summary>
-        /// <param name="messageTemplate">消息模板</param>
-        /// <param name="propertyValues">属性值数组</param>
+        /// <summary>记录一条错误级别的日志，带有格式化属性值。</summary>
         public static void Error(string messageTemplate, params object[] propertyValues)
-        {
-            if (!Serilog.Log.IsEnabled(LogEventLevel.Error)) return;
-            Serilog.Log.Error(messageTemplate, propertyValues);
-        }
+            => Framework.Core.Log.Error(messageTemplate, propertyValues);
 
-        /// <summary>
-        /// 记录一条带有异常信息的错误级别的日志
-        /// </summary>
-        /// <param name="exception">异常对象</param>
-        /// <param name="messageTemplate">消息模板</param>
+        /// <summary>记录一条带异常的错误级别日志。</summary>
         public static void Error(System.Exception exception, string messageTemplate)
-        {
-            if (!Serilog.Log.IsEnabled(LogEventLevel.Error)) return;
-            Serilog.Log.Error(exception, messageTemplate);
-        }
+            => Framework.Core.Log.Error(exception, messageTemplate);
 
-        /// <summary>
-        /// 记录一条致命级别的日志
-        /// </summary>
-        /// <param name="messageTemplate">消息模板</param>
+        /// <summary>记录一条致命级别的日志。</summary>
         public static void Fatal(string messageTemplate)
-        {
-            if (!Serilog.Log.IsEnabled(LogEventLevel.Fatal)) return;
-            Serilog.Log.Fatal(messageTemplate);
-        }
+            => Framework.Core.Log.Fatal(messageTemplate);
 
-        /// <summary>
-        /// 记录一条带有异常信息的致命级别的日志
-        /// </summary>
-        /// <param name="exception">异常对象</param>
-        /// <param name="messageTemplate">消息模板</param>
+        /// <summary>记录一条带异常的致命级别日志。</summary>
         public static void Fatal(System.Exception exception, string messageTemplate)
-        {
-            if (!Serilog.Log.IsEnabled(LogEventLevel.Fatal)) return;
-            Serilog.Log.Fatal(exception, messageTemplate);
-        }
+            => Framework.Core.Log.Fatal(exception, messageTemplate);
 
-        /// <summary>
-        /// 关闭并刷新所有日志接收器
-        /// </summary>
-        public static void CloseAndFlush() => Serilog.Log.CloseAndFlush();
+        /// <summary>关闭并刷新所有日志接收器。</summary>
+        public static void CloseAndFlush() => Framework.Core.Log.CloseAndFlush();
     }
 }

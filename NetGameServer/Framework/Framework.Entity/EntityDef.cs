@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Text;
 
 namespace Framework.Entity;
 
@@ -40,6 +41,8 @@ public enum EntitySyncScope : byte
 /// </summary>
 public sealed class EntityProperty
 {
+    private byte[]? utf8Name;
+
     public required string Name { get; init; }
     public required EntityPropertyType Type { get; init; }
 
@@ -48,6 +51,12 @@ public sealed class EntityProperty
 
     /// <summary>同步权限分级（默认 AllClients）。</summary>
     public EntitySyncScope SyncScope { get; init; } = EntitySyncScope.AllClients;
+
+    /// <summary>
+    /// 属性名的 UTF8 字节（懒加载缓存，对标迭代 8 三-8 修正）。
+    /// 序列化热路径每属性一次编码改为一次缓存，避免每包同步都 Encoding.UTF8.GetBytes(prop.Name)。
+    /// </summary>
+    public byte[] Utf8Name => utf8Name ??= Encoding.UTF8.GetBytes(Name);
 
     public override string ToString() => $"{Name}:{Type}";
 }

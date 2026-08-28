@@ -397,10 +397,12 @@ namespace Battle
             BattleServerApp.persistService = persistService;
 
             sceneManager = new Battle.Handlers.SceneManager();
-            // 场景创建：注册脚本实体管理器（全局数据事件用）+ 生成场景级玩法实体（Npc/Quest）
+            // 场景创建：注册脚本实体管理器（全局数据事件用）+ 备份管理器（迭代 8：改为创建时注册一次，
+            // 不再在每 tick 循环内重复 AddManager）+ 生成场景级玩法实体（Npc/Quest）
             sceneManager.SceneCreated += scene =>
             {
                 scriptHost.RegisterEntityManager(scene.EntityManager);
+                backupService.AddManager(scene.EntityManager);
                 SpawnSceneGameplayEntities(scene);
             };
             var entitySyncHandler = new Battle.Handlers.EntitySyncHandler(sceneManager);
@@ -417,7 +419,6 @@ namespace Battle
                     foreach (var scene in sceneManager.GetAllScenes())
                     {
                         scriptHost.TickAll(scene.EntityManager, frame);
-                        backupService.AddManager(scene.EntityManager);
                     }
                     // 按实体量平滑分摊备份（对标 KBE backuper：每 tick 只备份部分实体）
                     backupService.Tick();

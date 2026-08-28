@@ -25,6 +25,13 @@ namespace Battle.Handlers
         private readonly ConcurrentDictionary<long, string> playerToSceneBinding = new();
 
         /// <summary>
+        /// 场景 Id -> 绑定该场景的玩家会话集合（反索引，对标迭代 8 三-15 修正）：
+        /// GetPlayerCount / GetPlayerSessionIds / UnbindPlayersInScene 由 O(全体玩家) 全表扫描
+        /// 降为 O(该场景玩家数)，Bind/Unbind 维护本反索引。
+        /// </summary>
+        private readonly ConcurrentDictionary<string, ConcurrentDictionary<long, byte>> sceneToPlayers = new(StringComparer.Ordinal);
+
+        /// <summary>
         /// 根据场景配置获取已有场景或创建新场景。
         /// 如果指定 SceneId 的场景已存在则返回该场景，否则创建并返回新的 BattleScene 实例。
         /// 新场景创建后会触发 SceneCreated 事件（场景级玩法实体生成钩子）。
@@ -70,13 +77,24 @@ namespace Battle.Handlers
 
         /// <summary>
         /// 将玩家（通过 sessionId）绑定到指定场景 Id。
-        /// 若玩家已存在绑定关系则会被覆盖为新场景。
+        /// 若玩家已存在绑定关系则会被覆盖为新场景（同时维护反索引）。
         /// </summary>
         /// <param name="sessionId">玩家的会话 Id（唯一标识）。</param>
         /// <param name="sceneId">要绑定的场景 Id。</param>
         public void BindPlayerToScene(long sessionId, string sceneId)
         {
+            if (playerToSceneBinding.TryGetValue(sessionId, out var oldSceneId) && oldSceneId == sceneId)
+            {
+                return; // 已是目标场景
+            }
+
             playerToSceneBinding[sessionId] = sceneId;
+
+            if (oldSceneId != null)
+            {
+                RemoveFromSceneSet(oldSceneId, sessionId);
+            }
+            sceneToPlayers.GetOrAdd(sceneId, _ => new ConcurrentDictionary<long, byte>())[sessionId] = 0;
         }
 
         /// <summary>
@@ -86,7 +104,23 @@ namespace Battle.Handlers
         /// <param name="sessionId">要解绑的玩家会话 Id。</param>
         public void UnbindPlayer(long sessionId)
         {
-            playerToSceneBinding.TryRemove(sessionId, out _);
+            if (playerToSceneBinding.TryRemove(sessionId, out var sceneId))
+            {
+                RemoveFromSceneSet(sceneId, sessionId);
+            }
+        }
+
+        /// <summary>从场景反索引中移除玩家（集合为空时清理该场景条目）。</summary>
+        private void RemoveFromSceneSet(string sceneId, long sessionId)
+        {
+            if (sceneToPlayers.TryGetValue(sceneId, out var set))
+            {
+                set.TryRemove(sessionId, out _);
+                if (set.IsEmpty)
+                {
+                    sceneToPlayers.TryRemove(new KeyValuePair<string, ConcurrentDictionary<long, byte>>(sceneId, set));
+                }
+            }
         }
 
         /// <summary>
@@ -118,7 +152,7 @@ namespace Battle.Handlers
         }
 
         /// <summary>
-        /// 获取指定场景中当前绑定的玩家会话数量。
+        /// 获取指定场景中当前绑定的玩家会话数量（O(1)，反索引）。
         /// </summary>
         /// <param name="sceneId">场景标识。</param>
         /// <returns>绑定到该场景的玩家数。</returns>
@@ -129,11 +163,11 @@ namespace Battle.Handlers
                 return 0;
             }
 
-            return playerToSceneBinding.Count(pair => pair.Value == sceneId);
+            return sceneToPlayers.TryGetValue(sceneId, out var set) ? set.Count : 0;
         }
 
         /// <summary>
-        /// 清理指定场景上的所有玩家绑定。
+        /// 清理指定场景上的所有玩家绑定（O(该场景玩家数)，反索引）。
         /// </summary>
         /// <param name="sceneId">场景标识。</param>
         /// <returns>被清理的玩家数量。</returns>
@@ -144,10 +178,15 @@ namespace Battle.Handlers
                 return 0;
             }
 
-            int removed = 0;
-            foreach (var pair in playerToSceneBinding)
+            if (!sceneToPlayers.TryRemove(sceneId, out var set))
             {
-                if (pair.Value == sceneId && playerToSceneBinding.TryRemove(pair.Key, out _))
+                return 0;
+            }
+
+            int removed = 0;
+            foreach (var sessionId in set.Keys)
+            {
+                if (playerToSceneBinding.TryRemove(sessionId, out _))
                 {
                     removed++;
                 }
@@ -157,7 +196,7 @@ namespace Battle.Handlers
         }
 
         /// <summary>
-        /// 获取指定场景当前绑定的玩家会话标识列表。
+        /// 获取指定场景当前绑定的玩家会话标识列表（O(该场景玩家数)，反索引）。
         /// </summary>
         /// <param name="sceneId">场景标识。</param>
         /// <returns>当前绑定到该场景的玩家会话标识数组。</returns>
@@ -168,10 +207,12 @@ namespace Battle.Handlers
                 return System.Array.Empty<long>();
             }
 
-            return playerToSceneBinding
-                .Where(pair => pair.Value == sceneId)
-                .Select(pair => pair.Key)
-                .ToArray();
+            if (sceneToPlayers.TryGetValue(sceneId, out var set) && set.Count > 0)
+            {
+                return set.Keys.ToArray();
+            }
+
+            return System.Array.Empty<long>();
         }
 
         /// <summary>

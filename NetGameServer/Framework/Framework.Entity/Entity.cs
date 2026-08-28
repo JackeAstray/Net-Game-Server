@@ -155,6 +155,22 @@ public sealed class Entity
         }
     }
 
+    /// <summary>
+    /// 浅拷贝全部属性为独立字典（备份服务用，对标迭代 8 三-10 修正）：
+    /// 主循环线程调用（实体单线程访问安全），把序列化要读的数据脱离活实体，
+    /// 后台队列线程再对快照做 UTF8 编码/写盘，既不阻塞主循环，也不与 tick 线程竞争。
+    /// 值类型/字符串为不可变引用，List&lt;int&gt; 深拷贝一份避免后台读与 tick 写竞争。
+    /// </summary>
+    public Dictionary<string, object?> CopyValues()
+    {
+        var copy = new Dictionary<string, object?>(values.Count, StringComparer.Ordinal);
+        foreach (var (key, value) in values)
+        {
+            copy[key] = value is List<int> list ? new List<int>(list) : value;
+        }
+        return copy;
+    }
+
     private static object? DefaultValue(EntityPropertyType type) => type switch
     {
         EntityPropertyType.Int32 => 0,

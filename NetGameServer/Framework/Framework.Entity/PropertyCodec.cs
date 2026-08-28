@@ -194,8 +194,21 @@ public static class PropertyCodec
 
     private static void WriteProperty(MemoryStream ms, Span<byte> scratch, Entity entity, EntityProperty prop)
     {
-        // nameLen(1) + name
-        byte[] nameBytes = Encoding.UTF8.GetBytes(prop.Name);
+        // Get<object?> 直接返回 values 中已装箱的引用，无额外分配；随后按类型分派写入
+        WriteValueRaw(ms, scratch, prop, entity.Get<object?>(prop.Name));
+    }
+
+    /// <summary>从已脱离实体的属性快照写入（备份等场景，对标迭代 8 三-10 修正）。</summary>
+    private static void WriteSnapshotProperty(MemoryStream ms, Span<byte> scratch, EntityProperty prop, object? value)
+    {
+        WriteValueRaw(ms, scratch, prop, value);
+    }
+
+    /// <summary>写属性头（UTF8 名缓存 + 类型）+ 值。value 为 null/类型不符时写类型默认值。</summary>
+    private static void WriteValueRaw(MemoryStream ms, Span<byte> scratch, EntityProperty prop, object? value)
+    {
+        // nameLen(1) + name（属性名 UTF8 预缓存，避免每属性每包编码，对标迭代 8 三-8 修正）
+        byte[] nameBytes = prop.Utf8Name;
         ms.WriteByte((byte)nameBytes.Length);
         ms.Write(nameBytes);
         ms.WriteByte((byte)prop.Type);
@@ -203,27 +216,27 @@ public static class PropertyCodec
         switch (prop.Type)
         {
             case EntityPropertyType.Int32:
-                BinaryPrimitives.WriteInt32LittleEndian(scratch.Slice(0, 4), entity.Get<int>(prop.Name));
+                BinaryPrimitives.WriteInt32LittleEndian(scratch.Slice(0, 4), value is int i ? i : 0);
                 ms.Write(scratch.Slice(0, 4));
                 break;
             case EntityPropertyType.Int64:
-                BinaryPrimitives.WriteInt64LittleEndian(scratch.Slice(0, 8), entity.Get<long>(prop.Name));
+                BinaryPrimitives.WriteInt64LittleEndian(scratch.Slice(0, 8), value is long l ? l : 0L);
                 ms.Write(scratch.Slice(0, 8));
                 break;
             case EntityPropertyType.Float:
-                BinaryPrimitives.WriteSingleLittleEndian(scratch.Slice(0, 4), entity.Get<float>(prop.Name));
+                BinaryPrimitives.WriteSingleLittleEndian(scratch.Slice(0, 4), value is float f ? f : 0f);
                 ms.Write(scratch.Slice(0, 4));
                 break;
             case EntityPropertyType.Double:
-                BinaryPrimitives.WriteDoubleLittleEndian(scratch.Slice(0, 8), entity.Get<double>(prop.Name));
+                BinaryPrimitives.WriteDoubleLittleEndian(scratch.Slice(0, 8), value is double d ? d : 0d);
                 ms.Write(scratch.Slice(0, 8));
                 break;
             case EntityPropertyType.Bool:
-                ms.WriteByte(entity.Get<bool>(prop.Name) ? (byte)1 : (byte)0);
+                ms.WriteByte(value is bool b && b ? (byte)1 : (byte)0);
                 break;
             case EntityPropertyType.String:
             {
-                byte[] s = Encoding.UTF8.GetBytes(entity.Get<string>(prop.Name) ?? string.Empty);
+                byte[] s = Encoding.UTF8.GetBytes(value as string ?? string.Empty);
                 BinaryPrimitives.WriteUInt16LittleEndian(scratch.Slice(0, 2), (ushort)s.Length);
                 ms.Write(scratch.Slice(0, 2));
                 ms.Write(s);
@@ -231,16 +244,22 @@ public static class PropertyCodec
             }
             case EntityPropertyType.Float3:
             {
-                var v = entity.Get<Float3>(prop.Name);
-                BinaryPrimitives.WriteSingleLittleEndian(scratch.Slice(0, 4), v.X);
-                BinaryPrimitives.WriteSingleLittleEndian(scratch.Slice(4, 4), v.Y);
-                BinaryPrimitives.WriteSingleLittleEndian(scratch.Slice(8, 4), v.Z);
+                if (value is Float3 v)
+                {
+                    BinaryPrimitives.WriteSingleLittleEndian(scratch.Slice(0, 4), v.X);
+                    BinaryPrimitives.WriteSingleLittleEndian(scratch.Slice(4, 4), v.Y);
+                    BinaryPrimitives.WriteSingleLittleEndian(scratch.Slice(8, 4), v.Z);
+                }
+                else
+                {
+                    scratch.Slice(0, 12).Clear();
+                }
                 ms.Write(scratch.Slice(0, 12));
                 break;
             }
             case EntityPropertyType.Int32List:
             {
-                var list = entity.Get<List<int>>(prop.Name) ?? new List<int>();
+                var list = value as List<int> ?? new List<int>();
                 BinaryPrimitives.WriteUInt16LittleEndian(scratch.Slice(0, 2), (ushort)Math.Min(list.Count, ushort.MaxValue));
                 ms.Write(scratch.Slice(0, 2));
                 foreach (var item in list.Take(ushort.MaxValue))
@@ -251,6 +270,39 @@ public static class PropertyCodec
                 break;
             }
         }
+    }
+
+    /// <summary>
+    /// 从已脱离实体的属性快照序列化全部 SyncToClient 属性（备份服务用，对标迭代 8 三-10 修正）：
+    /// 主循环线程先把实体属性浅拷贝为快照（O(属性数)），序列化在后台队列线程执行，不再阻塞主循环，
+    /// 也不在工作线程读活实体（消除与 tick 线程的数据竞争）。
+    /// </summary>
+    public static byte[] SerializeAllValues(IReadOnlyDictionary<string, object?> values, EntityDef def)
+    {
+        using var ms = new MemoryStream(64);
+        Span<byte> scratch = stackalloc byte[16];
+
+        // 先写 count 占位（2 字节），写完属性后回填
+        ms.WriteByte(0);
+        ms.WriteByte(0);
+
+        int count = 0;
+        foreach (var prop in def.Properties.Values)
+        {
+            if (!prop.SyncToClient)
+            {
+                continue;
+            }
+            WriteSnapshotProperty(ms, scratch, prop, values.TryGetValue(prop.Name, out var v) ? v : null);
+            count++;
+        }
+
+        var bytes = ms.ToArray();
+        if (count > 0)
+        {
+            BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(0, 2), (ushort)count);
+        }
+        return bytes;
     }
 
     private static int SkipValue(ReadOnlySpan<byte> data, int offset, EntityPropertyType type)

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Framework.Protocol.Generated;
 using MemoryPack;
 
@@ -32,8 +33,9 @@ public interface ISessionContext
 /// </summary>
 public sealed class MessageDispatcher
 {
-    private readonly Dictionary<int, HandlerEntry> handlers = new();
-    private readonly object gate = new();
+    // 注册表在启动期一次性填满后只读：ConcurrentDictionary 提供免锁读（每次分发 TryGetValue 无竞争锁），
+    // 避免每包消息都 lock(gate) 查表（对标迭代 8 三-11 修正）。
+    private readonly ConcurrentDictionary<int, HandlerEntry> handlers = new();
     private int slowHandlerThresholdMs = 200;
 
     /// <summary>慢消息处理告警阈值（毫秒，默认 200）。</summary>
@@ -68,10 +70,7 @@ public sealed class MessageDispatcher
                 ?? throw new InvalidOperationException($"消息 {typeof(TMessage).Name} 反序列化为 null");
         Func<ISessionContext, IGameMessage, Task> wrapped = (ctx, msg) => handler(ctx, (TMessage)msg);
 
-        lock (gate)
-        {
-            handlers[msgId] = new HandlerEntry(deserializer, wrapped);
-        }
+        handlers[msgId] = new HandlerEntry(deserializer, wrapped);
         return this;
     }
 
@@ -115,23 +114,11 @@ public sealed class MessageDispatcher
     /// <summary>是否已注册某 MsgId。</summary>
     public bool IsRegistered(int msgId)
     {
-        lock (gate)
-        {
-            return handlers.ContainsKey(msgId);
-        }
+        return handlers.ContainsKey(msgId);
     }
 
     /// <summary>已注册的消息数。</summary>
-    public int RegisteredCount
-    {
-        get
-        {
-            lock (gate)
-            {
-                return handlers.Count;
-            }
-        }
-    }
+    public int RegisteredCount => handlers.Count;
 
     /// <summary>
     /// 分发一条消息：按 MsgId 查处理器，按类型反序列化并执行。
@@ -139,11 +126,7 @@ public sealed class MessageDispatcher
     /// </summary>
     public async Task<bool> TryDispatch(ISessionContext session, int msgId, ReadOnlyMemory<byte> payload)
     {
-        HandlerEntry? entry;
-        lock (gate)
-        {
-            handlers.TryGetValue(msgId, out entry);
-        }
+        handlers.TryGetValue(msgId, out var entry);
 
         if (entry == null)
         {

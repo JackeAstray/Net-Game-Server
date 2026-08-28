@@ -373,3 +373,45 @@
   无绑定消息路由到默认节点 A → 匹配回包学习绑定（节点 B）→ 绑定后消息路由到节点 B（全链路标记回显）。
 - 验证：`dotnet build` 0 错误；五套件全部通过。
 
+### 迭代 8（已落地）——P1/P2 性能与工程质量批量清理（三-7/三-8/三-10/三-11/三-15/三-16）
+
+- **三-7 统一日志门面（修复双日志互相覆盖）**：
+  - `Framework.Core.Log` 成为**唯一配置源**（持有 Configure / 全局 Serilog Logger / LogSink 聚合事件），
+    新增 `Fatal`、`Warning` 别名、`CloseAndFlush`；
+  - `Shared.Log` 重写为**纯转发门面**：删除静态构造函数（此前任何代码首次触碰 Shared.Log 就会把全局
+    Logger 重置回 logs/log.txt 默认路径，静默覆盖进程启动配置，正是"谁后配置谁生效"的根因），
+    全部方法转发到 Framework.Core.Log，进程仍只需在 Program 启动时调用一次 Configure；
+  - **顺带修复日志聚合缺口**：此前业务层经 Shared.Log 打的日志不触发 LogSink（只有 Framework.Core.Log
+    触发），转发后业务日志同样上报 Logger 聚合进程。
+- **三-11 MessageDispatcher 免锁读**：`handlers` 由 `Dictionary + lock(gate)` 改为 `ConcurrentDictionary`，
+  注册表启动期填满后只读，每次分发 `TryGetValue` 无竞争锁（MessageDispatcher.cs:35-40、140-146）。
+- **三-8 属性名 UTF8 预缓存**：`EntityProperty.Utf8Name`（懒加载缓存），`PropertyCodec.WriteValueRaw`
+  复用缓存字节，消灭每属性每包一次 `Encoding.UTF8.GetBytes(prop.Name)`（EntityDef.cs:50-56、
+  PropertyCodec.cs:214-219）。
+- **三-10 备份序列化移出主循环**：
+  - `Entity.CopyValues()`：主循环线程浅拷贝快照（O(属性数)，List&lt;int&gt; 深拷贝防后台竞争）；
+  - `EntityBackupService.Tick`：主循环只做总数计算 + O(快照) 脱离，**序列化（UTF8 编码）与落盘全部
+    移入 OrderedTaskQueue 后台线程**（EntityBackupService.cs:100-139）；备份格式不变，恢复逻辑不动；
+  - 全量实体列表按总数缓存（仅实体数量变化时重建），消灭每 tick O(总实体数) 的 List 分配；
+  - `BattleServerApp` 的 `backupService.AddManager(scene.EntityManager)` 从每 tick 每场景循环移到
+    `SceneCreated` 事件（创建时注册一次，消除每 tick 的 Contains 幂等扫描）。
+- **三-15 SceneManager 玩家-场景反索引**：新增 `sceneToPlayers` 二级索引，`GetPlayerCount` /
+  `GetPlayerSessionIds` / `UnbindPlayersInScene` 由 O(全体玩家) 全表扫描降为 O(该场景玩家数)
+  （SceneManager.cs:25-31、Bind/Unbind 维护反索引，空集合自动清理）。
+- **三-16 OrderedTaskQueue 重写（Channel + 固定 worker 池 + 按 key FIFO 队列）**：
+  - 弃用"每任务 Task.Run + 链式 prev 引用"（线程池压力 + 长队列持有整条任务链）与
+    **SemaphoreSlim 方案（不保证等待者 FIFO，实测同 key 乱序，已废弃）**；
+  - 最终方案：每 key 锁保护的 FIFO 队列 + 固定 worker 池经 Channel 派发令牌；key 空闲→忙碌时才派发
+    一个令牌，worker 一次串行清空该 key 队列（严格 FIFO），队列空交还 Running=false；
+    `SweepIdle` 仅在无排队且无执行中任务时安全回收（OrderedTaskQueue.cs）。
+- 验证：`dotnet build` 0 错误；五套件（Protocol/ScriptHost/Logger/Network/Supervisor）全部通过
+  （ProtocolVerify 覆盖 OrderedTaskQueue 20 任务/4 key 严格保序 + 实体备份/恢复回环；NetworkVerify
+  覆盖 Battle 全链路 + 断线重连 + 静态分片）。
+
+### 迭代 9（规划）——路线剩余项
+
+- **五-7/C2 实体在线迁移（第二阶段）**：静态分片已落地，进一步做实体迁移（冻结-序列化-搬迁-恢复，
+  EntityPersistenceService 已有序列化基础），需要新增迁移协议与跨节点测试。
+- **三-14 巨型单体类拆分**：MatchHandler（54KB）/ LoginHandler（41KB）/ DbQueryHandler（71KB）/
+  GatewayServerApp（45KB）按业务模块拆分，并全部迁移 MessageDispatcher 强类型风格。
+
