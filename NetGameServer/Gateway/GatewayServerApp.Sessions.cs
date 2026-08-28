@@ -86,23 +86,33 @@ namespace Gateway
         /// </summary>
         private static void TryResumePendingSession(long newSessionId, int userId)
         {
-            foreach (var pair in pendingReconnects)
+            // 安全修复：ConcurrentDictionary 的枚举器在迭代过程中被 TryRemove 修改时会抛
+            // InvalidOperationException。先快照 key 集合。
+            var keys = pendingReconnects.Keys.ToArray();
+            foreach (var key in keys)
             {
-                if (pair.Value.UserId != userId) continue;
-                pendingReconnects.TryRemove(pair.Key, out _);
-                if (pair.Value.ExpiresAtUtc < DateTime.UtcNow)
+                if (!pendingReconnects.TryGetValue(key, out var pr))
                 {
-                    Shared.Log.Info($"Gateway 重连挂起已过期，忽略 SessionId:{pair.Key}");
+                    continue;
+                }
+                if (pr.UserId != userId)
+                {
+                    continue;
+                }
+                pendingReconnects.TryRemove(key, out _);
+                if (pr.ExpiresAtUtc < DateTime.UtcNow)
+                {
+                    Shared.Log.Info($"Gateway 重连挂起已过期，忽略 SessionId:{key}");
                     return;
                 }
-                if (Gateway.Managers.GatewaySessionManager.Instance.ResumeSession(newSessionId, pair.Key))
+                if (Gateway.Managers.GatewaySessionManager.Instance.ResumeSession(newSessionId, key))
                 {
                     // 通知 Battle 节点：玩家会话恢复（实体从挂起转在线），按玩家绑定路由到所在节点
-                    var resume = new Framework.Protocol.Generated.PlayerSessionResume { ClientSessionId = pair.Key };
+                    var resume = new Framework.Protocol.Generated.PlayerSessionResume { ClientSessionId = key };
                     byte[] payload = resume.Serialize();
-                    byte[] routedPayload = Shared.RouteMetadata.AttachClientSessionId(payload, pair.Key);
+                    byte[] routedPayload = Shared.RouteMetadata.AttachClientSessionId(payload, key);
                     byte[] packet = PacketBuilder.BuildPacket(Framework.Protocol.Generated.MessageIds.PlayerSessionResume, routedPayload, out int totalLength);
-                    string nodeId = clientBattleNodeBindings.TryGetValue(pair.Key, out var bound) ? bound : defaultBattleNodeId;
+                    string nodeId = clientBattleNodeBindings.TryGetValue(key, out var bound) ? bound : defaultBattleNodeId;
                     if (battleNodeSenders.TryGetValue(nodeId, out var sender))
                     {
                         sender.SendOrBuffer(packet.AsSpan(0, totalLength).ToArray());
@@ -111,7 +121,7 @@ namespace Gateway
                     else
                     {
                         System.Buffers.ArrayPool<byte>.Shared.Return(packet);
-                        Shared.Log.Warning($"Gateway Battle 节点不可用（{nodeId}），重连恢复通知丢弃 ClientSessionId:{pair.Key}");
+                        Shared.Log.Warning($"Gateway Battle 节点不可用（{nodeId}），重连恢复通知丢弃 ClientSessionId:{key}");
                     }
                 }
                 return;

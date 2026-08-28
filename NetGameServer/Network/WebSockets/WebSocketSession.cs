@@ -8,6 +8,9 @@ public class WebSocketSession : ISession
 {
     private readonly WebSocket webSocket;
 
+    // 串行化发送：同一 WebSocket 实例并发 SendAsync 会抛 InvalidOperationException 导致连接被拆
+    private readonly SemaphoreSlim sendLock = new(1, 1);
+
     public WebSocketSession(WebSocket webSocket, EndPoint? remoteEndPoint)
     {
         this.webSocket = webSocket;
@@ -41,13 +44,18 @@ public class WebSocketSession : ISession
     /// <summary>
     /// 异步将二进制有效负载发送到 WebSocket，并在成功时更新最后活动时间。
     /// </summary>
-    /// <remarks>在发送失败时记录警告并关闭会话。</remarks>
+    /// <remarks>通过信号量串行化同一实例的并发发送（WebSocket 不支持并发 SendAsync）；发送失败时记录警告并关闭会话。</remarks>
     /// <param name="payload">要发送的二进制有效负载。</param>
     /// <returns>表示异步操作的任务。</returns>
     private async Task SendAsyncInternal(byte[] payload)
     {
+        await sendLock.WaitAsync();
         try
         {
+            if (!IsConnected)
+            {
+                return;
+            }
             await webSocket.SendAsync(payload, WebSocketMessageType.Binary, true, CancellationToken.None);
             LastActivityTime = DateTime.UtcNow;
         }
@@ -55,6 +63,10 @@ public class WebSocketSession : ISession
         {
             Shared.Log.Warning($"[WebSocketSession] 发送异常 SessionId:{SessionId} Remote:{RemoteEndPoint} PayloadLength:{payload.Length} Exception:{ex}");
             Close();
+        }
+        finally
+        {
+            sendLock.Release();
         }
     }
 

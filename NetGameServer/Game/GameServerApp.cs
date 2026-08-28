@@ -34,7 +34,8 @@ namespace Game
             int port = ConfigHelper.GetConfig<int>("GamePort") == 0 ? 31304 : ConfigHelper.GetConfig<int>("GamePort");
 
             // 内部连接认证：网关连接必须先通过认证握手（InternalAuth），密钥与 Center 节点注册共用。
-            string authSecret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            // 安全修复：拒绝占位符密钥。
+            string authSecret = Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret");
             var gatewayAuthFilters = new System.Collections.Concurrent.ConcurrentDictionary<long, Framework.Core.Security.InternalAuthFilter>();
 
             // 创建网络管理器，用于管理多个服务器实例
@@ -71,7 +72,8 @@ namespace Game
             };
 
             // 数据接收事件：统一协议 [MsgId][Payload]，路由元数据在 payload 内
-            tcpServer.OnDataReceived += async (session, data) =>
+            // 安全修复：使用 AsyncEventGuard 包装 async lambda，避免 async void 异常冒泡
+            tcpServer.OnDataReceived += global::Network.AsyncEventGuard.Wrap(async (session, data) =>
             {
                 try
                 {
@@ -109,6 +111,16 @@ namespace Game
                             return;
                         }
                     }
+                    else
+                    {
+                        // 未注册认证过滤器 = 未认证连接：默认 fail-closed 拒绝（安全修复，杜绝"过滤器缺失即放行"）。
+                        if (!Shared.ConfigHelper.GetConfig<bool>("AllowUnauthenticatedInternal"))
+                        {
+                            Log.Warning($"Game 拒绝无认证过滤器连接的业务消息 MsgId:{msgId} SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}（fail-closed）");
+                            session.Close();
+                            return;
+                        }
+                    }
 
                     var payloadPreview = data.Slice(4);
                     // 每包日志降级为 Debug 并带级别守卫：仅在调试模式启用时构造十六进制/UTF8 预览（该预览构造开销大，不能进热路径）
@@ -141,7 +153,7 @@ namespace Game
                             Game.Managers.PlayerSessionManager.Instance.BindSession(originalSessionId, routedUserId);
                             if (firstBind)
                             {
-                                Game.Handlers.FriendHandler.WarmupSocialCache(originalSessionId, routedUserId);
+                                Game.Handlers.FriendHandler.WarmupSocialCache(session, originalSessionId, routedUserId);
                             }
                             cleanPayload = payloadWithoutUserId;
                         }
@@ -285,7 +297,7 @@ namespace Game
                 {
                     Log.Error($"Game 处理客户端数据异常 Session:{session.SessionId} Remote:{session.RemoteEndPoint} Exception:{ex}");
                 }
-            };
+            });
 
             // 客户端断开连接事件（记录原因）。这里可以添加清理会话状态或通知其他子系统的逻辑。
             tcpServer.OnSessionDisconnected += (session, reason) => Log.Info($"客户端断开连接，原因: {reason}");
@@ -315,7 +327,7 @@ namespace Game
             {
                 Log.Info($"已连接到 DB 服务器 (Host:{dbHost} Port:{dbPort})");
                 // 内部连接认证：先发送认证握手，再发业务请求
-                dbClient.SendInternalAuthHandshake(ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret", $"Game-{ConfigHelper.GetConfig<string>("GameHost") ?? "127.0.0.1"}:{dbPort}");
+                dbClient.SendInternalAuthHandshake(Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret"), $"Game-{ConfigHelper.GetConfig<string>("GameHost") ?? "127.0.0.1"}:{dbPort}");
             };
             // 与 DB 断开时记录警告（可触发重试或告警机制）
             dbClient.OnDisconnected += (session, reason) => Log.Warning($"与 DB 服务器断开连接: {reason}");
@@ -366,7 +378,7 @@ namespace Game
             {
                 Log.Info($"已连接到 Center 服务器 (Host:{centerHost} Port:{centerPort})");
                 // 内部连接认证：先发送认证握手，再注册节点
-                centerClient.SendInternalAuthHandshake(ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret", nodeId);
+                centerClient.SendInternalAuthHandshake(Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret"), nodeId);
                 SendRegisterNode(centerClient, nodeId, "Game", gameHost, port, GetCurrentLoad(), instanceId, machineId, supervisedBy);
 
                 centerHeartbeatCts?.Cancel();
@@ -506,7 +518,7 @@ namespace Game
         /// <returns>Base64 编码的 HMAC-SHA256 签名。</returns>
         private static string ComputeCenterSignature(string source)
         {
-            string secret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            string secret = Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret");
             byte[] key = Encoding.UTF8.GetBytes(secret);
             byte[] data = Encoding.UTF8.GetBytes(source);
             using var hmac = new HMACSHA256(key);

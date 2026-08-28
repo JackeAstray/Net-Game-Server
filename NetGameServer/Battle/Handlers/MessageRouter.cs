@@ -8,6 +8,8 @@ namespace Battle.Handlers
 {
     public static class MessageRouter
     {
+        /// <summary>ScriptAction 单次调用参数个数上限（防大列表反序列化 DoS）。</summary>
+        private const int MaxScriptActionArgs = 32;
         /// <summary>
         /// 构建基于 MessageDispatcher 的强类型处理器（对标 KBE 自动生成的处理器注册表）。
         /// 使用生成的协议消息类 + MemoryPack 二进制序列化（JSON 兼容回退），
@@ -99,11 +101,18 @@ namespace Battle.Handlers
 
             // 通用实体脚本动作：客户端按实体 ID 调用脚本 OnMessage
             // （如 TakeDamage / CastSkill / Pickup / UseItem / QueryProgress，参数为 int32 列表）
+            // 鉴权在 BattleServerApp.DispatchEntityScriptAction 内完成（场景归属 + 属主/白名单）。
             dispatcher.RegisterSync<Framework.Protocol.Generated.ScriptAction>(
                 (ctx, msg) =>
                 {
-                    var args = (msg.Args ?? new List<int>()).Select(a => (object)a).ToArray();
-                    Battle.BattleServerApp.DispatchEntityScriptAction(msg.EntityId, msg.Method, args);
+                    var raw = msg.Args;
+                    if (raw != null && raw.Count > MaxScriptActionArgs)
+                    {
+                        Shared.Log.Warning($"实体脚本动作参数过多被拒绝 SessionId:{ctx.ClientSessionId} EntityId:{msg.EntityId} Method:{msg.Method} Args:{raw.Count}");
+                        return;
+                    }
+                    var args = (raw ?? new List<int>()).Select(a => (object)a).ToArray();
+                    Battle.BattleServerApp.DispatchEntityScriptAction(ctx.ClientSessionId, msg.EntityId, msg.Method, args);
                 },
                 jsonFallback: true);
 
@@ -166,7 +175,7 @@ namespace Battle.Handlers
             dispatcher.RegisterSync<Framework.Protocol.Generated.EntityRemoteCallResult>(
                 (ctx, msg) =>
                 {
-                    Framework.Entity.EntityCallHub.HandleResult(msg);
+                    Framework.Entity.EntityCallHubRegistry.Default.HandleResult(msg);
                 });
 
             // 创建场景（Center 内部消息 90003，迁移自旧 JSON 路由）：回 90004 到 Center

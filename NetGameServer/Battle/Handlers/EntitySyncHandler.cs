@@ -28,6 +28,51 @@ namespace Battle.Handlers
             this.sceneManager = sceneManager;
         }
 
+        /// <summary>单次坐标同步的最大位移（世界单位），可由配置 MaxEntityMoveDistancePerSync 覆盖。</summary>
+        private const float DefaultMaxMoveDistancePerSync = 20f;
+
+        private static float MaxMoveDistancePerSync
+        {
+            get
+            {
+                float cfg = Shared.ConfigHelper.GetConfig<float>("MaxEntityMoveDistancePerSync");
+                return cfg > 0 ? cfg : DefaultMaxMoveDistancePerSync;
+            }
+        }
+
+        /// <summary>拒绝 NaN/Inf，并按单次最大位移钳制移动（服务端权威，防瞬移/加速）。</summary>
+        private static Float3 SanitizeAndClampMovement(Float3 from, Float3 to)
+        {
+            if (float.IsNaN(to.X) || float.IsNaN(to.Y) || float.IsNaN(to.Z) ||
+                float.IsInfinity(to.X) || float.IsInfinity(to.Y) || float.IsInfinity(to.Z))
+            {
+                return from; // 非法输入：保持服务端已知位置
+            }
+
+            float maxDist = MaxMoveDistancePerSync;
+            float dx = to.X - from.X;
+            float dy = to.Y - from.Y;
+            float dz = to.Z - from.Z;
+            float distSq = dx * dx + dy * dy + dz * dz;
+            if (distSq <= maxDist * maxDist)
+            {
+                return to;
+            }
+
+            float dist = MathF.Sqrt(distSq);
+            float scale = maxDist / dist;
+            return new Float3(from.X + dx * scale, from.Y + dy * scale, from.Z + dz * scale);
+        }
+
+        /// <summary>将向量中的 NaN/Inf 分量归零（防止污染客户端渲染/服务器计算）。Float3 字段只读，返回新实例。</summary>
+        private static Float3 SanitizeVector(Float3 v)
+        {
+            float x = (float.IsNaN(v.X) || float.IsInfinity(v.X)) ? 0 : v.X;
+            float y = (float.IsNaN(v.Y) || float.IsInfinity(v.Y)) ? 0 : v.Y;
+            float z = (float.IsNaN(v.Z) || float.IsInfinity(v.Z)) ? 0 : v.Z;
+            return new Float3(x, y, z);
+        }
+
         /// <summary>
         /// 处理来自客户端的坐标/朝向同步请求。
         /// 更新实体属性并广播脏属性增量（仅变化字段，对标 KBE volatile 增量同步）。
@@ -44,9 +89,15 @@ namespace Battle.Handlers
                 return Task.CompletedTask;
             }
 
-            // 更新实体属性（值变化才标记脏）
-            entity.Set("Position", new Float3(request.Position?.X ?? 0, request.Position?.Y ?? 0, request.Position?.Z ?? 0));
-            entity.Set("Rotation", new Float3(request.Rotation?.X ?? 0, request.Rotation?.Y ?? 0, request.Rotation?.Z ?? 0));
+            // 服务端权威移动校验（防瞬移/加速/坐标注入）：
+            // - 拒绝 NaN/Inf 坐标（保持服务端已知位置）；
+            // - 按单次同步最大位移钳制（网络抖动可接受范围内），超距移动被拉回。
+            var oldPos = entity.Get<Float3>("Position");
+            var newPos = SanitizeAndClampMovement(oldPos,
+                new Float3(request.Position?.X ?? 0, request.Position?.Y ?? 0, request.Position?.Z ?? 0));
+            entity.Set("Position", newPos);
+            entity.Set("Rotation", SanitizeVector(
+                new Float3(request.Rotation?.X ?? 0, request.Rotation?.Y ?? 0, request.Rotation?.Z ?? 0)));
 
             if (!entity.IsDirty)
             {
@@ -206,7 +257,8 @@ namespace Battle.Handlers
 
             if (enterEntities.Count > 0)
             {
-                byte[] snapshot = PropertyCodec.SerializeAll(entity);
+                // 安全修复：全量快照剔除 OWN_CLIENT 私有属性（装备/冷却/背包），避免泄露给视野内其他玩家
+                byte[] snapshot = PropertyCodec.SerializeAll(entity, includeOwnClient: false);
                 foreach (var targetId in enterEntities)
                 {
                     if (targetId == entity.EntityId || !players.Contains(targetId)) continue;
@@ -226,7 +278,8 @@ namespace Battle.Handlers
             if (scene == null) return;
 
             scene.EntityManager.AddOrUpdateEntity(sessionId, entity);
-            byte[] snapshot = PropertyCodec.SerializeAll(entity);
+            // 全量快照：剔除 OWN_CLIENT 私有属性（该快照会发给视野内其他玩家）
+            byte[] snapshot = PropertyCodec.SerializeAll(entity, includeOwnClient: false);
 
             if (scene.UseAoi && scene.AoiManager != null)
             {
@@ -242,7 +295,8 @@ namespace Battle.Handlers
                     var other = scene.EntityManager.GetEntity(targetId);
                     if (other != null)
                     {
-                        existingSnapshots.Add((targetId, PropertyCodec.SerializeAll(other)));
+                        // 回发给新玩家的他人快照同样剔除 OWN_CLIENT（新玩家看不到他人私有属性）
+                        existingSnapshots.Add((targetId, PropertyCodec.SerializeAll(other, includeOwnClient: false)));
                     }
                 }
 
@@ -258,7 +312,8 @@ namespace Battle.Handlers
                 var existingEntities = scene.EntityManager.GetAllEntities().Where(e => e.EntityId != sessionId).ToList();
                 foreach (var other in existingEntities)
                 {
-                    SendSnapshot(gatewaySession, sessionId, other.EntityId, PropertyCodec.SerializeAll(other));
+                    // 全量快照剔除 OWN_CLIENT（对方私有属性不可见）
+                    SendSnapshot(gatewaySession, sessionId, other.EntityId, PropertyCodec.SerializeAll(other, includeOwnClient: false));
                 }
 
                 foreach (var targetId in scene.EntityManager.GetAllSessionIds())

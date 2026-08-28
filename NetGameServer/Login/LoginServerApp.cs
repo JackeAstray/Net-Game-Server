@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
@@ -62,7 +63,8 @@ namespace Login
 
             // 内部连接认证：每个网关连接必须先通过认证握手（InternalAuth），
             // 未认证的连接发送的业务消息将被拒绝。密钥与 Center 节点注册共用。
-            string authSecret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            // 安全修复：拒绝使用占位符/默认密钥，必须显式配置。
+            string authSecret = Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret");
             var gatewayAuthFilters = new System.Collections.Concurrent.ConcurrentDictionary<long, Framework.Core.Security.InternalAuthFilter>();
 
             void RemoveClientGatewayBinding(long clientSessionId)
@@ -72,11 +74,13 @@ namespace Login
 
             void RemoveBindingsByGatewaySession(long gatewaySessionId)
             {
-                foreach (var binding in clientGatewayBindings)
+                // 安全修复：ConcurrentDictionary 的枚举器在迭代过程中被 TryRemove 修改时会抛
+                // InvalidOperationException。先快照 key 集合。
+                foreach (var key in clientGatewayBindings.Keys.ToArray())
                 {
-                    if (binding.Value == gatewaySessionId)
+                    if (clientGatewayBindings.TryGetValue(key, out var mappedGateway) && mappedGateway == gatewaySessionId)
                     {
-                        clientGatewayBindings.TryRemove(binding.Key, out _);
+                        clientGatewayBindings.TryRemove(key, out _);
                     }
                 }
             }
@@ -149,7 +153,9 @@ namespace Login
             };
 
             // 处理收到的数据: 统一协议 [MsgId][Payload]，路由元数据在 payload 内
-            tcpServer.OnDataReceived += async (session, data) =>
+            // 统一收包管线：使用 AsyncEventGuard 包装 async lambda，
+            // 避免 async void 异常冒泡到 AppDomain 导致进程崩溃。
+            tcpServer.OnDataReceived += Network.AsyncEventGuard.Wrap(async (session, data) =>
             {
                 if (data.Length < 4)
                 {
@@ -187,8 +193,18 @@ namespace Login
                 }
                 else
                 {
-                    // 兼容：旧客户端/内部工具直连时不强制认证（过渡期），仅记录警告。
-                    Shared.Log.Warning($"Login 收到无认证过滤器连接的消息 MsgId:{msgId} SessionId:{session.SessionId}（过渡期兼容模式）");
+                    // 未注册认证过滤器 = 未认证连接：默认 fail-closed 拒绝（安全修复，杜绝"过滤器缺失即放行"）。
+                    // 如需过渡期兼容（旧客户端/内部工具直连），须显式配置 AllowUnauthenticatedInternal=true。
+                    if (ConfigHelper.GetConfig<bool>("AllowUnauthenticatedInternal"))
+                    {
+                        Shared.Log.Warning($"Login 收到无认证过滤器连接的消息 MsgId:{msgId} SessionId:{session.SessionId}（兼容模式，AllowUnauthenticatedInternal=true）");
+                    }
+                    else
+                    {
+                        Shared.Log.Warning($"Login 拒绝无认证过滤器连接的业务消息 MsgId:{msgId} SessionId:{session.SessionId}（fail-closed）");
+                        session.Close();
+                        return;
+                    }
                 }
 
                 Shared.Log.Debug("Login <- Gateway 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint, msgId, data.Length, payloadLength);
@@ -302,7 +318,7 @@ namespace Login
                 {
                     Shared.Log.Error($"处理消息 MsgId:{msgId} 时出现异常: {ex}");
                 }
-            };
+            });
 
             ConnectToCenter(port, activeGatewaySessions);
         }
@@ -350,7 +366,8 @@ namespace Login
                 Shared.Log.Info($"Login -> DB 已连接 (Host:{dbHost} Port:{dbPort}) SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
 
                 // 内部连接认证：先发送认证握手，再发业务请求
-                string dbAuthSecret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+                // 安全修复：拒绝占位符密钥。
+                string dbAuthSecret = Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret");
                 dbClient.SendInternalAuthHandshake(dbAuthSecret, $"Login-{ConfigHelper.GetConfig<string>("LoginHost") ?? "127.0.0.1"}");
 
                 var request = new Shared.Messages.Db.GetMaxUidRequest();
@@ -434,7 +451,7 @@ namespace Login
                 Shared.Log.Info($"Login -> Center 已连接 (Host:{centerHost} Port:{centerPort}) SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
 
                 // 内部连接认证：先发送认证握手，再注册节点
-                centerClient.SendInternalAuthHandshake(ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret", nodeId);
+                centerClient.SendInternalAuthHandshake(Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret"), nodeId);
                 SendRegisterNode(centerClient, nodeId, "Login", loginHost, port, activeGatewaySessions.Count, instanceId, machineId, supervisedBy);
 
                 centerHeartbeatCts?.Cancel();
@@ -549,7 +566,8 @@ namespace Login
         /// <returns>输入字符串的 HMAC-SHA256 签名，经过 UTF-8 编码并以 Base64 字符串形式返回。</returns>
         private static string ComputeCenterSignature(string source)
         {
-            string secret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            // 安全修复：拒绝占位符密钥。
+            string secret = Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret");
             byte[] key = Encoding.UTF8.GetBytes(secret);
             byte[] data = Encoding.UTF8.GetBytes(source);
             using var hmac = new HMACSHA256(key);
@@ -607,7 +625,35 @@ namespace Login
             Shared.RedisHelper.Initialize(redisConnStr);
             Shared.Log.Info("Redis 初始化成功。");
 
+            // 配置 API Key 鉴权：玩家公开接口（登录/注册/找回密码/在线统计）允许匿名；
+            // 其余管理类接口（change-password/change-nickname/query-account）需要 Key 保护。
+            var apiKeys = (ConfigHelper.GetConfig<string>("HttpApiKeys") ?? string.Empty)
+                .Split(new[] { '\n', '\r', ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(s => !string.IsNullOrEmpty(s))
+                .ToArray();
+            if (apiKeys.Length == 0)
+            {
+                Shared.Log.Warning(
+                    "未配置 HttpApiKeys——非公开 API 将被全部拒绝。生产环境务必配置（appsettings.json 或环境变量 HttpApiKeys）。");
+            }
+            var apiKeyOptions = new ApiKeyAuthOptions
+            {
+                Keys = apiKeys,
+                AllowAnonymousPaths = new[]
+                {
+                    "/api/account/login",
+                    "/api/account/register",
+                    "/api/account/find-password",
+                    "/api/account/online-stats",
+                    "/health"
+                },
+                AllowAnonymousSwagger = false
+            };
+
             var app = builder.Build();
+
+            // 鉴权中间件必须在 MapControllers 之前
+            app.UseMiddleware<ApiKeyAuthMiddleware>(apiKeyOptions);
 
             app.UseSwagger(options =>
             {

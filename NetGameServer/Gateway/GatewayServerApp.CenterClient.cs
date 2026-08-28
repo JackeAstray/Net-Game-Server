@@ -144,9 +144,10 @@ namespace Gateway
         /// HMAC-SHA256 计算，使用完毕后释放 HMAC 实例。</remarks>
         /// <param name="source">要签名的原始字符串。</param>
         /// <returns>返回使用配置键 CenterNodeSharedSecret（若未配置则使用默认值 'change-this-secret'）作为密钥生成的 HMAC-SHA256 哈希的 Base64 编码字符串。</returns>
-        private static string ComputeCenterSignature(string source)
+          private static string ComputeCenterSignature(string source)
         {
-            string secret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            // 安全修复：拒绝占位符密钥（生产环境必须显式配置）。
+            string secret = Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret");
             byte[] key = Encoding.UTF8.GetBytes(secret);
             byte[] data = Encoding.UTF8.GetBytes(source);
             using var hmac = new HMACSHA256(key);

@@ -81,7 +81,7 @@ namespace Game.Handlers
                 UniqueId = friendUniqueId
             };
 
-            if (!TrySendDbRequest(MessageIds.DbResolveUserByUniqueIdReq, dbReq, session.SessionId, MessageIds.InviteGameRes, pending =>
+            if (!TrySendDbRequest(MessageIds.DbResolveUserByUniqueIdReq, session, dbReq, session.SessionId, MessageIds.InviteGameRes, pending =>
             {
                 pending.IsInviteResolve = true;
                 pending.InviteRoomId = roomId;

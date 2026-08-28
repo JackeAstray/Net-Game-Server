@@ -11,6 +11,9 @@ namespace Battle.Handlers
         private readonly SceneManager sceneManager;
         private readonly EntitySyncHandler entitySyncHandler;
 
+        /// <summary>房间人数硬上限（服务端权威）：客户端可请求小于该值的容量，但不能无限制放大房间。</summary>
+        private const int HardMaxPlayers = 200;
+
         public RoomHandler(SceneManager sceneManager, EntitySyncHandler entitySyncHandler)
         {
             this.sceneManager = sceneManager;
@@ -41,6 +44,14 @@ namespace Battle.Handlers
                     Shared.Log.Warning($"Battle 房间模板未找到，使用默认模板 TemplateId:{templateId} RoomId:{request.RoomId}");
                 }
 
+                // 安全修复：客户端可请求容量但不能超过服务端硬上限（防 int.MaxValue 房间导致无界内存）
+                int requestedMax = request.MaxPlayers > 0 ? request.MaxPlayers : (templateConfig?.MaxPlayers ?? 100);
+                int cappedMax = Math.Min(requestedMax, HardMaxPlayers);
+                if (cappedMax != requestedMax)
+                {
+                    Shared.Log.Warning($"Battle 房间容量被服务端上限钳制 RoomId:{request.RoomId} Requested:{requestedMax} Cap:{HardMaxPlayers}");
+                }
+
                 var sceneConfig = new SceneConfig
                 {
                     SceneId = request.RoomId,
@@ -48,7 +59,7 @@ namespace Battle.Handlers
                     SceneType = templateConfig?.SceneType ?? "Room",
                     UseAoi = templateConfig?.UseAoi ?? false,
                     GridSize = templateConfig?.GridSize ?? 50.0f,
-                    MaxPlayers = request.MaxPlayers > 0 ? request.MaxPlayers : (templateConfig?.MaxPlayers ?? 100),
+                    MaxPlayers = cappedMax,
                     CustomRules = templateConfig?.CustomRules ?? new System.Collections.Generic.Dictionary<string, string>()
                 };
 

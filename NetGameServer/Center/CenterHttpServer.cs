@@ -1,3 +1,5 @@
+using System;
+using System.Linq;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -30,8 +32,48 @@ internal static class CenterHttpServer
 
         var app = builder.Build();
 
+        // Center 管理接口全部需要 API Key 鉴权（节点/房间/集群视图都是敏感信息）。
+        // 配置项 CenterHttpApiKeys: 每行一个 Key（或逗号分隔）。
+        var apiKeys = (ConfigHelper.GetConfig<string>("CenterHttpApiKeys")
+            ?? ConfigHelper.GetConfig<string>("HttpApiKeys")
+            ?? string.Empty)
+            .Split(new[] { '\n', '\r', ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(s => !string.IsNullOrEmpty(s))
+            .ToArray();
+        if (apiKeys.Length == 0)
+        {
+            Shared.Log.Warning(
+                "Center HTTP 管理接口未配置 ApiKey（CenterHttpApiKeys/HttpApiKeys），所有 /api/center/* 将返回 401。" +
+                "生产环境必须配置。");
+        }
+        app.UseMiddleware<CenterApiKeyAuthMiddleware>(apiKeys, Array.Empty<string>());
+
         // 管理台首页（对标 KBE guiconsole 的 Web 简化版）：轮询 health/nodes/summary/rooms
-        app.MapGet("/", () => Results.Content(DashboardHtml, "text/html; charset=utf-8"));
+        // dashboard 也需要 Key 保护：客户端需在 URL 上加 ?key=xxx 或请求头 X-Api-Key
+        app.MapGet("/", (HttpContext ctx) =>
+        {
+            // dashboard 也走 ApiKeyAuthMiddleware 的 AllowAnonymousPaths 之一
+            // 简单做法：直接走 middleware 之外的快速 401
+            var provided = ctx.Request.Headers["X-Api-Key"].ToString();
+            if (string.IsNullOrEmpty(provided))
+            {
+                ctx.Response.StatusCode = 401;
+                return Results.Content(
+                    "<h1>Center Dashboard 需要 X-Api-Key 请求头</h1>",
+                    "text/html; charset=utf-8");
+            }
+            bool ok = false;
+            foreach (var k in apiKeys)
+            {
+                if (k == provided) { ok = true; break; }
+            }
+            if (!ok)
+            {
+                ctx.Response.StatusCode = 401;
+                return Results.Content("<h1>X-Api-Key 无效</h1>", "text/html; charset=utf-8");
+            }
+            return Results.Content(DashboardHtml, "text/html; charset=utf-8");
+        });
 
         app.MapControllers();
 
@@ -69,23 +111,43 @@ async function refresh(){
       fetch('/api/center/rooms').then(x=>x.json())
     ]);
     document.getElementById('ts').textContent='更新于 '+new Date().toLocaleTimeString()+'（每5秒自动刷新）';
-    document.getElementById('health').innerHTML='状态: <b class="'+(h.status==='ok'?'ok':'bad')+'">'+h.status+'</b> | Leader: <b>'+h.isLeader+'</b> | 节点数: <b>'+h.nodeCount+'</b> | '+s.battle+' Battle / '+s.game+' Game / '+s.gateway+' Gateway / '+s.login+' Login';
-    const nt=document.querySelector('#nodes'); nt.innerHTML='';
+    // XSS 修复：使用 textContent 而非 innerHTML 拼接用户可控字段
+    const health=document.getElementById('health');
+    health.textContent='';
+    const s1=document.createElement('span');
+    s1.textContent='状态: '+(h.status==='ok'?'正常':'异常')+' | Leader: '+(h.isLeader?'是':'否')+' | 节点数: '+h.nodeCount+' | '+s.battle+' Battle / '+s.game+' Game / '+s.gateway+' Gateway / '+s.login+' Login';
+    health.appendChild(s1);
+    const nt=document.querySelector('#nodes'); nt.textContent='';
     for(const node of n){
       const tr=document.createElement('tr');
-      tr.innerHTML='<td>'+node.nodeId+'</td><td>'+node.nodeType+'</td><td>'+node.host+':'+node.port+'</td><td>'+node.currentLoad+'</td><td>'+new Date(node.lastHeartbeat).toLocaleTimeString()+'</td><td class="'+(node.isConnected?'ok':'bad')+'">'+(node.isConnected?'在线':'离线')+'</td>';
+      const tds=[node.nodeId, node.nodeType, node.host+':'+node.port, node.currentLoad, new Date(node.lastHeartbeat).toLocaleTimeString(), node.isConnected?'在线':'离线'];
+      for(const v of tds){
+        const td=document.createElement('td');
+        td.textContent=String(v);  // XSS 修复：纯文本插入
+        tr.appendChild(td);
+      }
       nt.appendChild(tr);
     }
-    const mt=document.querySelector('#machines'); mt.innerHTML='';
+    const mt=document.querySelector('#machines'); mt.textContent='';
     for(const m of c.machines){
       const tr=document.createElement('tr');
-      tr.innerHTML='<td>'+m.machineId+'</td><td>'+(m.supervisedBy||'-')+'</td><td>'+m.totalNodes+'</td><td>'+m.battle+'</td><td>'+m.game+'</td><td>'+m.gateway+'</td><td>'+m.login+'</td><td>'+m.db+'</td><td>'+m.center+'</td><td class="'+(m.online===m.totalNodes?'ok':'bad')+'">'+m.online+'/'+m.totalNodes+'</td>';
+      const tds=[m.machineId, m.supervisedBy||'-', m.totalNodes, m.battle, m.game, m.gateway, m.login, m.db, m.center, m.online+'/'+m.totalNodes];
+      for(const v of tds){
+        const td=document.createElement('td');
+        td.textContent=String(v);
+        tr.appendChild(td);
+      }
       mt.appendChild(tr);
     }
-    const rt=document.querySelector('#rooms'); rt.innerHTML='';
+    const rt=document.querySelector('#rooms'); rt.textContent='';
     for(const room of r){
       const tr=document.createElement('tr');
-      tr.innerHTML='<td>'+room.roomId+'</td><td>'+room.roomName+'</td><td>'+room.sceneType+'</td><td>'+room.battleNodeId+'</td><td>'+room.currentPlayers+'/'+room.maxPlayers+'</td><td>'+room.roomStatus+'</td><td>'+room.ownerUserId+'</td>';
+      const tds=[room.roomId, room.roomName, room.sceneType, room.battleNodeId, room.currentPlayers+'/'+room.maxPlayers, room.roomStatus, room.ownerUserId];
+      for(const v of tds){
+        const td=document.createElement('td');
+        td.textContent=String(v);
+        tr.appendChild(td);
+      }
       rt.appendChild(tr);
     }
   }catch(e){ document.getElementById('ts').textContent='加载失败: '+e; }

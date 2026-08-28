@@ -53,7 +53,8 @@ namespace Center
             var tcpServer = new TcpServer();
 
             // 内部连接认证：所有节点连接必须先通过认证握手（InternalAuth），密钥共享。
-            string authSecret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            // 安全修复：拒绝占位符密钥。
+            string authSecret = Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret");
             var nodeAuthFilters = new System.Collections.Concurrent.ConcurrentDictionary<long, Framework.Core.Security.InternalAuthFilter>();
 
             tcpServer.OnSessionConnected += session =>
@@ -69,7 +70,8 @@ namespace Center
                 Center.Handlers.NodeManager.Instance.RemoveNodeBySession(session);
             };
 
-            tcpServer.OnDataReceived += async (session, data) =>
+            // 安全修复：使用 AsyncEventGuard 包装 async lambda，避免 async void 异常冒泡到 AppDomain
+            tcpServer.OnDataReceived += Network.AsyncEventGuard.Wrap(async (session, data) =>
             {
                 if (data.Length < 4)
                 {
@@ -102,6 +104,16 @@ namespace Center
                         }
 
                         Log.Warning($"Center 拒绝未认证连接的消息 MsgId:{msgId} SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                        return;
+                    }
+                }
+                else
+                {
+                    // 未注册认证过滤器 = 未认证连接：默认 fail-closed 拒绝（安全修复，杜绝"过滤器缺失即放行"）。
+                    if (!Shared.ConfigHelper.GetConfig<bool>("AllowUnauthenticatedInternal"))
+                    {
+                        Log.Warning($"Center 拒绝无认证过滤器连接的消息 MsgId:{msgId} SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}（fail-closed）");
+                        session.Close();
                         return;
                     }
                 }
@@ -225,7 +237,7 @@ namespace Center
                         }
                     }
                 }
-            };
+            });
 
             await tcpServer.StartAsync(port);
             Log.Info($"Center 调度服务器网络已启动，监听内部端口: {port}");

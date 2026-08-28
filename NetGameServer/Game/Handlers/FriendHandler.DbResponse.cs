@@ -20,11 +20,12 @@ namespace Game.Handlers
         /// <remarks>根据载荷中的 RequestId 匹配待处理项，匹配失败或载荷缺少 RequestId 时记录警告并返回 false。对不同 dbMsgId
         /// 执行相应的反序列化、发送会话响应或通知、更新好友/黑名单缓存，并在邀请流程中可能发起后续 DB 请求；该方法会移除已处理的待处理请求并调用 PlayerSessionManager
         /// 与相关缓存操作。</remarks>
-        /// <param name="gameSession">用于发送响应、通知和转发数据的当前网络会话。</param>
+        /// <param name="dbSession">Game↔DB 连接会话。仅用于方法签名兼容；客户端回包/通知一律改经请求方网关会话（pending.GatewaySession）
+        /// 发送，因 DB 端没有客户端 msgId 处理器，走本连接发送会被丢弃。</param>
         /// <param name="dbMsgId">数据库返回的消息标识，用于选择对应的解析与处理逻辑。</param>
         /// <param name="payload">包含路由元数据和序列化响应体的原始只读字节序列。</param>
         /// <returns>已成功识别并处理该 DB 回包则返回 true；未处理或匹配失败则返回 false。</returns>
-        public static bool TryHandleDbResponse(global::Network.ISession gameSession, int dbMsgId, ReadOnlyMemory<byte> payload)
+        public static bool TryHandleDbResponse(global::Network.ISession dbSession, int dbMsgId, ReadOnlyMemory<byte> payload)
         {
             if (!Shared.RouteMetadata.TryExtractRequestId(payload, out long requestId, out var cleanPayload))
             {
@@ -35,6 +36,16 @@ namespace Game.Handlers
             if (!PendingFriendRequests.TryRemove(requestId, out var pending))
             {
                 Shared.Log.Warning($"Game 未找到匹配的待处理 DB 请求 RequestId:{requestId} MsgId:{dbMsgId}");
+                return false;
+            }
+
+            // CRITICAL 修复：DB 回包必须经请求方的网关会话回发客户端。
+            // 此前直接把 Game↔DB 连接（dbSession）当作发送通道，导致所有好友/黑名单/申请回包与通知被发到 DB 服务器并被其丢弃，
+            // 客户端永远收不到任何响应。网关按 __targetSessionId 元数据路由，经请求方网关连接发送即可到达任意目标客户端。
+            var sendSession = pending.GatewaySession;
+            if (sendSession == null)
+            {
+                Shared.Log.Warning($"Game 好友 DB 回包缺少网关会话，无法回发客户端 RequestId:{requestId} MsgId:{dbMsgId}");
                 return false;
             }
 
@@ -54,7 +65,7 @@ namespace Game.Handlers
                             Success = dbRes?.Success == true,
                             Message = dbRes?.Message ?? "添加好友失败"
                         };
-                        SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, res);
+                        SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, res);
                         return true;
                     }
                 case MessageIds.DbRemoveFriendRes:
@@ -69,7 +80,7 @@ namespace Game.Handlers
                             Success = dbRes?.Success == true,
                             Message = dbRes?.Message ?? "删除好友失败"
                         };
-                        SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, res);
+                        SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, res);
                         return true;
                     }
                 case MessageIds.DbSetFriendRemarkRes:
@@ -84,7 +95,7 @@ namespace Game.Handlers
                             Success = dbRes?.Success == true,
                             Message = dbRes?.Message ?? "设置备注失败"
                         };
-                        SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, res);
+                        SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, res);
                         return true;
                     }
                 case MessageIds.DbGetFriendsRes:
@@ -101,7 +112,7 @@ namespace Game.Handlers
                             if (dbRes?.Success != true)
                             {
                                 inviteRes.Message = dbRes?.Message ?? "获取好友列表失败";
-                                SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
+                                SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
                                 return true;
                             }
 
@@ -109,7 +120,7 @@ namespace Game.Handlers
                             if (!isFriend)
                             {
                                 inviteRes.Message = "仅可邀请好友";
-                                SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
+                                SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
                                 return true;
                             }
 
@@ -118,7 +129,7 @@ namespace Game.Handlers
                                 UserId = requesterUserId
                             };
 
-                            bool sent = TrySendDbRequest(MessageIds.DbResolveUserByUserIdReq, senderResolveReq, pending.SessionId, pending.ResponseMsgId, nextPending =>
+                            bool sent = TrySendDbRequest(MessageIds.DbResolveUserByUserIdReq, sendSession, senderResolveReq, pending.SessionId, pending.ResponseMsgId, nextPending =>
                             {
                                 nextPending.IsInviteSenderResolve = true;
                                 nextPending.InviteRoomId = pending.InviteRoomId;
@@ -130,7 +141,7 @@ namespace Game.Handlers
                             if (!sent)
                             {
                                 inviteRes.Message = "发送DB请求失败";
-                                SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
+                                SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
                             }
 
                             return true;
@@ -158,7 +169,7 @@ namespace Game.Handlers
                             Message = dbRes?.Message ?? "获取好友列表失败",
                             Friends = friends
                         };
-                        SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, res);
+                        SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, res);
                         return true;
                     }
                 case MessageIds.DbAddBlacklistRes:
@@ -178,7 +189,7 @@ namespace Game.Handlers
                             Success = dbRes?.Success == true,
                             Message = dbRes?.Message ?? "添加黑名单失败"
                         };
-                        SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, res);
+                        SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, res);
                         return true;
                     }
                 case MessageIds.DbRemoveBlacklistRes:
@@ -198,7 +209,7 @@ namespace Game.Handlers
                             Success = dbRes?.Success == true,
                             Message = dbRes?.Message ?? "移除黑名单失败"
                         };
-                        SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, res);
+                        SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, res);
                         return true;
                     }
                 case MessageIds.DbGetBlacklistRes:
@@ -229,7 +240,7 @@ namespace Game.Handlers
                             Message = dbRes?.Message ?? "获取黑名单失败",
                             Blacklists = blacklists
                         };
-                        SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, res);
+                        SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, res);
                         return true;
                     }
                 case MessageIds.DbCreateFriendApplyRes:
@@ -256,7 +267,7 @@ namespace Game.Handlers
                                     Message = pending.FriendApplyMessage,
                                     CreateTimeUtc = DateTime.UtcNow
                                 };
-                                SendResponseBySessionId(gameSession, targetSessionId, MessageIds.FriendApplyNotif, notif);
+                                SendResponseBySessionId(sendSession, targetSessionId, MessageIds.FriendApplyNotif, notif);
                             }
                         }
 
@@ -265,7 +276,7 @@ namespace Game.Handlers
                             Success = dbRes?.Success == true,
                             Message = dbRes?.Message ?? "发送好友申请失败"
                         };
-                        SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, res);
+                        SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, res);
                         return true;
                     }
                 case MessageIds.DbGetFriendApplyListRes:
@@ -295,7 +306,7 @@ namespace Game.Handlers
                             Message = dbRes?.Message ?? "获取好友申请列表失败",
                             Applies = applies
                         };
-                        SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, res);
+                        SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, res);
                         return true;
                     }
                 case MessageIds.DbHandleFriendApplyRes:
@@ -321,7 +332,7 @@ namespace Game.Handlers
                                     Accept = pending.FriendApplyAccept,
                                     Reason = pending.FriendApplyAccept ? "对方已同意你的好友申请" : "对方已拒绝你的好友申请"
                                 };
-                                SendResponseBySessionId(gameSession, requesterSessionId, MessageIds.InviteGameAckNotif, notif);
+                                SendResponseBySessionId(sendSession, requesterSessionId, MessageIds.InviteGameAckNotif, notif);
                             }
                         }
 
@@ -330,7 +341,7 @@ namespace Game.Handlers
                             Success = dbRes?.Success == true,
                             Message = dbRes?.Message ?? "处理好友申请失败"
                         };
-                        SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, res);
+                        SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, res);
                         return true;
                     }
                 case MessageIds.DbResolveUserByUniqueIdRes:
@@ -350,35 +361,35 @@ namespace Game.Handlers
                         if (requesterUserId <= 0)
                         {
                             inviteRes.Message = "会话未登录或未绑定";
-                            SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
+                            SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
                             return true;
                         }
 
                         if (dbRes?.Success != true || dbRes.UserId <= 0)
                         {
                             inviteRes.Message = dbRes?.Message ?? "目标用户不存在";
-                            SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
+                            SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
                             return true;
                         }
 
                         if (dbRes.UserId == requesterUserId)
                         {
                             inviteRes.Message = "不能邀请自己";
-                            SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
+                            SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
                             return true;
                         }
 
                         if (IsBlockedByTarget(dbRes.UserId, requesterUserId))
                         {
                             inviteRes.Message = "对方已将你拉黑";
-                            SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
+                            SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
                             return true;
                         }
 
                         if (IsBlockedByTarget(requesterUserId, dbRes.UserId))
                         {
                             inviteRes.Message = "你已将对方拉黑，无法邀请";
-                            SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
+                            SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
                             return true;
                         }
 
@@ -387,7 +398,7 @@ namespace Game.Handlers
                             UserId = requesterUserId
                         };
 
-                        bool sentFriendCheck = TrySendDbRequest(MessageIds.DbGetFriendsReq, friendCheckReq, pending.SessionId, pending.ResponseMsgId, nextPending =>
+                        bool sentFriendCheck = TrySendDbRequest(MessageIds.DbGetFriendsReq, sendSession, friendCheckReq, pending.SessionId, pending.ResponseMsgId, nextPending =>
                         {
                             nextPending.IsInviteFriendCheck = true;
                             nextPending.InviteTargetUserId = dbRes.UserId;
@@ -399,7 +410,7 @@ namespace Game.Handlers
                         if (!sentFriendCheck)
                         {
                             inviteRes.Message = "发送DB请求失败";
-                            SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
+                            SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
                         }
 
                         return true;
@@ -420,7 +431,7 @@ namespace Game.Handlers
                         if (requesterUserId <= 0)
                         {
                             inviteRes.Message = "会话未登录或未绑定";
-                            SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
+                            SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
                             return true;
                         }
 
@@ -428,12 +439,12 @@ namespace Game.Handlers
                         string inviterNickname = dbRes?.Success == true ? (dbRes.Nickname ?? string.Empty) : string.Empty;
 
                         var pendingInvite = CreatePendingInvite(requesterUserId, pending.InviteTargetUserId, inviterUniqueId, inviterNickname, pending.InviteRoomId, pending.InviteSceneType, pending.InviteRoomName);
-                        CleanupExpiredPendingInvites(gameSession);
+                        CleanupExpiredPendingInvites(sendSession);
 
                         long targetSessionId = PlayerSessionManager.Instance.GetSessionIdByUserId(pending.InviteTargetUserId);
                         if (targetSessionId > 0)
                         {
-                            SendInviteNotification(gameSession, targetSessionId, pendingInvite);
+                            SendInviteNotification(sendSession, targetSessionId, pendingInvite);
                             inviteRes.Success = true;
                             inviteRes.Message = "邀请已发送";
                         }
@@ -443,7 +454,7 @@ namespace Game.Handlers
                             inviteRes.Message = "对方离线，邀请已暂存";
                         }
 
-                        SendResponseBySessionId(gameSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
+                        SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
                         return true;
                     }
                 default:

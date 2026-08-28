@@ -32,7 +32,8 @@ namespace Gateway
         /// </summary>
         private static (TcpClientWrapper, TcpClientWrapper, TcpClientWrapper) ConnectToBackendServers()
         {
-            string sharedSecret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            // 安全修复：拒绝占位符密钥。
+            string sharedSecret = Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret");
             string gatewayHost = ConfigHelper.GetConfig<string>("GatewayHost") ?? "127.0.0.1";
             int gatewayPort = ConfigHelper.GetConfig<int>("GatewayPort") == 0 ? 31300 : ConfigHelper.GetConfig<int>("GatewayPort");
             string gatewayNodeId = $"Gateway-{gatewayHost}:{gatewayPort}";

@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.IO;
 using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
@@ -207,6 +208,17 @@ public class PipelineTcpServer : INetworkServer
 
         // 小端解析长度
         int payloadLength = BinaryPrimitives.ReadInt32LittleEndian(lengthSpan);
+
+        if (payloadLength <= 0)
+        {
+            throw new InvalidDataException($"Invalid packet length: {payloadLength}");
+        }
+        if (payloadLength > Network.Routing.LengthPrefixedPacketReader.DefaultMaxPacketLength)
+        {
+            // 防 DoS：拒绝声明超大长度的包
+            throw new InvalidDataException(
+                $"Packet length {payloadLength} 超过最大允许 {Network.Routing.LengthPrefixedPacketReader.DefaultMaxPacketLength} 字节，已拒绝（疑似 DoS 攻击）");
+        }
 
         if (buffer.Length < payloadLength + 4)
         {

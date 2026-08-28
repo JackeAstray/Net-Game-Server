@@ -152,17 +152,18 @@ namespace Center.Handlers
 
         /// <summary>
         /// 从 clientGatewayRoutes 字典中移除与指定网关会话关联的所有客户端路由。
+        /// 安全修复：在 ConcurrentDictionary 上用 foreach 枚举同时 TryRemove 会抛
+        /// InvalidOperationException；先快照 key 集合再操作。
         /// </summary>
-        /// <remarks>枚举 clientGatewayRoutes 并对匹配的键调用
-        /// TryRemove。若同一会话关联多个键，则全部移除。枚举为快照，可能不会反映并发修改。</remarks>
         /// <param name="gatewaySession">要移除其关联路由的网关会话。</param>
         private void RemoveClientRoutesByGatewaySession(Network.ISession gatewaySession)
         {
-            foreach (var route in clientGatewayRoutes)
+            // 快照 key 集合：避免在枚举过程中被其他线程修改导致抛异常
+            foreach (var key in clientGatewayRoutes.Keys.ToArray())
             {
-                if (route.Value == gatewaySession)
+                if (clientGatewayRoutes.TryGetValue(key, out var route) && route == gatewaySession)
                 {
-                    clientGatewayRoutes.TryRemove(route.Key, out _);
+                    clientGatewayRoutes.TryRemove(key, out _);
                 }
             }
         }
@@ -219,11 +220,12 @@ namespace Center.Handlers
             if (++selectCount % 32 == 0)
             {
                 var live = new HashSet<string>(candidates.Select(n => n.NodeId));
-                foreach (var kv in smoothWeights)
+                // 快照 keys：避免 foreach 中 TryRemove 抛异常
+                foreach (var key in smoothWeights.Keys.ToArray())
                 {
-                    if (!live.Contains(kv.Key))
+                    if (!live.Contains(key))
                     {
-                        smoothWeights.TryRemove(kv.Key, out _);
+                        smoothWeights.TryRemove(key, out _);
                     }
                 }
             }
@@ -296,14 +298,19 @@ namespace Center.Handlers
             int removedCount = 0;
             DateTime now = DateTime.UtcNow;
 
-            foreach (var pair in nodes)
+            // 安全修复：ConcurrentDictionary 枚举 + TryRemove 抛异常；先快照 key 集合
+            foreach (var key in nodes.Keys.ToArray())
             {
-                if (now - pair.Value.LastHeartbeat <= timeout)
+                if (!nodes.TryGetValue(key, out var node))
+                {
+                    continue;
+                }
+                if (now - node.LastHeartbeat <= timeout)
                 {
                     continue;
                 }
 
-                if (nodes.TryRemove(pair.Key, out var removedNode))
+                if (nodes.TryRemove(key, out var removedNode))
                 {
                     removedCount++;
                     Log.Warning($"节点心跳超时，已移除: [{removedNode.NodeType}] {removedNode.NodeId}");

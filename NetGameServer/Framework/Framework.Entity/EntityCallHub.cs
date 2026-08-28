@@ -10,13 +10,35 @@ namespace Framework.Entity;
 /// - 收到 EntityRemoteCallResult 时按 CallId 关联并完成回调（回执关联）
 /// - 超时未回执的调用在 SweepExpired 中被判定失败并回调（超时表）
 /// 挂载方（宿主服务器）需在 tick 中周期调用 <see cref="SweepExpired"/> 驱动超时判定。
+///
+/// 安全修复：原实现为静态类，所有节点共享同一张 pending 表 + 全局 CallId 计数。
+/// 改为实例类，按节点隔离；CallId 自增基数由实例字段持有，避免跨节点冲突。
+/// 旧静态 API 仍然以兼容方式委托到全局 EntityCallHubRegistry.Default 实例，
+/// 但建议新代码显式持有实例（尤其在 Battle/Game/Center 多节点进程场景）。
 /// </summary>
-public static class EntityCallHub
+public sealed class EntityCallHub
 {
-    private static long callIdSeed = DateTime.UtcNow.Ticks;
+    private long callIdSeed;
 
     /// <summary>待回执调用表：CallId -> PendingCall。</summary>
-    private static readonly ConcurrentDictionary<long, PendingCall> pending = new();
+    private readonly ConcurrentDictionary<long, PendingCall> pending = new();
+
+    /// <summary>实例唯一性后缀（用于 CallId 空间隔离）。</summary>
+    public string HubId { get; }
+
+    public EntityCallHub(string? hubId = null)
+    {
+        // 用进程内单调时间戳 + 实例哈希做 CallId 起点，确保多节点不冲突
+        long baseTicks = DateTime.UtcNow.Ticks;
+        int instanceHash = hubId != null ? hubId.GetHashCode() & 0xFFFF : Random.Shared.Next(0, 0xFFFF);
+        // 起点：低 16 位为实例哈希，高位为时间戳；保证全局单调
+        callIdSeed = ((baseTicks & 0x7FFFFFFFFFFFF000L) | (uint)instanceHash);
+        if (callIdSeed < 0)
+        {
+            callIdSeed = -callIdSeed;
+        }
+        HubId = hubId ?? $"EntityCallHub-{instanceHash:X4}";
+    }
 
     /// <summary>一次待回执的远程调用。</summary>
     public sealed class PendingCall
@@ -26,17 +48,17 @@ public static class EntityCallHub
         public string? MethodName { get; init; }
         public DateTime DeadlineUtc { get; set; }
         /// <summary>回执回调：(Success, ResultValue)。超时或失败时 Success=false。</summary>
-        public Action<bool, object?> Callback { get; init; } = static (_, _) => { };
+        public Action<bool, object?>? Callback { get; init; }
     }
 
     /// <summary>分配下一个调用 ID（线程安全）。</summary>
-    public static long NextCallId()
+    public long NextCallId()
     {
         return System.Threading.Interlocked.Increment(ref callIdSeed);
     }
 
     /// <summary>注册待回执调用。</summary>
-    public static void Register(long callId, PendingCall item)
+    public void Register(long callId, PendingCall item)
     {
         pending[callId] = item;
     }
@@ -45,7 +67,7 @@ public static class EntityCallHub
     /// 处理远程调用回执：按 CallId 匹配待回执项并完成回调。
     /// 返回 true 表示匹配并消费了该回执；无匹配（重复/过期/未知）返回 false。
     /// </summary>
-    public static bool HandleResult(Framework.Protocol.Generated.EntityRemoteCallResult result)
+    public bool HandleResult(Framework.Protocol.Generated.EntityRemoteCallResult result)
     {
         if (!pending.TryRemove(result.CallId, out var pc))
         {
@@ -61,7 +83,7 @@ public static class EntityCallHub
 
         try
         {
-            pc.Callback(result.Success, value);
+            pc.Callback?.Invoke(result.Success, value);
         }
         catch (Exception ex)
         {
@@ -75,17 +97,21 @@ public static class EntityCallHub
     /// 建议由宿主 tick 周期调用（如每 100~500ms）。
     /// </summary>
     /// <returns>本次清理的超时调用数。</returns>
-    public static int SweepExpired(DateTime now)
+    public int SweepExpired(DateTime now)
     {
         int expired = 0;
-        foreach (var pair in pending)
+        // 安全修复：先快照 key 集合，避免 foreach + TryRemove 抛异常
+        foreach (var key in pending.Keys.ToArray())
         {
-            if (pair.Value.DeadlineUtc > now)
+            if (!pending.TryGetValue(key, out var pc))
             {
                 continue;
             }
-
-            if (!pending.TryRemove(pair.Key, out var pc))
+            if (pc.DeadlineUtc > now)
+            {
+                continue;
+            }
+            if (!pending.TryRemove(key, out _))
             {
                 continue;
             }
@@ -93,7 +119,7 @@ public static class EntityCallHub
             expired++;
             try
             {
-                pc.Callback(false, null);
+                pc.Callback?.Invoke(false, null);
             }
             catch (Exception ex)
             {
@@ -104,5 +130,51 @@ public static class EntityCallHub
     }
 
     /// <summary>当前待回执调用数（含已超时未清理项）。</summary>
-    public static int PendingCount => pending.Count;
+    public int PendingCount => pending.Count;
+}
+
+/// <summary>
+/// EntityCallHub 全局注册表（向后兼容层）。
+/// 各节点启动时应通过 <see cref="RegisterDefault"/> 注册自己的实例，
+/// 之后 EntityCall/EntityMailbox 的静态 API 会自动委派到该实例。
+/// 未注册时退回进程内默认实例（仅用于单元测试）。
+/// </summary>
+public static class EntityCallHubRegistry
+{
+    private static EntityCallHub? _default;
+
+    /// <summary>当前节点注册的默认 hub。设置后所有静态 API 都走它。</summary>
+    public static EntityCallHub Default => _default ??= new EntityCallHub("Default");
+
+    /// <summary>注册当前节点的 hub（启动时调用一次）。</summary>
+    public static void RegisterDefault(EntityCallHub hub)
+    {
+        if (hub == null) throw new ArgumentNullException(nameof(hub));
+        _default = hub;
+    }
+}
+
+/// <summary>
+/// 兼容层：将原静态 API 委派到 <see cref="EntityCallHubRegistry.Default"/>。
+/// 推荐新代码直接使用实例 API（创建 EntityCallHub 实例并通过 RegisterDefault 注册）。
+/// </summary>
+[Obsolete("EntityCallHub 静态 API 已废弃，请使用实例化 EntityCallHub 并通过 EntityCallHubRegistry.RegisterDefault 注册", false)]
+public static class EntityCallHubCompat
+{
+    /// <summary>分配下一个调用 ID（线程安全）。</summary>
+    public static long NextCallId() => EntityCallHubRegistry.Default.NextCallId();
+
+    /// <summary>注册待回执调用。</summary>
+    public static void Register(long callId, EntityCallHub.PendingCall item)
+        => EntityCallHubRegistry.Default.Register(callId, item);
+
+    /// <summary>处理远程调用回执：按 CallId 匹配待回执项并完成回调。</summary>
+    public static bool HandleResult(Framework.Protocol.Generated.EntityRemoteCallResult result)
+        => EntityCallHubRegistry.Default.HandleResult(result);
+
+    /// <summary>超时判定。</summary>
+    public static int SweepExpired(DateTime now) => EntityCallHubRegistry.Default.SweepExpired(now);
+
+    /// <summary>当前待回执调用数。</summary>
+    public static int PendingCount => EntityCallHubRegistry.Default.PendingCount;
 }

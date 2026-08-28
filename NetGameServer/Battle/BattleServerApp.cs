@@ -201,8 +201,18 @@ namespace Battle
             return list;
         }
 
+        /// <summary>无主世界实体（Npc/Quest 等）允许客户端直接调用的方法白名单（与 SceneManager/脚本 OnMessage 对齐）。</summary>
+        private static readonly string[] WorldEntityAllowedMethods = { "TakeDamage", "QueryProgress" };
+
         /// <summary>分发通用实体脚本动作（客户端 ScriptAction 消息 → 脚本 OnMessage）。</summary>
-        public static void DispatchEntityScriptAction(long entityId, string method, object?[] args)
+        /// <remarks>
+        /// CRITICAL 修复：脚本动作必须鉴权，否则任意客户端可对任意场景/任意实体的任意方法发起调用（改他人血量、
+        /// 触发他人技能、跨房间干扰等）。规则：
+        /// 1) 调用者必须已加入目标实体所在场景（杜绝跨场景/跨房间攻击）；
+        /// 2) 属主规则：调用者仅可操作自己拥有的实体（Player/Skill/Item 的 OwnerClientId == 会话 ID）；
+        /// 3) 无主世界实体（Npc/Quest）：仅放行白名单方法（世界交互如打怪/查询进度）。
+        /// </remarks>
+        public static void DispatchEntityScriptAction(long callerSessionId, long entityId, string method, object?[] args)
         {
             try
             {
@@ -213,6 +223,31 @@ namespace Battle
                     Log.Warning($"实体脚本动作未找到目标实体 EntityId:{entityId} Method:{method}");
                     return;
                 }
+
+                if (callerSessionId <= 0)
+                {
+                    Log.Warning($"实体脚本动作被拒绝：调用者会话无效 SessionId:{callerSessionId} EntityId:{entityId} Method:{method}");
+                    return;
+                }
+
+                // 1) 场景归属：调用者必须已加入目标实体所在场景
+                var callerScene = sceneManager?.GetSceneByPlayer(callerSessionId);
+                if (callerScene == null || callerScene.SceneId != scene.SceneId)
+                {
+                    Log.Warning($"实体脚本动作被拒绝：调用者不在目标实体所在场景 SessionId:{callerSessionId} EntityId:{entityId} Method:{method}");
+                    return;
+                }
+
+                // 2) 属主规则：允许操作自属实体的全部方法
+                bool isOwner = entity.OwnerClientId == callerSessionId || entity.EntityId == callerSessionId;
+
+                // 3) 非属主（他人实体或无主世界实体）：仅放行白名单方法
+                if (!isOwner && System.Array.IndexOf(WorldEntityAllowedMethods, method) < 0)
+                {
+                    Log.Warning($"实体脚本动作被拒绝：调用者无权操作该实体 SessionId:{callerSessionId} EntityId:{entityId} Method:{method}");
+                    return;
+                }
+
                 scriptHost?.DispatchMessage(entity, method, args);
             }
             catch (Exception ex)
@@ -896,7 +931,7 @@ namespace Battle
                 // EntityCall 超时判定（对标 KBE 远程调用超时回执）：每 10 tick（0.5s @20Hz）清理一次待回执调用
                 if (frame % 10 == 0)
                 {
-                    int expired = Framework.Entity.EntityCallHub.SweepExpired(DateTime.UtcNow);
+                    int expired = Framework.Entity.EntityCallHubRegistry.Default.SweepExpired(DateTime.UtcNow);
                     if (expired > 0)
                     {
                         Log.Warning($"实体远程调用超时清理 {expired} 个（未收到回执）");
@@ -933,7 +968,8 @@ namespace Battle
             var tcpServer = new TcpServer();
 
             // 内部连接认证：网关/节点连接必须先通过认证握手（InternalAuth），密钥与 Center 节点注册共用。
-            string authSecret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            // 安全修复：拒绝占位符密钥。
+            string authSecret = Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret");
             var gatewayAuthFilters = new System.Collections.Concurrent.ConcurrentDictionary<long, Framework.Core.Security.InternalAuthFilter>();
 
             tcpServer.OnSessionConnected += session =>
@@ -1050,7 +1086,7 @@ namespace Battle
             {
                 Log.Info($"已连接到 Center 服务器 (Host:{centerHost} Port:{centerPort})");
                 // 内部连接认证：先发送认证握手，再注册节点
-                centerClient.SendInternalAuthHandshake(ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret", nodeId);
+                centerClient.SendInternalAuthHandshake(Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret"), nodeId);
                 SendRegisterNode(centerClient, nodeId, "Battle", battleHost, port, GetCurrentLoad(), instanceId, machineId, supervisedBy);
 
                 centerHeartbeatCts?.Cancel();
@@ -1236,7 +1272,7 @@ namespace Battle
         /// <returns>签名的 Base64 编码字符串，使用 UTF-8 编码的输入和 HMAC-SHA256 生成。</returns>
         private static string ComputeCenterSignature(string source)
         {
-            string secret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            string secret = Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret");
             byte[] key = Encoding.UTF8.GetBytes(secret);
             byte[] data = Encoding.UTF8.GetBytes(source);
             using var hmac = new HMACSHA256(key);

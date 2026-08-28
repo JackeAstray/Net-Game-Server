@@ -54,7 +54,7 @@ namespace Game.Handlers
                 TargetUniqueId = req.TargetUniqueId.Trim()
             };
 
-            if (!TrySendDbRequest(MessageIds.DbAddBlacklistReq, dbReq, session.SessionId, MessageIds.AddBlacklistRes))
+            if (!TrySendDbRequest(MessageIds.DbAddBlacklistReq, session, dbReq, session.SessionId, MessageIds.AddBlacklistRes))
             {
                 SendSimpleResponse(session, MessageIds.AddBlacklistRes, new AddBlacklistResponse { Success = false, Message = "发送DB请求失败" });
             }
@@ -100,7 +100,7 @@ namespace Game.Handlers
                 TargetUniqueId = req.TargetUniqueId.Trim()
             };
 
-            if (!TrySendDbRequest(MessageIds.DbRemoveBlacklistReq, dbReq, session.SessionId, MessageIds.RemoveBlacklistRes))
+            if (!TrySendDbRequest(MessageIds.DbRemoveBlacklistReq, session, dbReq, session.SessionId, MessageIds.RemoveBlacklistRes))
             {
                 SendSimpleResponse(session, MessageIds.RemoveBlacklistRes, new RemoveBlacklistResponse { Success = false, Message = "发送DB请求失败" });
             }
@@ -139,7 +139,7 @@ namespace Game.Handlers
                 UserId = userId
             };
 
-            if (!TrySendDbRequest(MessageIds.DbGetBlacklistReq, dbReq, session.SessionId, MessageIds.GetBlacklistRes))
+            if (!TrySendDbRequest(MessageIds.DbGetBlacklistReq, session, dbReq, session.SessionId, MessageIds.GetBlacklistRes))
             {
                 SendSimpleResponse(session, MessageIds.GetBlacklistRes, new GetBlacklistResponse { Success = false, Message = "发送DB请求失败", Blacklists = Array.Empty<BlacklistInfo>() });
             }

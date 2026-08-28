@@ -15,6 +15,7 @@ using Serilog;
 using Shared;
 using Shared.Messages;
 using Shared.Messages.Center;
+using System.Linq;
 
 namespace Gateway
 {
@@ -91,15 +92,19 @@ namespace Gateway
             {
                 try
                 {
-                    // D6 客户端会话防重放：生命周期窗（MaxSessionLifetime）判定。
-                    // 超出窗口的 SessionId 直接关连接并丢弃，防止捕获重放（session.Close 后 OnDisconnected 自然清理）。
+                    // D6 客户端会话防重放：生命周期窗（MaxSessionLifetime）+ 空闲窗（MaxIdleSeconds）判定。
+                    // 超出窗口的 SessionId 直接关连接并丢弃，防止捕获重放。
                     DateTime? createdAt = Gateway.Managers.GatewaySessionManager.Instance.GetCreatedAt(session.SessionId);
-                    if (createdAt.HasValue && !Framework.Core.Security.SessionGuard.IsSessionValid(createdAt.Value, createdAt.Value, DateTime.UtcNow))
+                    DateTime? lastActivity = Gateway.Managers.GatewaySessionManager.Instance.GetLastActivity(session.SessionId);
+                    if (createdAt.HasValue && lastActivity.HasValue &&
+                        !Framework.Core.Security.SessionGuard.IsSessionValid(createdAt.Value, lastActivity.Value, DateTime.UtcNow))
                     {
-                        Shared.Log.Warning($"Gateway 会话超过最大生命周期，关连接 SessionId:{session.SessionId} EstablishedAt:{createdAt:O}");
+                        Shared.Log.Warning($"Gateway 会话超过最大生命周期或空闲超时，关连接 SessionId:{session.SessionId} EstablishedAt:{createdAt:O} LastActivity:{lastActivity:O}");
                         try { session.Close(); } catch { /* 关闭异常吞掉 */ }
                         return;
                     }
+                    // 收到数据包：刷新最近活动时间
+                    Gateway.Managers.GatewaySessionManager.Instance.TouchSession(session.SessionId);
 
                     if (data.Length >= 4)
                     {
@@ -236,12 +241,19 @@ namespace Gateway
             udpServer.OnSessionDisconnected += onSessionDisconnected;
             webSocketServer.OnSessionDisconnected += onSessionDisconnected;
 
+            int webSocketPort = ConfigHelper.GetConfig<int>("WebSocketPort");
+            if (webSocketPort <= 0)
+            {
+                // 默认 GatewayPort + 10，避免与 Login HTTP API 的 31303（ApiPort）在单机部署时发生 TCP 端口冲突
+                webSocketPort = port + 10;
+            }
+
             await tcpServer.StartAsync(port);
             await kcpServer.StartAsync(port + 1);
             await udpServer.StartAsync(port + 2);
-            await webSocketServer.StartAsync(port + 3);
+            await webSocketServer.StartAsync(webSocketPort);
 
-            Shared.Log.Info($"网关服务器已启动，监听 TCP 端口: {port}, KCP 端口: {port + 1}, UDP 端口: {port + 2}, WebSocket 端口: {port + 3}");
+            Shared.Log.Info($"网关服务器已启动，监听 TCP 端口: {port}, KCP 端口: {port + 1}, UDP 端口: {port + 2}, WebSocket 端口: {webSocketPort}");
 
             // TCP 空闲会话超时踢线 + 重连挂起清理（对标 KBE 心跳超时；UDP/KCP 已有各自 5 分钟超时）
             int tcpTimeoutSeconds = ConfigHelper.GetConfig<int>("GatewayTcpTimeoutSeconds") == 0 ? 300 : ConfigHelper.GetConfig<int>("GatewayTcpTimeoutSeconds");
@@ -253,11 +265,12 @@ namespace Gateway
                     var now = DateTime.UtcNow;
 
                     // 重连挂起过期清理
-                    foreach (var pair in pendingReconnects)
+                    // 安全修复：ConcurrentDictionary 枚举 + TryRemove 抛异常；先快照 key 集合
+                    foreach (var key in pendingReconnects.Keys.ToArray())
                     {
-                        if (pair.Value.ExpiresAtUtc < now)
+                        if (pendingReconnects.TryGetValue(key, out var pr) && pr.ExpiresAtUtc < now)
                         {
-                            pendingReconnects.TryRemove(pair.Key, out _);
+                            pendingReconnects.TryRemove(key, out _);
                         }
                     }
 

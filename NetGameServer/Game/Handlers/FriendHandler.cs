@@ -26,11 +26,44 @@ namespace Game.Handlers
         private static readonly TimeSpan InviteMinInterval = TimeSpan.FromSeconds(3);
         private static readonly TimeSpan InviteDedupWindow = TimeSpan.FromSeconds(20);
         private static readonly TimeSpan InviteExpireWindow = TimeSpan.FromMinutes(2);
+        private static readonly TimeSpan PendingRequestTimeout = TimeSpan.FromSeconds(30);
+        private static long lastPendingSweepTicks;
+
+        /// <summary>发送者的好友列表是否已从 DB 加载（缓存 warm）。用于聊天私聊好友校验的 fail-safe：缓存未加载时不强制拦截。</summary>
+        public static bool IsFriendListLoaded(int userId) => userId > 0 && FriendCache.ContainsKey(userId);
+
+        /// <summary>
+        /// 清理长期未回执的 PendingFriendRequests（DB 无响应/掉线时防无界增长）。
+        /// 仅在待处理项超过阈值且距上次清扫 ≥ 5 秒时执行。
+        /// </summary>
+        private static void SweepExpiredPendingRequests()
+        {
+            if (PendingFriendRequests.Count < 256) return;
+            long now = DateTime.UtcNow.Ticks;
+            long last = Interlocked.Read(ref lastPendingSweepTicks);
+            if (now - last < TimeSpan.FromSeconds(5).Ticks) return;
+            if (Interlocked.CompareExchange(ref lastPendingSweepTicks, now, last) != last) return;
+
+            foreach (var kv in PendingFriendRequests.ToArray())
+            {
+                if (now - kv.Value.CreatedAtTicks > PendingRequestTimeout.Ticks)
+                {
+                    if (PendingFriendRequests.TryRemove(kv.Key, out _))
+                    {
+                        Shared.Log.Warning($"好友 DB 请求超时清理 RequestId:{kv.Key} SessionId:{kv.Value.SessionId} MsgId:{kv.Value.ResponseMsgId}");
+                    }
+                }
+            }
+        }
 
         private sealed class PendingFriendRequest
         {
             public long SessionId { get; set; }
             public int ResponseMsgId { get; set; }
+            /// <summary>请求发起时间（超时清理用）。</summary>
+            public long CreatedAtTicks { get; set; } = DateTime.UtcNow.Ticks;
+            /// <summary>请求发起时的网关会话（用于 DB 回包回发客户端；DB 回包路径不能使用 Game↔DB 连接发送客户端消息）。</summary>
+            public global::Network.ISession? GatewaySession { get; set; }
             public bool IsInviteResolve { get; set; }
             public bool IsInviteFriendCheck { get; set; }
             public bool IsInviteSenderResolve { get; set; }
@@ -110,9 +143,10 @@ namespace Game.Handlers
         /// <param name="responseMsgId">期望接收的响应消息 ID，用于构建待处理项。</param>
         /// <param name="configurePending">可选操作，用于在注册待处理响应前配置 PendingFriendRequest 的额外字段。</param>
         /// <returns>若成功将请求发送并注册为待处理响应则返回 true；若发生错误或数据库客户端为空则返回 false。</returns>
-        private static bool TrySendDbRequest<TRequest>(int dbMsgId, TRequest request, long clientSessionId, int responseMsgId, Action<PendingFriendRequest>? configurePending = null)
+        private static bool TrySendDbRequest<TRequest>(int dbMsgId, global::Network.ISession? gatewaySession, TRequest request, long clientSessionId, int responseMsgId, Action<PendingFriendRequest>? configurePending = null)
         {
             CleanupInviteDedupCache();
+            SweepExpiredPendingRequests();
 
             var dbClient = GameServerApp.DbClient;
             if (dbClient == null)
@@ -131,7 +165,8 @@ namespace Game.Handlers
                 var pending = new PendingFriendRequest
                 {
                     SessionId = clientSessionId,
-                    ResponseMsgId = responseMsgId
+                    ResponseMsgId = responseMsgId,
+                    GatewaySession = gatewaySession
                 };
                 configurePending?.Invoke(pending);
                 PendingFriendRequests[requestId] = pending;

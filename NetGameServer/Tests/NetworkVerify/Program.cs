@@ -63,6 +63,9 @@ internal static class Program
 
         Shared.Log.Configure(false, Path.Combine(baseDir, "logs", "NetworkVerify.log"), "Warning");
 
+        // 测试模式：允许占位符共享密钥（生产代码走 SecretConfig.Require 会拒绝）
+        Framework.Core.Security.SecretConfig.AllowPlaceholderSecretsInTests();
+
         // ========== 第一部分：传输层并发回显压测 ==========
         Console.WriteLine("== 传输层：并发发送原子性/顺序（写队列） ==");
         {

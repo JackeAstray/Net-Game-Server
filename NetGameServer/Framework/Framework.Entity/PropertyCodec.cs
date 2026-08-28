@@ -41,15 +41,32 @@ public static class PropertyCodec
     }
 
     /// <summary>序列化全部 SyncToClient 属性（玩家首次进入视野时的全量快照）。</summary>
-    public static byte[] SerializeAll(Entity entity)
+    public static byte[] SerializeAll(Entity entity) => SerializeAll(entity, includeOwnClient: true);
+
+    /// <summary>
+    /// 序列化全部 SyncToClient 属性（全量快照）。
+    /// </summary>
+    /// <param name="includeOwnClient">
+    /// true 包含 OWN_CLIENT 私有属性（仅实体属主可见的装备/冷却/背包等），用于属主自身的快照/备份；
+    /// false 剔除 OWN_CLIENT 属性（快照发给非属主玩家时使用，防止私有数据泄露）。
+    /// </param>
+    public static byte[] SerializeAll(Entity entity, bool includeOwnClient)
     {
-        var names = entity.Def.Properties.Values.Where(p => p.SyncToClient).Select(p => p.Name);
+        var names = entity.Def.Properties.Values
+            .Where(p => p.SyncToClient && (includeOwnClient || p.SyncScope != EntitySyncScope.OwnClient))
+            .Select(p => p.Name);
         return SerializeChanges(entity, names);
     }
 
     /// <summary>把增量字节应用到目标实体。返回被应用的属性名列表。</summary>
     public static string[] DeserializeInto(Entity target, ReadOnlySpan<byte> data) =>
         DeserializeInto(target, data, applyDirty: true);
+
+    /// <summary>属性增量最大数量（防 DoS：攻击者发 count=65535 触发大 List 分配）。</summary>
+    public const int MaxPropertyCount = 256;
+
+    /// <summary>属性名/字符串最大长度。</summary>
+    public const int MaxStringLength = 1024;
 
     /// <summary>
     /// 把增量字节应用到目标实体。
@@ -64,6 +81,12 @@ public static class PropertyCodec
         }
 
         int count = BinaryPrimitives.ReadUInt16LittleEndian(data);
+        if (count > MaxPropertyCount)
+        {
+            // 安全修复：拒绝声明超大数量的属性包
+            throw new InvalidDataException(
+                $"PropertyCodec 属性数量 {count} 超过上限 {MaxPropertyCount}，疑似 DoS 攻击");
+        }
         int offset = 2;
         var applied = new List<string>(count);
 
@@ -237,9 +260,11 @@ public static class PropertyCodec
             case EntityPropertyType.String:
             {
                 byte[] s = Encoding.UTF8.GetBytes(value as string ?? string.Empty);
-                BinaryPrimitives.WriteUInt16LittleEndian(scratch.Slice(0, 2), (ushort)s.Length);
+                // 长度字段为 ushort：字符串超长时截断字节写入，保证长度字段与内容一致，避免损坏流
+                int len = Math.Min(s.Length, ushort.MaxValue);
+                BinaryPrimitives.WriteUInt16LittleEndian(scratch.Slice(0, 2), (ushort)len);
                 ms.Write(scratch.Slice(0, 2));
-                ms.Write(s);
+                ms.Write(s, 0, len);
                 break;
             }
             case EntityPropertyType.Float3:

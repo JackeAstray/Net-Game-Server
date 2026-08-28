@@ -1,3 +1,4 @@
+using System.IO;
 using Framework.Core;
 
 namespace Framework.Entity;
@@ -69,8 +70,8 @@ public sealed class EntityCall
             return 0;
         }
 
-        long callId = EntityCallHub.NextCallId();
-        EntityCallHub.Register(callId, new EntityCallHub.PendingCall
+        long callId = EntityCallHubRegistry.Default.NextCallId();
+        EntityCallHubRegistry.Default.Register(callId, new EntityCallHub.PendingCall
         {
             CallId = callId,
             TargetNodeId = TargetNodeId,
@@ -109,6 +110,12 @@ public sealed class EntityCall
 /// </summary>
 public static class ArgCodec
 {
+    /// <summary>参数数组上限（防 DoS：攻击者发 count=65535 触发大数组分配）。</summary>
+    public const int MaxArgCount = 32;
+
+    /// <summary>字符串/列表单字段长度上限（防 DoS：超大字符串触发 OOM）。</summary>
+    public const int MaxStringLength = 64 * 1024;
+
     private enum ArgType : byte
     {
         Int32 = 1,
@@ -123,6 +130,11 @@ public static class ArgCodec
 
     public static byte[] Serialize(object?[] args)
     {
+        if (args.Length > MaxArgCount)
+        {
+            throw new ArgumentException(
+                $"EntityCall 参数数量 {args.Length} 超过上限 {MaxArgCount}", nameof(args));
+        }
         using var ms = new MemoryStream(32);
         WriteUInt16(ms, (ushort)args.Length);
 
@@ -137,6 +149,12 @@ public static class ArgCodec
     {
         if (data.Length < 2) return Array.Empty<object?>();
         int count = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(data);
+        if (count > MaxArgCount)
+        {
+            // 安全修复：拒绝声明超大数量的参数包
+            throw new InvalidDataException(
+                $"ArgCodec 参数数量 {count} 超过上限 {MaxArgCount}，疑似 DoS 攻击");
+        }
         int offset = 2;
         var result = new object?[count];
 
@@ -178,8 +196,13 @@ public static class ArgCodec
                 break;
             case string s:
             {
-                ms.WriteByte((byte)ArgType.String);
                 var bytes = System.Text.Encoding.UTF8.GetBytes(s);
+                if (bytes.Length > MaxStringLength)
+                {
+                    throw new ArgumentException(
+                        $"EntityCall 字符串参数长度 {bytes.Length} 超过上限 {MaxStringLength}", nameof(value));
+                }
+                ms.WriteByte((byte)ArgType.String);
                 WriteUInt16(ms, (ushort)bytes.Length);
                 ms.Write(bytes);
                 break;
@@ -264,6 +287,12 @@ public static class ArgCodec
                 if (offset + 2 > data.Length) return null;
                 int len = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(offset, 2));
                 offset += 2;
+                if (len > MaxStringLength)
+                {
+                    // 安全修复：拒绝声明超大长度的字符串
+                    throw new InvalidDataException(
+                        $"ArgCodec 字符串长度 {len} 超过上限 {MaxStringLength}，疑似 DoS 攻击");
+                }
                 if (offset + len > data.Length) return null;
                 var s = System.Text.Encoding.UTF8.GetString(data.Slice(offset, len));
                 offset += len;

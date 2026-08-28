@@ -72,10 +72,11 @@ public static partial class MessageRouter
         var dispatcher = new Framework.Protocol.MessageDispatcher();
 
         // 登录（旧客户端 JSON / 新客户端 MemoryPack 双格式）
-        dispatcher.RegisterSync<LoginMsg>((ctx, msg) =>
+        // async 处理：避免 GetAwaiter().GetResult() 阻塞网关收包线程（DB 校验可能耗时数百毫秒）
+        dispatcher.Register<LoginMsg>(async (ctx, msg) =>
         {
             var req = new LoginRequest { Account = msg.Account, Password = msg.Password };
-            var res = loginHandler.HandleLoginRequestAsync(req, ctx.ClientSessionId).GetAwaiter().GetResult();
+            var res = await loginHandler.HandleLoginRequestAsync(req, ctx.ClientSessionId);
             ctx.Send(new LoginResult
             {
                 Success = res.Success,
@@ -94,18 +95,18 @@ public static partial class MessageRouter
         }, jsonFallback: true);
 
         // 注册
-        dispatcher.RegisterSync<Register>((ctx, msg) =>
+        dispatcher.Register<Register>(async (ctx, msg) =>
         {
             var req = new RegisterRequest { Account = msg.Account, Password = msg.Password, Nickname = msg.Nickname };
-            var res = loginHandler.HandleRegisterRequestAsync(req).GetAwaiter().GetResult();
+            var res = await loginHandler.HandleRegisterRequestAsync(req);
             ctx.Send(new RegisterResult { Success = res.Success, Message = res.Message ?? string.Empty });
         }, jsonFallback: true);
 
         // 登出
-        dispatcher.RegisterSync<Logout>((ctx, msg) =>
+        dispatcher.Register<Logout>(async (ctx, msg) =>
         {
             var req = new LogoutRequest { UserId = msg.UserId };
-            var res = loginHandler.HandleLogoutRequestAsync(req, ctx.ClientSessionId).GetAwaiter().GetResult();
+            var res = await loginHandler.HandleLogoutRequestAsync(req, ctx.ClientSessionId);
             ctx.Send(new LogoutResult { Success = res.Success, Message = res.Message ?? string.Empty });
         }, jsonFallback: true);
 
@@ -116,7 +117,7 @@ public static partial class MessageRouter
         }, jsonFallback: true);
 
         // 重置密码（对标旧 ResetPasswordReq：会话 + 账户改密）
-        dispatcher.RegisterSync<ResetPassword>((ctx, msg) =>
+        dispatcher.Register<ResetPassword>(async (ctx, msg) =>
         {
             var req = new ChangePasswordRequest
             {
@@ -124,7 +125,7 @@ public static partial class MessageRouter
                 OldPassword = msg.OldPassword,
                 NewPassword = msg.NewPassword
             };
-            var res = loginHandler.HandleChangePasswordRequestAsync(req, ctx.ClientSessionId).GetAwaiter().GetResult();
+            var res = await loginHandler.HandleChangePasswordRequestAsync(req, ctx.ClientSessionId);
             ctx.Send(new ResetPasswordResult { Success = res.Success, Message = res.Message ?? string.Empty });
         }, jsonFallback: true);
 
@@ -135,10 +136,10 @@ public static partial class MessageRouter
         }, jsonFallback: true);
 
         // 找回密码（发送验证码；对标旧 FindPasswordWithCodeReq）
-        dispatcher.RegisterSync<FindPasswordWithCode>((ctx, msg) =>
+        dispatcher.Register<FindPasswordWithCode>(async (ctx, msg) =>
         {
             var req = new FindPasswordRequest { Account = msg.Account, Email = msg.Email };
-            var res = loginHandler.HandleFindPasswordRequestAsync(req).GetAwaiter().GetResult();
+            var res = await loginHandler.HandleFindPasswordRequestAsync(req);
             ctx.Send(new FindPasswordWithCodeResult { Success = res.Success, Message = res.Message ?? string.Empty });
         }, jsonFallback: true);
 

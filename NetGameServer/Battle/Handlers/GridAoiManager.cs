@@ -22,36 +22,50 @@ namespace Battle.Handlers
         // 网格索引: (GridX, GridY) -> 该网格内所有实体的 SessionId 集合
         private readonly ConcurrentDictionary<(int, int), ConcurrentDictionary<long, byte>> grids = new();
 
+        // 实体最后一次所在网格（修复：调用方可能先改写实体 Position 再调用 AddOrUpdateEntity，
+        // 直接从实体读"旧位置"会得到新位置，导致跨格变化永远检测不到 → 网格索引/AOI 视图过期）
+        private readonly ConcurrentDictionary<long, (int, int)> lastGrids = new();
+
+        // 网格坐标钳制范围（防 NaN/Inf/超大坐标导致 float→int 未定义行为与网格索引无界增长）
+        private const float MaxGridCoord = 10000f;
+
         public GridAoiManager(float gridSize = 50.0f)
         {
             GridSize = gridSize;
         }
 
         /// <summary>
-        /// 获取给定世界坐标对应的网格坐标 (GridX, GridY)。使用向下取整确保坐标正确划分到网格中。
+        /// 获取给定世界坐标对应的网格坐标 (GridX, GridY)。使用向下取整确保坐标正确划分到网格中；
+        /// 坐标先按 ±MaxGridCoord 钳制，避免 NaN/Inf/超大值造成 float→int 溢出或网格索引无界增长。
         /// </summary>
         public (int, int) GetGridCoordinate(Float3 position)
         {
-            int gx = (int)Math.Floor(position.X / GridSize);
-            int gz = (int)Math.Floor(position.Z / GridSize);
-            return (gx, gz);
+            if (float.IsNaN(position.X) || float.IsNaN(position.Z) ||
+                float.IsInfinity(position.X) || float.IsInfinity(position.Z))
+            {
+                return (int.MinValue, int.MinValue); // 非法坐标统一落到哨兵值
+            }
+            float gx = Math.Clamp(position.X / GridSize, -MaxGridCoord, MaxGridCoord);
+            float gz = Math.Clamp(position.Z / GridSize, -MaxGridCoord, MaxGridCoord);
+            return ((int)Math.Floor(gx), (int)Math.Floor(gz));
         }
 
         /// <summary>
         /// 添加或更新实体，并根据新旧位置更新网格索引。
         /// </summary>
+        /// <remarks>
+        /// 旧网格由内部 lastGrids 索引提供（不读取实体上可能已被调用方改写的 Position），
+        /// 因此跨格移动能被可靠检测。
+        /// </remarks>
         /// <returns>如果实体的网格发生变化，则返回 true；否则返回 false</returns>
         public bool AddOrUpdateEntity(long sessionId, Framework.Entity.Entity entity, out (int, int) oldGrid, out (int, int) newGrid)
         {
             Float3 position = entity.Get<Float3>("Position");
-            oldGrid = (0, 0);
             newGrid = GetGridCoordinate(position);
             bool isGridChanged = false;
 
-            if (entities.TryGetValue(sessionId, out var oldEntity))
+            if (lastGrids.TryGetValue(sessionId, out oldGrid))
             {
-                Float3 oldPosition = oldEntity.Get<Float3>("Position");
-                oldGrid = GetGridCoordinate(oldPosition);
                 if (oldGrid != newGrid)
                 {
                     isGridChanged = true;
@@ -59,6 +73,10 @@ namespace Battle.Handlers
                     if (grids.TryGetValue(oldGrid, out var oldGridSet))
                     {
                         oldGridSet.TryRemove(sessionId, out _);
+                        if (oldGridSet.Count == 0)
+                        {
+                            grids.TryRemove(oldGrid, out _); // 空网格回收，防止网格索引无界增长
+                        }
                     }
                 }
             }
@@ -72,6 +90,7 @@ namespace Battle.Handlers
 
             // 更新实体信息
             entities[sessionId] = entity;
+            lastGrids[sessionId] = newGrid;
 
             // 添加到新网格
             if (isGridChanged)
@@ -88,13 +107,16 @@ namespace Battle.Handlers
         /// </summary>
         public void RemoveEntity(long sessionId)
         {
-            if (entities.TryRemove(sessionId, out var entity))
+            entities.TryRemove(sessionId, out _);
+            if (lastGrids.TryRemove(sessionId, out var gridCoord))
             {
-                Float3 position = entity.Get<Float3>("Position");
-                var gridCoord = GetGridCoordinate(position);
                 if (grids.TryGetValue(gridCoord, out var gridSet))
                 {
                     gridSet.TryRemove(sessionId, out _);
+                    if (gridSet.Count == 0)
+                    {
+                        grids.TryRemove(gridCoord, out _); // 空网格回收
+                    }
                 }
             }
         }

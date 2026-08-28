@@ -6,17 +6,40 @@ namespace Shared
 {
     public static class RedisHelper
     {
-        private static Lazy<ConnectionMultiplexer>? lazyConnection;
+    private static readonly object InitGate = new();
+    private static Lazy<ConnectionMultiplexer>? lazyConnection;
 
-        /// <summary>
-        /// 使用提供的连接字符串配置一个延迟初始化的 ConnectionMultiplexer 实例，用于后续按需建立与 Redis 的连接。
-        /// </summary>
-        /// <remarks>连接在首次访问 lazyConnection.Value 时建立；建立过程中可能抛出异常。多次调用 Initialize 会替换先前的延迟实例。</remarks>
-        /// <param name="connectionString">Redis 连接字符串，用于在首次访问时通过 ConnectionMultiplexer.Connect 建立连接。</param>
-        public static void Initialize(string connectionString)
+    /// <summary>
+    /// 使用提供的连接字符串配置一个延迟初始化的 ConnectionMultiplexer 实例，用于后续按需建立与 Redis 的连接。
+    /// </summary>
+    /// <remarks>
+    /// 连接在首次访问 lazyConnection.Value 时建立；建立过程中可能抛出异常。
+    /// 修复：再次调用 Initialize 时先安全释放旧连接（避免 ConnectionMultiplexer 句柄泄漏），
+    /// 适用于配置热重载场景。
+    /// </remarks>
+    /// <param name="connectionString">Redis 连接字符串，用于在首次访问时通过 ConnectionMultiplexer.Connect 建立连接。</param>
+    public static void Initialize(string connectionString)
+    {
+        lock (InitGate)
         {
-            lazyConnection = new Lazy<ConnectionMultiplexer>(() => ConnectionMultiplexer.Connect(connectionString));
+            // 安全修复：先释放旧连接（如果已初始化），避免连接句柄泄漏
+            if (lazyConnection is { IsValueCreated: true } oldLazy)
+            {
+                try
+                {
+                    oldLazy.Value.Close(allowCommandsToComplete: true);
+                    oldLazy.Value.Dispose();
+                }
+                catch
+                {
+                    // 释放失败不阻塞重新初始化
+                }
+            }
+            lazyConnection = new Lazy<ConnectionMultiplexer>(
+                () => ConnectionMultiplexer.Connect(connectionString),
+                System.Threading.LazyThreadSafetyMode.ExecutionAndPublication);
         }
+    }
 
         public static ConnectionMultiplexer Connection => lazyConnection?.Value
             ?? throw new InvalidOperationException("Redis 未初始化, 请先调用 RedisHelper.Initialize()");

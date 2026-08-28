@@ -617,7 +617,8 @@ namespace Center.Handlers
         /// <returns>签名的 Base64 编码字符串。</returns>
         private static string ComputeSignature(string source)
         {
-            string secret = Shared.ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            // 安全修复：拒绝占位符密钥。
+            string secret = Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret");
             byte[] key = Encoding.UTF8.GetBytes(secret);
             byte[] data = Encoding.UTF8.GetBytes(source);
 

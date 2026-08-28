@@ -35,8 +35,9 @@ namespace Gateway.Managers
         private readonly ConcurrentDictionary<long, string> sessionUids = new();
         private readonly ConcurrentDictionary<string, long> uidSessions = new();
         private readonly ConcurrentDictionary<long, string> sessionNicknames = new();
-        // D6 客户端会话防重放：会话建立时间，用于 SessionGuard 时间窗判定（防止过期 SessionId 重放）
+        // D6 客户端会话防重放：会话建立时间 + 最近活动时间，用于 SessionGuard 时间窗判定（防止过期 SessionId 重放）
         private readonly ConcurrentDictionary<long, DateTime> sessionCreatedAt = new();
+        private readonly ConcurrentDictionary<long, DateTime> sessionLastActivity = new();
 
         /// <summary>
         /// 私有构造函数，防止外部实例化（实现单例模式）
@@ -51,9 +52,19 @@ namespace Gateway.Managers
         public void AddSession(Network.ISession session)
         {
             clientSessions[session.SessionId] = session;
-            // D6：记录会话建立时间，供 SessionGuard 判定生命周期窗口
-            sessionCreatedAt[session.SessionId] = DateTime.UtcNow;
+            // D6：记录会话建立时间 + 最近活动时间，供 SessionGuard 判定生命周期/空闲窗口
+            var now = DateTime.UtcNow;
+            sessionCreatedAt[session.SessionId] = now;
+            sessionLastActivity[session.SessionId] = now;
             Shared.Log.Info($"Gateway 会话已加入 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+        }
+
+        /// <summary>
+        /// 更新指定会话的最近活动时间（每次收发包时调用）。
+        /// </summary>
+        public void TouchSession(long sessionId)
+        {
+            sessionLastActivity[sessionId] = DateTime.UtcNow;
         }
 
         /// <summary>
@@ -75,12 +86,35 @@ namespace Gateway.Managers
 
             sessionNicknames.TryRemove(sessionId, out _);
             sessionCreatedAt.TryRemove(sessionId, out _);
+            sessionLastActivity.TryRemove(sessionId, out _);
+
+            // 清理断线重连别名（防泄漏）：移除本会话及其被别名指向的旧会话的所有别名项
+            if (sessionIdAliases.TryRemove(sessionId, out long aliasedTo))
+            {
+                sessionIdAliases.TryRemove(aliasedTo, out _);
+            }
+            else
+            {
+                aliasedTo = sessionId;
+            }
+            foreach (var kv in sessionIdAliases.ToArray())
+            {
+                if (kv.Key == sessionId || kv.Value == sessionId || kv.Value == aliasedTo)
+                {
+                    sessionIdAliases.TryRemove(kv.Key, out _);
+                }
+            }
+
             Shared.Log.Info($"Gateway 会话已移除 SessionId:{sessionId}");
         }
 
         /// <summary>D6：获取客户端会话的建立时间（UTC）。无记录返回 null。</summary>
         public DateTime? GetCreatedAt(long sessionId)
             => sessionCreatedAt.TryGetValue(sessionId, out var t) ? t : null;
+
+        /// <summary>D6：获取客户端会话的最近活动时间（UTC）。无记录返回 null。</summary>
+        public DateTime? GetLastActivity(long sessionId)
+            => sessionLastActivity.TryGetValue(sessionId, out var t) ? t : null;
 
         /// <summary>
         /// 根据 sessionId 获取对应的客户端会话。
@@ -210,7 +244,9 @@ namespace Gateway.Managers
         /// <returns>匹配的用户标识；若未找到则返回 0。</returns>
         public int GetUserIdBySessionId(long sessionId)
         {
-            return sessionUsers.TryGetValue(sessionId, out var userId) ? userId : 0;
+            // 别名解析：断线重连后 sessionId 可能已被映射到 oldSessionId
+            var resolved = ResolveSessionId(sessionId);
+            return sessionUsers.TryGetValue(resolved, out var userId) ? userId : 0;
         }
 
         /// <summary>
@@ -220,12 +256,14 @@ namespace Gateway.Managers
         /// <returns>匹配的 UID；若未找到则返回空字符串。</returns>
         public string GetUidBySessionId(long sessionId)
         {
-            return sessionUids.TryGetValue(sessionId, out string? uid) ? uid : string.Empty;
+            var resolved = ResolveSessionId(sessionId);
+            return sessionUids.TryGetValue(resolved, out string? uid) ? uid : string.Empty;
         }
 
         public string GetNicknameBySessionId(long sessionId)
         {
-            return sessionNicknames.TryGetValue(sessionId, out string? nickname) ? nickname : string.Empty;
+            var resolved = ResolveSessionId(sessionId);
+            return sessionNicknames.TryGetValue(resolved, out string? nickname) ? nickname : string.Empty;
         }
 
         /// <summary>
@@ -258,10 +296,30 @@ namespace Gateway.Managers
             return clientSessions.Values;
         }
 
+        // newSessionId -> oldSessionId 的别名映射（断线重连时新会话的身份等价于旧会话 ID）
+        // 业务代码通过此映射把"老 SessionId"标识的资源迁移到新会话上。
+        private readonly ConcurrentDictionary<long, long> sessionIdAliases = new();
+
         /// <summary>
-        /// 断线重连：把新会话的身份绑定（userId/uid/nickname）迁移到旧会话 ID 上，旧 ID 保留
-        /// （后端业务服按旧 ID 续接挂起的实体），新会话 ID 注销。返回 true 表示迁移成功。
+        /// 解析一个 SessionId 对应的真实 SessionId（如果有别名则返回别名指向的 ID）。
         /// </summary>
+        public long ResolveSessionId(long sessionId)
+        {
+            // 最多递归 1 次：避免恶意构造的死循环别名
+            if (sessionIdAliases.TryGetValue(sessionId, out var aliased))
+            {
+                return aliased;
+            }
+            return sessionId;
+        }
+
+        /// <summary>
+        /// 断线重连：把"newSessionId 的身份（userId/uid/nickname）"等价为"oldSessionId"。
+        /// 真实会话（ISession 引用）保留在新 ID 上（ISession.SessionId 是只读属性，物理 ID 无法替换），
+        /// 所有"按 SessionId 查用户"的查询需经 <see cref="ResolveSessionId"/> 解析。
+        /// 旧 ID 上挂起的实体（Battle/Center 业务）通过 <see cref="sessionIdAliases"/> 找到对应的新连接。
+        /// </summary>
+        /// <returns>true 表示迁移成功；false 表示新会话不存在或参数非法。</returns>
         public bool ResumeSession(long newSessionId, long oldSessionId)
         {
             if (newSessionId <= 0 || oldSessionId <= 0 || newSessionId == oldSessionId)
@@ -273,6 +331,7 @@ namespace Gateway.Managers
                 return false;
             }
 
+            // 把新会话的 userId/uid/nickname 移动到 oldSessionId 桶里
             if (sessionUsers.TryRemove(newSessionId, out int userId))
             {
                 sessionUsers[oldSessionId] = userId;
@@ -286,10 +345,18 @@ namespace Gateway.Managers
             {
                 sessionNicknames[oldSessionId] = nickname;
             }
+            // 活动记录迁移：createdAt/lastActivity 来自旧挂起记录
+            // 这里不删除 newSessionId 的时间记录（保留作为新会话基线）
 
-            clientSessions.TryRemove(newSessionId, out _);
-            clientSessions[oldSessionId] = session;
-            Shared.Log.Info($"Gateway 断线重连：会话 {newSessionId} 恢复为 {oldSessionId} Remote:{session.RemoteEndPoint}");
+            // 关键修复：不替换 ISession 引用到 oldSessionId（ISession.SessionId 是只读属性，
+            // 强行替换 clientSessions[oldSessionId] = session 会让 session 内部的 SessionId
+            // 与 dict key 不一致，导致 clientBattleNodeBindings 找不到正确路由）。
+            // 改为：保留 newSessionId 作为 clientSession key，添加 newSessionId -> oldSessionId 别名。
+            sessionIdAliases[newSessionId] = oldSessionId;
+            // 同样建立反向映射（用于 GetAllSessions 时识别"该会话是别名重连"）
+            sessionIdAliases[oldSessionId] = oldSessionId; // 旧 ID 解析回自己
+
+            Shared.Log.Info($"Gateway 断线重连：新会话 {newSessionId} 别名到旧 SessionId:{oldSessionId} Remote:{session.RemoteEndPoint} UserId:{userId}");
             return true;
         }
     }

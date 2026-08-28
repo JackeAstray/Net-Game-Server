@@ -83,8 +83,8 @@ public sealed class EntityMailbox
             return 0L;
         }
 
-        long callId = EntityCallHub.NextCallId();
-        EntityCallHub.Register(callId, new EntityCallHub.PendingCall
+        long callId = EntityCallHubRegistry.Default.NextCallId();
+        EntityCallHubRegistry.Default.Register(callId, new EntityCallHub.PendingCall
         {
             CallId = callId,
             TargetNodeId = targetNodeId,

@@ -36,8 +36,21 @@ namespace Login.Handlers
 
             byte[] payloadWithRequestId = Shared.RouteMetadata.AttachRequestId(data, requestId);
             byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payloadWithRequestId, out int totalLength);
-            dbClient.Send(packet.AsSpan(0, totalLength).ToArray());
-            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            try
+            {
+                dbClient.Send(packet.AsSpan(0, totalLength).ToArray());
+            }
+            catch (Exception ex)
+            {
+                // 发送失败必须移除已注册的待回执项，否则 PendingRequests 无界增长
+                LoginServerApp.PendingRequests.TryRemove(requestId, out _);
+                Shared.Log.Error($"向 DB 发送请求失败 MsgId:{msgId}, RequestId:{requestId}, Exception:{ex}");
+                return null;
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            }
 
             int timeoutMs = ConfigHelper.GetConfig<int>("DbRequestTimeoutMs");
             if (timeoutMs <= 0)

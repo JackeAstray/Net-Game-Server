@@ -53,7 +53,7 @@ namespace Game.Handlers
                 Remark = req.Remark
             };
 
-            if (!TrySendDbRequest(MessageIds.DbAddFriendReq, dbReq, session.SessionId, MessageIds.AddFriendRes))
+            if (!TrySendDbRequest(MessageIds.DbAddFriendReq, session, dbReq, session.SessionId, MessageIds.AddFriendRes))
             {
                 SendSimpleResponse(session, MessageIds.AddFriendRes, new AddFriendResponse { Success = false, Message = "发送DB请求失败" });
             }
@@ -98,7 +98,7 @@ namespace Game.Handlers
                 FriendUniqueId = req.FriendUniqueId.Trim()
             };
 
-            if (!TrySendDbRequest(MessageIds.DbRemoveFriendReq, dbReq, session.SessionId, MessageIds.RemoveFriendRes))
+            if (!TrySendDbRequest(MessageIds.DbRemoveFriendReq, session, dbReq, session.SessionId, MessageIds.RemoveFriendRes))
             {
                 SendSimpleResponse(session, MessageIds.RemoveFriendRes, new RemoveFriendResponse { Success = false, Message = "发送DB请求失败" });
             }
@@ -146,7 +146,7 @@ namespace Game.Handlers
                 Remark = req.Remark
             };
 
-            if (!TrySendDbRequest(MessageIds.DbSetFriendRemarkReq, dbReq, session.SessionId, MessageIds.SetFriendRemarkRes))
+            if (!TrySendDbRequest(MessageIds.DbSetFriendRemarkReq, session, dbReq, session.SessionId, MessageIds.SetFriendRemarkRes))
             {
                 SendSimpleResponse(session, MessageIds.SetFriendRemarkRes, new SetFriendRemarkResponse { Success = false, Message = "发送DB请求失败" });
             }
@@ -185,7 +185,7 @@ namespace Game.Handlers
                 UserId = (int)userId
             };
 
-            if (!TrySendDbRequest(MessageIds.DbGetFriendsReq, dbReq, session.SessionId, MessageIds.GetFriendsRes))
+            if (!TrySendDbRequest(MessageIds.DbGetFriendsReq, session, dbReq, session.SessionId, MessageIds.GetFriendsRes))
             {
                 SendSimpleResponse(session, MessageIds.GetFriendsRes, new GetFriendsResponse { Success = false, Message = "发送DB请求失败", Friends = Array.Empty<FriendInfo>() });
             }
@@ -199,7 +199,7 @@ namespace Game.Handlers
                 && friends.ContainsKey(targetUserId);
         }
 
-        public static void WarmupSocialCache(long sessionId, int userId)
+        public static void WarmupSocialCache(global::Network.ISession gatewaySession, long sessionId, int userId)
         {
             if (sessionId <= 0 || userId <= 0)
             {
@@ -210,13 +210,13 @@ namespace Game.Handlers
             {
                 UserId = userId
             };
-            _ = TrySendDbRequest(MessageIds.DbGetBlacklistReq, dbReq, sessionId, MessageIds.GetBlacklistRes);
+            _ = TrySendDbRequest(MessageIds.DbGetBlacklistReq, gatewaySession, dbReq, sessionId, MessageIds.GetBlacklistRes);
 
             var friendsReq = new Shared.Messages.Db.DbGetFriendsRequest
             {
                 UserId = userId
             };
-            _ = TrySendDbRequest(MessageIds.DbGetFriendsReq, friendsReq, sessionId, MessageIds.GetFriendsRes);
+            _ = TrySendDbRequest(MessageIds.DbGetFriendsReq, gatewaySession, friendsReq, sessionId, MessageIds.GetFriendsRes);
         }
 
         public static void NotifyFriendOnlineStatus(global::Network.ISession gameSession, long sessionId, int userId, bool isOnline)

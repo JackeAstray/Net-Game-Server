@@ -99,8 +99,16 @@ namespace DB
         public static void InitializeDatabase()
         {
             var services = new ServiceCollection();
-            // 从配置读取连接字符串，若未配置则使用默认开发环境的连接字符串作为回退
-            string connectionString = ConfigHelper.GetConfig<string>("ConnectionStrings:MySqlConnection") ?? "Server=127.0.0.1;Port=3306;Database=GameDB;Uid=Ycs;Pwd=Ycs982109683;";
+            // 安全修复：禁止硬编码连接字符串作为 fallback——必须从配置读取。
+            // 生产环境部署前必须显式配置 ConnectionStrings:MySqlConnection；启动期检查缺失则立即抛错。
+            var configuredConnStr = ConfigHelper.GetConfig<string>("ConnectionStrings:MySqlConnection");
+            if (string.IsNullOrWhiteSpace(configuredConnStr))
+            {
+                throw new InvalidOperationException(
+                    "未配置 ConnectionStrings:MySqlConnection；为安全起见禁止使用硬编码默认连接字符串。" +
+                    "请在 appsettings.json 或环境变量 ConnectionStrings__MySqlConnection 中配置。");
+            }
+            string connectionString = configuredConnStr;
             services.AddDbContext<DefaultDbContext>(options =>
                 options.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString)));
 
@@ -136,15 +144,27 @@ namespace DB
 
                     InitializeRedisConnection();
 
-                    // 检查是否存在默认超级管理员账号，如不存在则创建一个（仅在首次初始化时执行）
+                    // 安全修复：默认超级管理员密码必须显式配置（Admin:DefaultPassword），
+                    // 禁止硬编码 "SuperAdmin/SuperAdmin"。未配置时随机生成强密码并打印到控制台+日志。
                     if (!dbContext.Users.Any(u => u.Account == "SuperAdmin"))
                     {
+                        // 1) 优先从配置读取
+                        // 2) 否则随机生成 24 字节 base64（不可猜测），并通过 WARNING 级别日志输出
+                        string defaultAdminPassword = Shared.ConfigHelper.GetConfig<string>("Admin:DefaultPassword") ?? "";
+                        bool fromConfig = !string.IsNullOrWhiteSpace(defaultAdminPassword);
+                        if (!fromConfig)
+                        {
+                            var rng = new byte[24];
+                            System.Security.Cryptography.RandomNumberGenerator.Fill(rng);
+                            defaultAdminPassword = Convert.ToBase64String(rng);
+                        }
+
                         long adminUid = Shared.UIDGenerator.GenerateLongUID();
                         var adminUser = new Shared.Data.User
                         {
                             Id = 1000,
                             Account = "SuperAdmin",
-                            Password = HashPassword("SuperAdmin"),
+                            Password = HashPassword(defaultAdminPassword),
                             Email = "982109683@qq.com",
                             Nickname = "超级管理员",
                             UniqueId = adminUid.ToString(),
@@ -156,7 +176,27 @@ namespace DB
                         };
                         dbContext.Users.Add(adminUser);
                         dbContext.SaveChanges();
-                        Shared.Log.Warning($"成功创建默认超级管理员，默认密码请在首次部署后立即修改。UID:{adminUid}");
+
+                        if (fromConfig)
+                        {
+                            Shared.Log.Warning(
+                                $"默认超级管理员已创建（密码来自 Admin:DefaultPassword 配置）。UID:{adminUid}。" +
+                                "请确认配置已妥善保存，并立即在管理台修改默认密码。");
+                        }
+                        else
+                        {
+                            // 强警告：随机密码仅在控制台/日志出现一次，丢失后无法找回，必须立即修改
+                            Shared.Log.Warning("=========================================================");
+                            Shared.Log.Warning("默认超级管理员已创建，密码随机生成（仅出现这一次）：");
+                            Shared.Log.Warning($"  账号: SuperAdmin");
+                            Shared.Log.Warning($"  密码: {defaultAdminPassword}");
+                            Shared.Log.Warning($"  UID:  {adminUid}");
+                            Shared.Log.Warning("请立即登录管理台修改此密码并妥善保存。");
+                            Shared.Log.Warning("=========================================================");
+                            Console.Error.WriteLine("=========================================================");
+                            Console.Error.WriteLine($"DEFAULT SuperAdmin PASSWORD: {defaultAdminPassword}");
+                            Console.Error.WriteLine("=========================================================");
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -281,7 +321,8 @@ namespace DB
             var dbDispatcher = Handlers.DbDispatcher.BuildDispatcher();
 
             // 内部连接认证：业务服务（Login/Game）连接必须先通过认证握手（InternalAuth），密钥共享。
-            string authSecret = ConfigHelper.GetConfig<string>("CenterNodeSharedSecret") ?? "change-this-secret";
+            // 安全修复：拒绝占位符密钥。
+            string authSecret = Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret");
             var clientAuthFilters = new System.Collections.Concurrent.ConcurrentDictionary<long, Framework.Core.Security.InternalAuthFilter>();
 
             // 简单的会话事件日志，用于监控连接与流量；同时登记认证过滤器。
@@ -292,7 +333,8 @@ namespace DB
             };
 
             // 统一收包管线：先认证，再分发（新 Dispatcher 优先、旧路由回退）。
-            tcpServer.OnDataReceived += async (session, data) =>
+            // 安全修复：使用 AsyncEventGuard 包装 async lambda，避免 async void 异常冒泡
+            tcpServer.OnDataReceived += Network.AsyncEventGuard.Wrap(async (session, data) =>
             {
                 if (data.Length < 4)
                 {
@@ -349,7 +391,7 @@ namespace DB
 
                 // 未注册的 MsgId 回退旧路由（保留内部兼容路径）
                 router.DispatchData(session, data);
-            };
+            });
 
             tcpServer.OnSessionDisconnected += (session, reason) =>
             {

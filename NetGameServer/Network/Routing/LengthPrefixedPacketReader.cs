@@ -5,11 +5,28 @@ namespace Network.Routing;
 
 public sealed class LengthPrefixedPacketReader
 {
+    /// <summary>
+    /// 单个网络包的最大允许字节数（不含 4 字节长度前缀）。
+    /// 防止攻击者声明超大长度触发 OOM（DoS 防护）。默认 64KB，覆盖正常游戏包；
+    /// 调用方如需更大的请使用 <see cref="LengthPrefixedPacketReader(int, int)"/> 显式指定。
+    /// </summary>
+    public const int DefaultMaxPacketLength = 64 * 1024;
+
+    private readonly int maxPacketLength;
     private byte[] buffer;
     private int bufferedCount;
 
-    public LengthPrefixedPacketReader(int initialCapacity = 8192)
+    public LengthPrefixedPacketReader(int initialCapacity = 8192, int maxPacketLength = DefaultMaxPacketLength)
     {
+        if (initialCapacity < 4)
+        {
+            initialCapacity = 4;
+        }
+        if (maxPacketLength < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxPacketLength), "必须 > 0");
+        }
+        this.maxPacketLength = maxPacketLength;
         buffer = new byte[initialCapacity];
     }
 
@@ -45,6 +62,12 @@ public sealed class LengthPrefixedPacketReader
         if (packetLength <= 0)
         {
             throw new InvalidDataException($"Invalid packet length: {packetLength}");
+        }
+        if (packetLength > maxPacketLength)
+        {
+            // 防 DoS：拒绝声明超大长度的包。抛出后由调用方关闭连接。
+            throw new InvalidDataException(
+                $"Packet length {packetLength} 超过最大允许 {maxPacketLength} 字节，已拒绝（疑似 DoS 攻击）");
         }
 
         if (bufferedCount < 4 + packetLength)

@@ -48,7 +48,7 @@ namespace Game.Handlers
                 Message = req.Message?.Trim() ?? string.Empty
             };
 
-            if (!TrySendDbRequest(MessageIds.DbCreateFriendApplyReq, dbReq, session.SessionId, MessageIds.FriendApplyRes, pending =>
+            if (!TrySendDbRequest(MessageIds.DbCreateFriendApplyReq, session, dbReq, session.SessionId, MessageIds.FriendApplyRes, pending =>
             {
                 pending.IsFriendApplyCreate = true;
                 pending.FriendApplyMessage = dbReq.Message;
@@ -84,7 +84,7 @@ namespace Game.Handlers
                 UserId = userId
             };
 
-            if (!TrySendDbRequest(MessageIds.DbGetFriendApplyListReq, dbReq, session.SessionId, MessageIds.FriendApplyListRes))
+            if (!TrySendDbRequest(MessageIds.DbGetFriendApplyListReq, session, dbReq, session.SessionId, MessageIds.FriendApplyListRes))
             {
                 SendSimpleResponse(session, MessageIds.FriendApplyListRes, new FriendApplyListResponse { Success = false, Message = "发送DB请求失败" });
             }
@@ -124,7 +124,7 @@ namespace Game.Handlers
                 Accept = req.Accept
             };
 
-            if (!TrySendDbRequest(MessageIds.DbHandleFriendApplyReq, dbReq, session.SessionId, MessageIds.FriendApplyHandleRes, pending =>
+            if (!TrySendDbRequest(MessageIds.DbHandleFriendApplyReq, session, dbReq, session.SessionId, MessageIds.FriendApplyHandleRes, pending =>
             {
                 pending.IsFriendApplyHandle = true;
                 pending.FriendApplyAccept = req.Accept;

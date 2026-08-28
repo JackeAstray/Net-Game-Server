@@ -12,6 +12,11 @@ namespace Game.Handlers
     {
         private readonly NetworkManager networkManager;
 
+        // 安全加固：聊天频率限制（每会话最小发送间隔）与内容上限
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, long> lastChatAt = new();
+        private const int MaxChatContentLength = 200;
+        private const long MinChatIntervalMs = 1000;
+
         public ChatHandler(NetworkManager networkManager)
         {
             this.networkManager = networkManager;
@@ -88,6 +93,33 @@ namespace Game.Handlers
             int actualSenderId = realSenderId;
             string actualSenderUid = string.IsNullOrWhiteSpace(realSenderUid) ? (request.SenderUniqueId ?? string.Empty) : realSenderUid;
 
+            // 安全加固：频道/内容/频率校验。
+            // 非法频道值若不做校验会落入下方默认分支导致"世界广播"（无效枚举即全员可见）。
+            if (!Enum.IsDefined(typeof(ChatChannel), request.Channel))
+            {
+                SendChatError(session, "非法的聊天频道。");
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(request.Content))
+            {
+                SendChatError(session, "消息内容不能为空。");
+                return;
+            }
+            if ((request.Content?.Length ?? 0) > MaxChatContentLength)
+            {
+                SendChatError(session, $"消息内容过长（上限 {MaxChatContentLength} 字）。");
+                return;
+            }
+
+            long nowTick = Environment.TickCount64;
+            if (lastChatAt.TryGetValue(session.SessionId, out long lastTick) && nowTick - lastTick < MinChatIntervalMs)
+            {
+                SendChatError(session, "发送消息过于频繁，请稍后再试。");
+                return;
+            }
+            lastChatAt[session.SessionId] = nowTick;
+
             long targetSessionId = 0;
             int targetUserId = 0;
             string targetUid = string.Empty;
@@ -128,6 +160,16 @@ namespace Game.Handlers
                     }
                     return;
                 }
+
+                // 私聊好友校验：仅当发送者好友列表已加载（缓存 warm）时强制互为好友，防止向任意玩家私聊；
+                // 缓存未加载（冷启动/刚登录）时不强制拦截，避免误伤。
+                if (targetUserId > 0
+                    && Game.Handlers.FriendHandler.IsFriendListLoaded(actualSenderId)
+                    && !Game.Handlers.FriendHandler.IsFriend(actualSenderId, targetUserId))
+                {
+                    SendChatError(session, "只能向好友发送私聊消息。");
+                    return;
+                }
             }
 
             var senderName = string.IsNullOrWhiteSpace(request.SenderName)
@@ -150,14 +192,18 @@ namespace Game.Handlers
                 }
             };
 
-            Log.Info("聊天消息 SenderId:{SenderId} SenderUid:{SenderUid} SenderName:{SenderName} ReceiverId:{ReceiverId} ReceiverUid:{ReceiverUid} Channel:{Channel} Content:{Content}",
-                actualSenderId,
-                actualSenderUid,
-                senderName,
-                notification.Message.ReceiverId,
-                notification.Message.ReceiverUniqueId,
-                request.Channel,
-                request.Content);
+            // 消息内容属用户隐私，仅 Debug 级别记录（带级别守卫，避免热路径开销）
+            if (Log.IsDebugEnabled)
+            {
+                Log.Debug("聊天消息 SenderId:{SenderId} SenderUid:{SenderUid} SenderName:{SenderName} ReceiverId:{ReceiverId} ReceiverUid:{ReceiverUid} Channel:{Channel} Content:{Content}",
+                    actualSenderId,
+                    actualSenderUid,
+                    senderName,
+                    notification.Message.ReceiverId,
+                    notification.Message.ReceiverUniqueId,
+                    request.Channel,
+                    request.Content);
+            }
 
             var response = new SendChatResponse { Success = true, Message = "消息处理成功。" };
             var responsePayload = Json.SerializeToUtf8Bytes(response);
@@ -205,6 +251,23 @@ namespace Game.Handlers
                 {
                     System.Buffers.ArrayPool<byte>.Shared.Return(notifData);
                 }
+            }
+        }
+
+        /// <summary>向发送者返回聊天错误响应（统一错误回包，消除重复代码）。</summary>
+        private static void SendChatError(ISession session, string message)
+        {
+            var errorResponse = new SendChatResponse { Success = false, Message = message };
+            var errPayload = Json.SerializeToUtf8Bytes(errorResponse);
+            var routedErrPayload = Shared.RouteMetadata.AttachTargetSessionId(errPayload, session.SessionId);
+            var errData = PacketBuilder.BuildPacket(MessageIds.ChatMessageRes, routedErrPayload, out int errLength);
+            try
+            {
+                session.Send(errData.AsSpan(0, errLength).ToArray());
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(errData);
             }
         }
     }

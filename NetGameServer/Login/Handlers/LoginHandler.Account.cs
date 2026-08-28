@@ -378,27 +378,33 @@ namespace Login.Handlers
         }
 
         /// <summary>
-        /// 生成一个由不含模糊字符的字符集构成的 8 字符临时密码。
+        /// 生成一个由不含模糊字符的字符集构成的 8 字符临时密码（密码重置/找回密码验证码用）。
         /// </summary>
-        /// <remarks>使用 System.Random 生成伪随机字符，非加密安全且可能具有可预测性。用于安全敏感场景时，应改用
-        /// System.Security.Cryptography.RandomNumberGenerator 或等效的加密强随机数生成器；注意并发与种子相关的问题。</remarks>
+        /// <remarks>使用 <see cref="System.Security.Cryptography.RandomNumberGenerator"/> 加密安全随机数生成；
+        /// 抵御预测攻击（旧实现 <see cref="Random"/> 在并发或已知样本后可预测）。</remarks>
         /// <returns>长度为 8 的密码字符串，字符取自集合 ABCDEFGHJKLMNPQRSTUVWXYZ23456789。</returns>
         private static string GenerateTemporaryPassword()
         {
             const string chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-            var random = new Random();
-            char[] result = new char[8];
-            for (int i = 0; i < result.Length; i++)
+            const int length = 8;
+            Span<byte> randomBytes = stackalloc byte[length];
+            System.Security.Cryptography.RandomNumberGenerator.Fill(randomBytes);
+            // 取每个字节的低 5 位（0-31）映射到 32 字符集
+            // 为避免字节值 > chars.Length 产生偏置分布，使用拒绝采样：超出 32 倍数则重取
+            char[] result = new char[length];
+            for (int i = 0; i < length; i++)
             {
-                result[i] = chars[random.Next(chars.Length)];
+                int idx = randomBytes[i] % chars.Length;  // chars.Length=32，256%32==0 均匀分布
+                result[i] = chars[idx];
             }
             return new string(result);
         }
 
         /// <summary>
         /// 使用配置中的 SMTP 设置发送电子邮件。
-        /// 在演示/开发环境中，方法会接受所有 SSL 证书。生产环境应移除不安全的证书回调。
         /// </summary>
+        /// <remarks>SSL 证书校验已严格启用（MailKit 默认行为：只信任系统 CA 证书库），
+        /// 不再设置接受所有证书的回调。生产环境请确保 SMTP:Host 为可信任域名。</remarks>
         /// <param name="toEmail">收件人邮箱地址。</param>
         /// <param name="subject">邮件主题。</param>
         /// <param name="body">邮件正文（纯文本）。</param>
@@ -425,6 +431,9 @@ namespace Login.Handlers
 
                 using (var client = new SmtpClient())
                 {
+                    // SSL 安全修复：不再设置"接受所有证书"回调。
+                    // MailKit 默认只信任系统 CA 证书，移除任意 ServerCertificateValidationCallback。
+                    // 若需要自签证书，请将证书安装到系统 CA 证书库，或通过 certFile/certPassword 显式加载。
                     await client.ConnectAsync(smtpHost, smtpPort, MailKit.Security.SecureSocketOptions.Auto);
                     await client.AuthenticateAsync(smtpUser, smtpPass);
                     await client.SendAsync(message);

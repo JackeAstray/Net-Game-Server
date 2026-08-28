@@ -96,14 +96,14 @@ public static class CenterDispatcher
         var dispatcher = new Framework.Protocol.MessageDispatcher();
 
         // 房间列表查询（旧客户端 JSON / 新客户端 MemoryPack 双格式）
-        dispatcher.RegisterSync<CenterListRooms>((ctx, msg) =>
+        dispatcher.Register<CenterListRooms>(async (ctx, msg) =>
         {
             var req = new CenterListRoomsRequest
             {
                 SceneType = msg.SceneType,
                 IncludePrivate = msg.IncludePrivate
             };
-            var res = matchHandler.HandleListRoomsRequestAsync(req).GetAwaiter().GetResult();
+            var res = await matchHandler.HandleListRoomsRequestAsync(req);
             var resMsg = new CenterListRoomsResult
             {
                 Success = res.Success,
@@ -114,10 +114,10 @@ public static class CenterDispatcher
         }, jsonFallback: true);
 
         // 房间成员列表查询
-        dispatcher.RegisterSync<RoomMemberList>((ctx, msg) =>
+        dispatcher.Register<RoomMemberList>(async (ctx, msg) =>
         {
             var req = new RoomMemberListRequest { RoomId = msg.RoomId };
-            var res = matchHandler.HandleRoomMemberListRequestAsync(req).GetAwaiter().GetResult();
+            var res = await matchHandler.HandleRoomMemberListRequestAsync(req);
             var resMsg = new RoomMemberListResult
             {
                 Success = res.Success,
@@ -128,15 +128,15 @@ public static class CenterDispatcher
         }, jsonFallback: true);
 
         // 房间准备（带通知广播回调：状态变化通知房间成员）
-        dispatcher.RegisterSync<RoomReady>((ctx, msg) =>
+        dispatcher.Register<RoomReady>(async (ctx, msg) =>
         {
             var cctx = (CenterSessionContext)ctx;
             var req = new RoomReadyRequest { RoomId = msg.RoomId, IsReady = msg.IsReady };
-            var res = matchHandler.HandleRoomReadyRequestAsync(
+            var res = await matchHandler.HandleRoomReadyRequestAsync(
                 ctx.ClientSessionId, cctx.RoutedUserId, cctx.RoutedUid, cctx.RoutedNickname,
                 req, cctx.GatewaySession,
                 (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif))
-                .GetAwaiter().GetResult();
+                ;
             var resMsg = new RoomReadyResult
             {
                 Success = res.Success,
@@ -147,14 +147,14 @@ public static class CenterDispatcher
         }, jsonFallback: true);
 
         // 房主转移
-        dispatcher.RegisterSync<RoomTransferOwner>((ctx, msg) =>
+        dispatcher.Register<RoomTransferOwner>(async (ctx, msg) =>
         {
             var cctx = (CenterSessionContext)ctx;
             var req = new RoomTransferOwnerRequest { RoomId = msg.RoomId, TargetUserId = msg.TargetUserId };
-            var res = matchHandler.HandleRoomTransferOwnerRequestAsync(
+            var res = await matchHandler.HandleRoomTransferOwnerRequestAsync(
                 cctx.RoutedUserId, req, cctx.GatewaySession,
                 (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif))
-                .GetAwaiter().GetResult();
+                ;
             var resMsg = new RoomTransferOwnerResult
             {
                 Success = res.Success,
@@ -165,16 +165,16 @@ public static class CenterDispatcher
         }, jsonFallback: true);
 
         // 踢出房间成员
-        dispatcher.RegisterSync<RoomKickMember>((ctx, msg) =>
+        dispatcher.Register<RoomKickMember>(async (ctx, msg) =>
         {
             var cctx = (CenterSessionContext)ctx;
             var req = new RoomKickMemberRequest { RoomId = msg.RoomId, TargetUserId = msg.TargetUserId };
-            var res = matchHandler.HandleRoomKickMemberRequestAsync(
+            var res = await matchHandler.HandleRoomKickMemberRequestAsync(
                 cctx.RoutedUserId, req, cctx.GatewaySession,
                 (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif),
                 (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif),
                 (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif))
-                .GetAwaiter().GetResult();
+                ;
             var resMsg = new RoomKickMemberResult
             {
                 Success = res.Success,
@@ -185,14 +185,14 @@ public static class CenterDispatcher
         }, jsonFallback: true);
 
         // 匹配（排队中返回 false + 提示消息；匹配成功广播给所有匹配玩家）
-        dispatcher.RegisterSync<CenterMatch>((ctx, msg) =>
+        dispatcher.Register<CenterMatch>(async (ctx, msg) =>
         {
             var cctx = (CenterSessionContext)ctx;
             var req = new CenterMatchRequest { CategoryId = msg.CategoryId };
-            var res = matchHandler.HandleMatchRequestAsync(
+            var res = await matchHandler.HandleMatchRequestAsync(
                 ctx.ClientSessionId, req, cctx.GatewaySession,
                 (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif))
-                .GetAwaiter().GetResult();
+                ;
             if (res != null)
             {
                 ctx.Send(new CenterMatchResult
@@ -208,7 +208,7 @@ public static class CenterDispatcher
         }, jsonFallback: true);
 
         // 创建房间
-        dispatcher.RegisterSync<CenterCreateRoom>((ctx, msg) =>
+        dispatcher.Register<CenterCreateRoom>(async (ctx, msg) =>
         {
             var cctx = (CenterSessionContext)ctx;
             var req = new CenterCreateRoomRequest
@@ -219,9 +219,9 @@ public static class CenterDispatcher
                 Password = msg.Password,
                 MaxPlayers = msg.MaxPlayers
             };
-            var res = matchHandler.HandleCreateRoomRequestAsync(
+            var res = await matchHandler.HandleCreateRoomRequestAsync(
                 ctx.ClientSessionId, cctx.RoutedUserId, cctx.RoutedUid, cctx.RoutedNickname, req)
-                .GetAwaiter().GetResult();
+                ;
             ctx.Send(new CenterCreateRoomResult
             {
                 Success = res.Success,
@@ -237,13 +237,13 @@ public static class CenterDispatcher
         }, jsonFallback: true);
 
         // 加入房间
-        dispatcher.RegisterSync<CenterJoinRoom>((ctx, msg) =>
+        dispatcher.Register<CenterJoinRoom>(async (ctx, msg) =>
         {
             var cctx = (CenterSessionContext)ctx;
             var req = new CenterJoinRoomRequest { RoomId = msg.RoomId, Password = msg.Password };
-            var res = matchHandler.HandleJoinRoomRequestAsync(
+            var res = await matchHandler.HandleJoinRoomRequestAsync(
                 ctx.ClientSessionId, cctx.RoutedUserId, cctx.RoutedUid, cctx.RoutedNickname, req)
-                .GetAwaiter().GetResult();
+                ;
             ctx.Send(new CenterJoinRoomResult
             {
                 Success = res.Success,
@@ -260,14 +260,14 @@ public static class CenterDispatcher
         }, jsonFallback: true);
 
         // 关闭房间
-        dispatcher.RegisterSync<CenterCloseRoom>((ctx, msg) =>
+        dispatcher.Register<CenterCloseRoom>(async (ctx, msg) =>
         {
             var cctx = (CenterSessionContext)ctx;
             var req = new CenterCloseRoomRequest { RoomId = msg.RoomId };
-            var res = matchHandler.HandleCloseRoomRequestAsync(
+            var res = await matchHandler.HandleCloseRoomRequestAsync(
                 cctx.RoutedUserId, req, cctx.GatewaySession,
                 (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif))
-                .GetAwaiter().GetResult();
+                ;
             ctx.Send(new CenterCloseRoomResult
             {
                 Success = res.Success,
@@ -277,16 +277,16 @@ public static class CenterDispatcher
         }, jsonFallback: true);
 
         // 离开房间（房主自动转移/空房关闭通知）
-        dispatcher.RegisterSync<CenterLeaveRoom>((ctx, msg) =>
+        dispatcher.Register<CenterLeaveRoom>(async (ctx, msg) =>
         {
             var cctx = (CenterSessionContext)ctx;
             var req = new CenterLeaveRoomRequest { RoomId = msg.RoomId };
-            var res = matchHandler.HandleLeaveRoomRequestAsync(
+            var res = await matchHandler.HandleLeaveRoomRequestAsync(
                 ctx.ClientSessionId, req, cctx.GatewaySession,
                 (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif),
                 (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif),
                 (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif))
-                .GetAwaiter().GetResult();
+                ;
             ctx.Send(new CenterLeaveRoomResult
             {
                 Success = res.Success,
@@ -296,7 +296,7 @@ public static class CenterDispatcher
         }, jsonFallback: true);
 
         // 更新房间设置
-        dispatcher.RegisterSync<CenterUpdateRoomSettings>((ctx, msg) =>
+        dispatcher.Register<CenterUpdateRoomSettings>(async (ctx, msg) =>
         {
             var cctx = (CenterSessionContext)ctx;
             var req = new CenterUpdateRoomSettingsRequest
@@ -309,10 +309,10 @@ public static class CenterDispatcher
                 IsPrivate = msg.IsPrivate,
                 CustomRules = msg.CustomRules
             };
-            var res = matchHandler.HandleUpdateRoomSettingsRequestAsync(
+            var res = await matchHandler.HandleUpdateRoomSettingsRequestAsync(
                 cctx.RoutedUserId, req, cctx.GatewaySession,
                 (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif))
-                .GetAwaiter().GetResult();
+                ;
             ctx.Send(new CenterUpdateRoomSettingsResult
             {
                 Success = res.Success,
@@ -321,14 +321,14 @@ public static class CenterDispatcher
         }, jsonFallback: true);
 
         // 开始游戏
-        dispatcher.RegisterSync<CenterStartRoomGame>((ctx, msg) =>
+        dispatcher.Register<CenterStartRoomGame>(async (ctx, msg) =>
         {
             var cctx = (CenterSessionContext)ctx;
             var req = new CenterStartRoomGameRequest { RoomId = msg.RoomId };
-            var res = matchHandler.HandleStartRoomGameRequestAsync(
+            var res = await matchHandler.HandleStartRoomGameRequestAsync(
                 cctx.RoutedUserId, req, cctx.GatewaySession,
                 (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif))
-                .GetAwaiter().GetResult();
+                ;
             ctx.Send(new CenterStartRoomGameResult
             {
                 Success = res.Success,
@@ -341,15 +341,15 @@ public static class CenterDispatcher
         }, jsonFallback: true);
 
         // 房间聊天
-        dispatcher.RegisterSync<CenterRoomChat>((ctx, msg) =>
+        dispatcher.Register<CenterRoomChat>(async (ctx, msg) =>
         {
             var cctx = (CenterSessionContext)ctx;
             var req = new CenterRoomChatRequest { RoomId = msg.RoomId, Content = msg.Content };
-            var res = matchHandler.HandleRoomChatRequestAsync(
+            var res = await matchHandler.HandleRoomChatRequestAsync(
                 ctx.ClientSessionId, cctx.RoutedUserId, cctx.RoutedUid, cctx.RoutedNickname,
                 req, cctx.GatewaySession,
                 (gs, targetId, notifMsgId, notif) => cctx.Notify(targetId, notifMsgId, notif))
-                .GetAwaiter().GetResult();
+                ;
             ctx.Send(new CenterRoomChatResult
             {
                 Success = res.Success,
@@ -360,7 +360,7 @@ public static class CenterDispatcher
         // ==== 实体在线迁移（C2 第二阶段：Center 协调中继，对标 KBE cellappmgr 实体搬迁） ====
 
         // 中继 91003：源 Battle -> 目标 Battle（目标恢复实体后回 91004）
-        dispatcher.RegisterSync<EntityMigrateRequest>((ctx, msg) =>
+        dispatcher.Register<EntityMigrateRequest>(async (ctx, msg) =>
         {
             var target = NodeManager.Instance.GetNode(msg.TargetNodeId ?? string.Empty);
             if (target?.Session == null || !target.Session.IsConnected)
@@ -386,7 +386,7 @@ public static class CenterDispatcher
         });
 
         // 回源 91004：目标 Battle -> 源 Battle（成功则源节点移除本地实体）；成功时同步通知 Gateway 切换绑定
-        dispatcher.RegisterSync<EntityMigrateResult>((ctx, msg) =>
+        dispatcher.Register<EntityMigrateResult>(async (ctx, msg) =>
         {
             if (msg.Success)
             {
@@ -418,7 +418,7 @@ public static class CenterDispatcher
         // ==== 实体远程调用中继（EntityCall：91001 前向 / 91002 回源，对标 KBE EntityCall 跨进程调用） ====
 
         // 前向 91001：源 Battle -> 目标 Battle（CallId>0 时记录回源路由；目标不可用直接回失败回执）
-        dispatcher.RegisterSync<EntityRemoteCall>((ctx, msg) =>
+        dispatcher.Register<EntityRemoteCall>(async (ctx, msg) =>
         {
             var originNodeId = NodeManager.Instance.GetNodeIdBySession(((CenterSessionContext)ctx).GatewaySession) ?? string.Empty;
             var target = NodeManager.Instance.GetNode(msg.TargetNodeId ?? string.Empty);
@@ -445,7 +445,7 @@ public static class CenterDispatcher
         });
 
         // 回源 91002：目标 Battle -> 源 Battle（调用方经 EntityCallHub.HandleResult 关联完成回执/超时）
-        dispatcher.RegisterSync<EntityRemoteCallResult>((ctx, msg) =>
+        dispatcher.Register<EntityRemoteCallResult>(async (ctx, msg) =>
         {
             if (pendingEntityCallSource.TryRemove(msg.CallId, out var sourceNodeId) && !string.IsNullOrEmpty(sourceNodeId))
             {

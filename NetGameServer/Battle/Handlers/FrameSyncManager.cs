@@ -29,6 +29,12 @@ public sealed class FrameSyncManager
     /// <summary>场景 -> 服务端帧号（每场景独立推进，多场景互不干扰）</summary>
     private readonly ConcurrentDictionary<string, long> sceneFrames = new();
 
+    /// <summary>单包输入数量上限（防放大广播/大列表分配 DoS）。</summary>
+    private const int MaxInputsPerPacket = 64;
+
+    /// <summary>单帧聚合输入数量上限（超出丢弃，防洪泛）。</summary>
+    private const int MaxInputsPerFrame = 256;
+
     public FrameSyncManager(SceneManager sceneManager, TickEngine tickEngine)
     {
         this.sceneManager = sceneManager;
@@ -47,11 +53,39 @@ public sealed class FrameSyncManager
             return;
         }
 
-        var queue = inputQueues.GetOrAdd(scene.SceneId, _ => new ConcurrentQueue<(long, PlayerInput)>());
-        foreach (var input in request.Inputs ?? new List<PlayerInput>())
+        var inputs = request.Inputs;
+        if (inputs == null || inputs.Count == 0)
         {
+            return;
+        }
+
+        // 安全加固：单包输入数量上限（截断），并对浮点输入做 NaN/Inf 清洗与幅度钳制
+        int count = Math.Min(inputs.Count, MaxInputsPerPacket);
+        if (inputs.Count > MaxInputsPerPacket)
+        {
+            Shared.Log.Warning($"帧同步输入数量超上限被截断 SessionId:{clientSessionId} Count:{inputs.Count} Cap:{MaxInputsPerPacket}");
+        }
+
+        var queue = inputQueues.GetOrAdd(scene.SceneId, _ => new ConcurrentQueue<(long, PlayerInput)>());
+        for (int i = 0; i < count; i++)
+        {
+            var input = inputs[i];
+            SanitizeInput(input);
             queue.Enqueue((clientSessionId, input));
         }
+    }
+
+    /// <summary>清洗输入浮点字段：NaN/Inf → 0，幅度钳制到 [-100, 100]（防注入毒化确定性模拟）。</summary>
+    private static void SanitizeInput(PlayerInput input)
+    {
+        input.MoveX = ClampFloat(input.MoveX);
+        input.MoveY = ClampFloat(input.MoveY);
+    }
+
+    private static float ClampFloat(float v)
+    {
+        if (float.IsNaN(v) || float.IsInfinity(v)) return 0;
+        return Math.Clamp(v, -100f, 100f);
     }
 
     /// <summary>
@@ -62,6 +96,21 @@ public sealed class FrameSyncManager
         foreach (var scene in sceneManager.GetAllScenes())
         {
             var sessionIds = sceneManager.GetPlayerSessionIds(scene.SceneId);
+
+            // 无条件清空输入队列（防离场玩家的过期输入在新玩家加入后被回放；无玩家时直接丢弃）
+            var inputs = new List<PlayerInput>();
+            if (inputQueues.TryGetValue(scene.SceneId, out var queue))
+            {
+                while (queue.TryDequeue(out var entry))
+                {
+                    if (sessionIds.Length == 0) continue; // 无玩家：丢弃过期输入
+                    var input = entry.input;
+                    input.InputId = entry.sessionId; // 用玩家会话ID标识输入来源（long 全量，不截断）
+                    if (inputs.Count >= MaxInputsPerFrame) continue; // 聚合上限，丢弃超量输入
+                    inputs.Add(input);
+                }
+            }
+
             if (sessionIds.Length == 0)
             {
                 continue; // 无玩家不广播
@@ -69,18 +118,6 @@ public sealed class FrameSyncManager
 
             // 场景独立帧号：从 1 开始递增
             long sceneFrame = sceneFrames.AddOrUpdate(scene.SceneId, 1, (_, v) => v + 1);
-
-            // 聚合本帧所有玩家输入
-            var inputs = new List<PlayerInput>();
-            if (inputQueues.TryGetValue(scene.SceneId, out var queue))
-            {
-                while (queue.TryDequeue(out var entry))
-                {
-                    var input = entry.input;
-                    input.InputId = entry.sessionId; // 用玩家会话ID标识输入来源（long 全量，不截断）
-                    inputs.Add(input);
-                }
-            }
 
             var frameMsg = new BattleFrameSync
             {
