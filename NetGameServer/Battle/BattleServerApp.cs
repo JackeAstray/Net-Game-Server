@@ -1145,6 +1145,7 @@ namespace Battle
                 SendRegisterNode(centerClient, nodeId, "Battle", battleHost, port, GetCurrentLoad(), instanceId, machineId, supervisedBy);
 
                 centerHeartbeatCts?.Cancel();
+                centerHeartbeatCts?.Dispose();
                 centerHeartbeatCts = new System.Threading.CancellationTokenSource();
                 var cancellationToken = centerHeartbeatCts.Token;
 
@@ -1167,6 +1168,7 @@ namespace Battle
             centerClient.OnDisconnected += (session, reason) =>
             {
                 centerHeartbeatCts?.Cancel();
+                centerHeartbeatCts?.Dispose();
                 Log.Warning($"与 Center 服务器断开连接: {reason}");
             };
             // Center 下发消息同样入队：与客户端消息共用同一 tick 线程串行处理，保证场景/实体状态单线程语义

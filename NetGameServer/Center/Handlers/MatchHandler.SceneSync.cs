@@ -174,7 +174,7 @@ namespace Center.Handlers
             if (await Task.WhenAny(tcs.Task, delayTask) == tcs.Task)
             {
                 pendingSceneCreations.TryRemove(request.RoomId, out _);
-                return tcs.Task.Result;
+                return await tcs.Task;
             }
 
             pendingSceneCreations.TryRemove(request.RoomId, out _);
@@ -217,7 +217,7 @@ namespace Center.Handlers
             if (await Task.WhenAny(tcs.Task, delayTask) == tcs.Task)
             {
                 pendingSceneDestroys.TryRemove(roomId, out _);
-                return tcs.Task.Result;
+                return await tcs.Task;
             }
 
             pendingSceneDestroys.TryRemove(roomId, out _);

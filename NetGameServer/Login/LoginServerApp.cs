@@ -455,6 +455,7 @@ namespace Login
                 SendRegisterNode(centerClient, nodeId, "Login", loginHost, port, activeGatewaySessions.Count, instanceId, machineId, supervisedBy);
 
                 centerHeartbeatCts?.Cancel();
+                centerHeartbeatCts?.Dispose();
                 centerHeartbeatCts = new System.Threading.CancellationTokenSource();
                 var cancellationToken = centerHeartbeatCts.Token;
 
@@ -477,6 +478,7 @@ namespace Login
             centerClient.OnDisconnected += (session, reason) =>
             {
                 centerHeartbeatCts?.Cancel();
+                centerHeartbeatCts?.Dispose();
                 Shared.Log.Warning($"Login 与 Center 服务器断开连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Reason:{reason}");
             };
             centerClient.OnDataReceived += (session, data) =>

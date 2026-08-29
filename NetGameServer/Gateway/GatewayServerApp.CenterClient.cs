@@ -48,6 +48,7 @@ namespace Gateway
                 SendRegisterNode(centerClient, nodeId, "Gateway", gatewayHost, port, Gateway.Managers.GatewaySessionManager.Instance.GetOnlineCount(), instanceId, machineId, supervisedBy);
 
                 centerHeartbeatCts?.Cancel();
+                centerHeartbeatCts?.Dispose();
                 centerHeartbeatCts = new CancellationTokenSource();
                 var cancellationToken = centerHeartbeatCts.Token;
 
@@ -70,6 +71,7 @@ namespace Gateway
             centerClient.OnDisconnected += (session, reason) =>
             {
                 centerHeartbeatCts?.Cancel();
+                centerHeartbeatCts?.Dispose();
             };
         }
 

@@ -343,6 +343,7 @@ namespace Game
                 SendRegisterNode(centerClient, nodeId, "Game", gameHost, port, GetCurrentLoad(), instanceId, machineId, supervisedBy);
 
                 centerHeartbeatCts?.Cancel();
+                centerHeartbeatCts?.Dispose();
                 centerHeartbeatCts = new System.Threading.CancellationTokenSource();
                 var cancellationToken = centerHeartbeatCts.Token;
 
@@ -365,6 +366,7 @@ namespace Game
             centerClient.OnDisconnected += (session, reason) =>
             {
                 centerHeartbeatCts?.Cancel();
+                centerHeartbeatCts?.Dispose();
                 Log.Warning($"与 Center 服务器断开连接: {reason}");
             };
             centerClient.OnDataReceived += (session, data) =>
