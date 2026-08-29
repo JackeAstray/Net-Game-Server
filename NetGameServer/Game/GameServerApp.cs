@@ -360,6 +360,10 @@ namespace Game
                     catch (OperationCanceledException)
                     {
                     }
+                    catch (Exception ex)
+                    {
+                        Log.Error($"Game 心跳循环异常（下轮继续重试）: {ex}");
+                    }
                 }, cancellationToken);
             };
 

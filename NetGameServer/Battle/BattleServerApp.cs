@@ -1162,6 +1162,10 @@ namespace Battle
                     catch (OperationCanceledException)
                     {
                     }
+                    catch (Exception ex)
+                    {
+                        Log.Error($"Battle 心跳循环异常（下轮继续重试）: {ex}");
+                    }
                 }, cancellationToken);
             };
 

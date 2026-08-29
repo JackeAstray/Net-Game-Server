@@ -271,27 +271,34 @@ namespace Gateway
             {
                 while (true)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(30));
-                    var now = DateTime.UtcNow;
-
-                    // 重连挂起过期清理
-                    // 安全修复：ConcurrentDictionary 枚举 + TryRemove 抛异常；先快照 key 集合
-                    foreach (var key in pendingReconnects.Keys.ToArray())
+                    try
                     {
-                        if (pendingReconnects.TryGetValue(key, out var pr) && pr.ExpiresAtUtc < now)
+                        await Task.Delay(TimeSpan.FromSeconds(30));
+                        var now = DateTime.UtcNow;
+
+                        // 重连挂起过期清理
+                        // 安全修复：ConcurrentDictionary 枚举 + TryRemove 抛异常；先快照 key 集合
+                        foreach (var key in pendingReconnects.Keys.ToArray())
                         {
-                            pendingReconnects.TryRemove(key, out _);
+                            if (pendingReconnects.TryGetValue(key, out var pr) && pr.ExpiresAtUtc < now)
+                            {
+                                pendingReconnects.TryRemove(key, out _);
+                            }
+                        }
+
+                        // TCP 空闲超时踢线（无任何收发超过阈值的连接）
+                        foreach (var session in Gateway.Managers.GatewaySessionManager.Instance.GetAllSessions())
+                        {
+                            if (session is Network.Tcp.TcpSession && now - session.LastActivityTime > TimeSpan.FromSeconds(tcpTimeoutSeconds))
+                            {
+                                Shared.Log.Warning($"Gateway TCP 会话空闲超时，断开 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} 超时:{tcpTimeoutSeconds}s");
+                                session.Close();
+                            }
                         }
                     }
-
-                    // TCP 空闲超时踢线（无任何收发超过阈值的连接）
-                    foreach (var session in Gateway.Managers.GatewaySessionManager.Instance.GetAllSessions())
+                    catch (Exception ex)
                     {
-                        if (session is Network.Tcp.TcpSession && now - session.LastActivityTime > TimeSpan.FromSeconds(tcpTimeoutSeconds))
-                        {
-                            Shared.Log.Warning($"Gateway TCP 会话空闲超时，断开 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} 超时:{tcpTimeoutSeconds}s");
-                            session.Close();
-                        }
+                        Shared.Log.Error($"Gateway 空闲超时清理循环异常（下轮继续重试）: {ex}");
                     }
                 }
             });

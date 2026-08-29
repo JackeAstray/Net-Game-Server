@@ -472,6 +472,10 @@ namespace Login
                     catch (OperationCanceledException)
                     {
                     }
+                    catch (Exception ex)
+                    {
+                        Shared.Log.Error($"Login 心跳循环异常（下轮继续重试）: {ex}");
+                    }
                 }, cancellationToken);
             };
 

@@ -252,13 +252,20 @@ namespace Center
                 TimeSpan timeout = TimeSpan.FromSeconds(Shared.NodeHeartbeatDefaults.CenterProbeTimeoutSeconds);
                 while (true)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(Shared.NodeHeartbeatDefaults.HeartbeatIntervalSeconds));
-                    // 周期保存注册表快照（节点注册/心跳变化后持久化）
-                    Center.Handlers.NodeManager.Instance.SaveSnapshotToFile(snapshotFile);
-                    int removedCount = Center.Handlers.NodeManager.Instance.RemoveInactiveNodes(timeout);
-                    if (removedCount > 0)
+                    try
                     {
-                        Log.Warning($"Center 已清理超时节点数: {removedCount}，当前剩余节点数: {Center.Handlers.NodeManager.Instance.GetNodeCount()}");
+                        await Task.Delay(TimeSpan.FromSeconds(Shared.NodeHeartbeatDefaults.HeartbeatIntervalSeconds));
+                        // 周期保存注册表快照（节点注册/心跳变化后持久化）
+                        Center.Handlers.NodeManager.Instance.SaveSnapshotToFile(snapshotFile);
+                        int removedCount = Center.Handlers.NodeManager.Instance.RemoveInactiveNodes(timeout);
+                        if (removedCount > 0)
+                        {
+                            Log.Warning($"Center 已清理超时节点数: {removedCount}，当前剩余节点数: {Center.Handlers.NodeManager.Instance.GetNodeCount()}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error($"Center 快照/超时清理循环异常（下轮继续重试）: {ex}");
                     }
                 }
             });
