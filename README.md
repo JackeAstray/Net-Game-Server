@@ -13,7 +13,7 @@
 |---|---|---|
 | 分布式微服务 | Gateway / Login / Center / Game / Battle / DB 6 节点，TCP+HMAC 互联 | [架构](#架构) |
 | KBE machine 看护 | `Tools/Machine` 读 `topology.json`，按 `dependsOn` 拉起 + replicas + 崩溃指数退避 | [KBE-Gap-Review.md](NetGameServer/Docs/KBE-Gap-Review.md) |
-| 声明式协议 | `Protocol/defs/*.def` 唯一事实来源；Protogen 生成强类型 + 路由表 | [Protocol.md](NetGameServer/Docs/Protocol.md) |
+| 声明式协议 | C# `[GameMessage]`（Roslyn 源生成器）声明；编译期产出强类型 + 路由表 | [Protocol.md](NetGameServer/Docs/Protocol.md) |
 | 强类型分发 | `MessageDispatcher` 配置化注册 + MemoryPack/JSON 双格式 | [Code-Style.md](NetGameServer/Docs/Code-Style.md) |
 | 统一网关 | 4 协议接入 + 配置化转发 + 路由元数据注入 | [Gateway.md](NetGameServer/Docs/Gateway.md) |
 | 实体/属性 | `EntityDef` + 脏标记 + All/AOI/OwnClient 三种同步作用域 | [Battle.md](NetGameServer/Docs/Battle.md) |

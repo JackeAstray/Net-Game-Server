@@ -42,7 +42,7 @@ Shared 是 **class library**，不直接启动；被 `Battle` / `Game` / `Center
 ## 注意事项
 
 - **零业务依赖**：Shared 不引用任何业务节点，只引用 `Framework/*` 和 `Network`；`Framework.Entity` / `Framework.Protocol` 都可以引用 Shared。
-- **协议消息走 Generated**：业务消息的强类型由 Protogen 生成到 `Framework/Framework.Protocol/Generated/`，Shared 这里只放非协议 DTO（请求/响应的"业务对象"，如 `FriendInfo`）。DTO 与 Generated 消息类**不重名**避免冲突。
+- **协议消息走源生成器**：业务消息的强类型由 `Framework.Protocol.Generator` 从 `[GameMessage]` 声明编译期产出（`Framework/Framework.Protocol/Messages/*.cs`），Shared 这里只放非协议 DTO（请求/响应的"业务对象"，如 `FriendInfo`）。DTO 与协议消息类**不重名**避免冲突。
 - **Json 序列化**：仅用于兼容旧 JSON 客户端（`MessageDispatcher` 的 `jsonFallback: true` 路径）；新业务消息用 MemoryPack（生成类自带 `Serialize()` / `Deserialize()`）。
 - **不要在 Shared 写业务逻辑**：业务逻辑放 `Battle/Handlers` / `Game/Handlers` 等。
 - **DTO 命名**：业务对象用 PascalCase，与 Generated 消息类**不重名**。

@@ -22,7 +22,7 @@
 **典型场景**：
 
 - 节点入口（`Gateway/Program.cs` / `Login/Program.cs` / ...）：配置加载 + `App.Run()`
-- 工具入口（`Protogen/Program.cs` / `Tools/Supervisor/Program.cs` / `Tools/Machine/Program.cs`）：参数解析 + 执行
+- 工具入口（`Tools/Supervisor/Program.cs` / `Tools/Machine/Program.cs` / `Tools/ClientGen/Program.cs`）：参数解析 + 执行
 - **测试套件**（`Tests/ProtocolVerify/Program.cs` 等）：20~30 段验证串联，共享变量
   与中间状态放在 `Main` 方法体内（顶级语句风格的代码块可以无缝塞进 `Main`）
 

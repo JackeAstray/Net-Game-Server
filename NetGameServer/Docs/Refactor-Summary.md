@@ -40,7 +40,7 @@
 
 开发过程中新增内容请直接修改对应文档：
 
-- 新增业务消息：改 `Protocol/defs/*.def` + 重新构建（自动跑 Protogen）→ 在目标节点 Dispatcher 注册
+- 新增业务消息：在 `Framework/Framework.Protocol/Messages/*.cs` 写 `[GameMessage]` 类（构建自动跑源生成器）→ 在目标节点 Dispatcher 注册
 - 新增实体类型：定义 `EntityDef` + 写 `GameLogic/scripts/Xxx.csx` 脚本
 - 新增玩法：全部写在 `.csx` 脚本里（`OnTick` / `OnMessage` / `Set`），保存即热更新
 

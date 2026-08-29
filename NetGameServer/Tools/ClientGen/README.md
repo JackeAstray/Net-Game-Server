@@ -1,8 +1,11 @@
 # ClientGen —— Unity / UE 客户端脚本生成器
 
-从 `Protocol/defs/*.def` 生成**可直接导入 Unity / Unreal Engine 的客户端通信脚本**，
+从 `Framework.Protocol.Generated.ProtocolManifest.Json`（源生成器从 `[GameMessage]`/`[GameStruct]` 声明产出）生成
+**可直接导入 Unity / Unreal Engine 的客户端通信脚本**，
 实现与 Net-Game-Server 的快速通信。客户端脚本自带一个与服务器 **MemoryPack 二进制格式
 逐字节兼容**的零依赖编解码器，无需在客户端引入任何第三方库。
+
+> 说明：原 `.def + Protogen` 协议管线已删除，`defs` 目录参数仅作兼容保留、不再解析。
 
 ## 用法
 

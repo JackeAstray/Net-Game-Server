@@ -4,7 +4,10 @@
 > **所有服务必须严格遵守，不允许保留并行兼容分支。**
 >
 > 关联代码：`Network/Routing/PacketBuilder.cs`、`Network/Routing/RouteMetadata.cs`、`Framework/Framework.Protocol/`。
-> 协议声明唯一事实来源在 `Protocol/defs/*.def`（构建时 Protogen 自动生成强类型消息类 / `MessageIds` 常量 / `RouterTable`）。
+> 协议声明**唯一事实来源**是 C# `[GameMessage]` / `[GameStruct]`（`Framework/Framework.Protocol/Messages/*.cs`），
+> 由 `Framework.Protocol.Generator` 源生成器在编译期产出 `MessageIds` 常量、`RouterTable` 路由表、
+> 每个消息的 `IGameMessage` 管线（MsgId/TargetServer/Serialize/Deserialize）与 `ProtocolManifest.json`（供 ClientGen）。
+> `Protocol/defs/*.def` 已全部迁移为空占位（仅保留 ID 段约定文档）；原 `.def + Protogen` 管线已删除。
 >
 > 项目总览见 [README.md](../../README.md)，编码规范见 [Code-Style.md](Code-Style.md)。
 
