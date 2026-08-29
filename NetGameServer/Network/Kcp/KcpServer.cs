@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
@@ -6,18 +7,24 @@ namespace Network.Kcp;
 
 /// <summary>
 /// KCP 服务器：在 UDP 之上提供可靠有序传输（对标 KBE kcp_packet_*）。
-/// - 每个远端端点一个 KcpSession
+/// - 会话按键 (远端端点, conv) 区分：conv 从每个数据报的 KCP 包头首 4 字节提取，
+///   客户端每次连接使用随机 conv（防固定 conv 会话固定攻击），同一 NAT 后多客户端也能区分。
 /// - 收包线程：UDP Receive → KcpSession.Input → OnDataReceived（与 UdpServer 一致的事件模型）
-/// - 驱动线程：周期性调用所有会话的 Update（驱动发送/重传）
+/// - 驱动线程：周期性调用所有会话的 Update（驱动发送/重传）；与收包线程经会话内锁互斥
 /// </summary>
 public class KcpServer : INetworkServer
 {
-    /// <summary>KCP 转换号（同一 UDP 端口上的所有会话共用；由远端端点区分）。</summary>
-    private const uint DefaultConv = 0x4B434550; // "KCEP"
+    /// <summary>会话总数上限（P1 洪水防护：未认证数据报不得无界建会话）。</summary>
+    private const int MaxSessions = 10000;
+    /// <summary>单 IP 会话数上限（P1 洪水防护：同一源地址伪造多端口/多 conv 时受限）。</summary>
+    private const int MaxSessionsPerIp = 64;
+
+    /// <summary>会话键：远端端点 + KCP 转换号。</summary>
+    private readonly record struct SessionKey(IPEndPoint EndPoint, uint Conv);
 
     private UdpClient? udpClient;
     private CancellationTokenSource? cts;
-    private readonly ConcurrentDictionary<IPEndPoint, KcpSession> sessions = new();
+    private readonly ConcurrentDictionary<SessionKey, KcpSession> sessions = new();
     private readonly TimeSpan sessionTimeout = TimeSpan.FromMinutes(5);
     private DateTime nextCleanupAt = DateTime.UtcNow.AddSeconds(30);
 
@@ -31,7 +38,7 @@ public class KcpServer : INetworkServer
         {
             udpClient = new UdpClient(port);
             cts = new CancellationTokenSource();
-            Shared.Log.Info($"[KcpServer] 启动成功，监听端口:{port} (KCP conv=0x{DefaultConv:X8})");
+            Shared.Log.Info($"[KcpServer] 启动成功，监听端口:{port}（conv 按连接随机，自数据包提取）");
 
             _ = ReceiveLoopAsync(cts.Token);
             _ = DriveLoopAsync(cts.Token);
@@ -52,14 +59,43 @@ public class KcpServer : INetworkServer
             {
                 var result = await udpClient.ReceiveAsync(token);
 
-                var session = sessions.GetOrAdd(result.RemoteEndPoint, ep =>
+                // KCP 每个分段的包头首 4 字节即 conv，据此区分连接
+                if (result.Buffer.Length < 4)
                 {
-                    var newSession = new KcpSession(udpClient, ep, DefaultConv);
-                    newSession.OnDataReceived += (s, data) => OnDataReceived?.Invoke(s, data);
-                    Shared.Log.Info($"[KcpServer] 新会话建立 SessionId:{newSession.SessionId} Remote:{ep}");
-                    OnSessionConnected?.Invoke(newSession);
-                    return newSession;
-                });
+                    Shared.Log.Warning($"[KcpServer] 数据报过短(<4 字节)，丢弃 Remote:{result.RemoteEndPoint}");
+                    continue;
+                }
+                uint conv = BinaryPrimitives.ReadUInt32LittleEndian(result.Buffer);
+                var key = new SessionKey(result.RemoteEndPoint, conv);
+
+                if (!sessions.TryGetValue(key, out var session))
+                {
+                    // 洪水防护：未认证数据报只允许建立有界数量的会话
+                    if (sessions.Count >= MaxSessions)
+                    {
+                        Shared.Log.Warning($"[KcpServer] 会话数已达上限({MaxSessions})，拒绝新会话 Remote:{result.RemoteEndPoint}");
+                        continue;
+                    }
+                    int perIp = 0;
+                    foreach (var k in sessions.Keys)
+                    {
+                        if (k.EndPoint.Address.Equals(result.RemoteEndPoint.Address))
+                        {
+                            perIp++;
+                        }
+                    }
+                    if (perIp >= MaxSessionsPerIp)
+                    {
+                        Shared.Log.Warning($"[KcpServer] 每 IP 会话数已达上限({MaxSessionsPerIp})，拒绝新会话 Remote:{result.RemoteEndPoint}");
+                        continue;
+                    }
+
+                    session = new KcpSession(udpClient, key.EndPoint, key.Conv);
+                    session.OnDataReceived += (s, data) => OnDataReceived?.Invoke(s, data);
+                    sessions[key] = session;
+                    Shared.Log.Info($"[KcpServer] 新会话建立 SessionId:{session.SessionId} Remote:{key.EndPoint} conv=0x{key.Conv:X8}");
+                    OnSessionConnected?.Invoke(session);
+                }
 
                 try
                 {
@@ -123,7 +159,7 @@ public class KcpServer : INetworkServer
 
             sessions.TryRemove(pair.Key, out var session);
             session?.Close();
-            Shared.Log.Warning($"[KcpServer] 会话超时断开 SessionId:{pair.Value.SessionId} Remote:{pair.Key} TimeoutSeconds:{sessionTimeout.TotalSeconds}");
+            Shared.Log.Warning($"[KcpServer] 会话超时断开 SessionId:{pair.Value.SessionId} Remote:{pair.Key.EndPoint} TimeoutSeconds:{sessionTimeout.TotalSeconds}");
             OnSessionDisconnected?.Invoke(session!, "KCP session timeout.");
         }
     }

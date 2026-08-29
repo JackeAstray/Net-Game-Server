@@ -12,6 +12,11 @@ namespace Network.Udp;
 /// </summary>
 public class UdpServer : INetworkServer
 {
+    /// <summary>会话总数上限（P1 洪水防护：未认证数据报不得无界建会话）。</summary>
+    private const int MaxSessions = 10000;
+    /// <summary>单 IP 会话数上限（P1 洪水防护）。</summary>
+    private const int MaxSessionsPerIp = 64;
+
     private UdpClient? udpClient;
 
     public event SessionConnectedHandler? OnSessionConnected;
@@ -58,6 +63,19 @@ public class UdpServer : INetworkServer
 
                 if (!sessions.TryGetValue(result.RemoteEndPoint, out var session))
                 {
+                    // 洪水防护：未认证数据报只允许建立有界数量的会话
+                    if (sessions.Count >= MaxSessions)
+                    {
+                        Shared.Log.Warning($"[UdpServer] 会话数已达上限({MaxSessions})，拒绝新会话 Remote:{result.RemoteEndPoint}");
+                        continue;
+                    }
+                    int perIp = sessions.Keys.Count(k => k.Address.Equals(result.RemoteEndPoint.Address));
+                    if (perIp >= MaxSessionsPerIp)
+                    {
+                        Shared.Log.Warning($"[UdpServer] 每 IP 会话数已达上限({MaxSessionsPerIp})，拒绝新会话 Remote:{result.RemoteEndPoint}");
+                        continue;
+                    }
+
                     session = new UdpSession(udpClient, result.RemoteEndPoint);
                     sessions[result.RemoteEndPoint] = session;
                     packetReaders[result.RemoteEndPoint] = new LengthPrefixedPacketReader();
@@ -65,22 +83,35 @@ public class UdpServer : INetworkServer
                     OnSessionConnected?.Invoke(session);
                 }
 
-                session.LastActivityTime = DateTime.UtcNow;
                 Shared.Log.Debug($"[UdpServer] 接收数据报 SessionId:{session.SessionId} Remote:{result.RemoteEndPoint} DatagramLength:{result.Buffer.Length}");
 
                 var packetReader = packetReaders[result.RemoteEndPoint];
                 packetReader.Append(result.Buffer);
-                int packetCount = 0;
-                while (packetReader.TryReadPacket(out var packet))
+                try
                 {
-                    packetCount++;
-                    Shared.Log.Debug($"[UdpServer] 完整分包 SessionId:{session.SessionId} Remote:{result.RemoteEndPoint} PacketLength:{packet.Length}");
-                    OnDataReceived?.Invoke(session, packet);
-                }
+                    int packetCount = 0;
+                    while (packetReader.TryReadPacket(out var packet))
+                    {
+                        packetCount++;
+                        Shared.Log.Debug($"[UdpServer] 完整分包 SessionId:{session.SessionId} Remote:{result.RemoteEndPoint} PacketLength:{packet.Length}");
+                        OnDataReceived?.Invoke(session, packet);
+                    }
 
-                if (packetCount == 0)
+                    if (packetCount == 0)
+                    {
+                        Shared.Log.Debug($"[UdpServer] 当前数据报未形成完整包 SessionId:{session.SessionId} Remote:{result.RemoteEndPoint}");
+                    }
+
+                    // 仅当该数据报被正常消费后才刷新活动时间，避免恶意数据报无限续活会话
+                    session.LastActivityTime = DateTime.UtcNow;
+                }
+                catch (InvalidDataException ex)
                 {
-                    Shared.Log.Debug($"[UdpServer] 当前数据报未形成完整包 SessionId:{session.SessionId} Remote:{result.RemoteEndPoint}");
+                    // 帧毒化防护（P1）：坏长度前缀（≤0 或 >64KB）会让 TryReadPacket 抛异常并把毒字节留在缓冲区；
+                    // 若不处理，该端点后续所有数据报都会再次抛异常且 LastActivityTime 仍被刷新 → 会话永久卡死且永不超时。
+                    // 重置解析器丢弃毒字节，合法客户端下一个数据报即可恢复。
+                    Shared.Log.Warning($"[UdpServer] 数据报帧解析失败，重置端点解析器 Remote:{result.RemoteEndPoint} Exception:{ex.Message}");
+                    packetReaders[result.RemoteEndPoint] = new LengthPrefixedPacketReader();
                 }
 
                 if (DateTime.UtcNow >= nextCleanupAt)

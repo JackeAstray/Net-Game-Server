@@ -131,11 +131,15 @@ namespace Gateway.Managers
         /// <summary>
         /// 广播数据给所有已保存的客户端会话。
         /// 注意：此方法会遍历所有会话并调用 Send，可能会产生较多并发发送操作。
+        /// 性能/帧纪律（P-H1）：入参为 BuildPacket 产物的已加帧池化缓冲 [len][msgId][payload]。
+        /// 每会话独立池化拷贝 + SendFromPool（写后归还），不再走 Send 的长度启发式判定，
+        /// 也不再在调用方额外 .ToArray() 一次。调用方仍负责归还原始 packet（finally Return）。
         /// </summary>
-        /// <param name="data">要发送的字节数据</param>
-        public void Broadcast(byte[] data)
+        /// <param name="packet">已加帧的池化缓冲（BuildPacket 产物），调用方持有所有权并负责归还。</param>
+        /// <param name="totalLength">有效字节数（含长度前缀与消息头）。</param>
+        public void Broadcast(byte[] packet, int totalLength)
         {
-            if (data == null || data.Length == 0)
+            if (packet == null || totalLength <= 0)
             {
                 Shared.Log.Warning("Gateway 广播数据为空，已丢弃。");
                 return;
@@ -145,7 +149,17 @@ namespace Gateway.Managers
             {
                 try
                 {
-                    session.Send(data);
+                    if (session is Network.Tcp.TcpSession tcp)
+                    {
+                        // 每会话独立池化副本：共享缓冲不能交给多个 SendFromPool（会竞争归还）
+                        byte[] copy = System.Buffers.ArrayPool<byte>.Shared.Rent(totalLength);
+                        packet.AsSpan(0, totalLength).CopyTo(copy);
+                        tcp.SendFromPool(copy, totalLength);
+                    }
+                    else
+                    {
+                        session.Send(packet.AsMemory(0, totalLength));
+                    }
                 }
                 catch (System.Exception ex)
                 {

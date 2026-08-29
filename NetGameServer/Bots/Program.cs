@@ -112,19 +112,23 @@ namespace Bots
                 await tcp.ConnectAsync(opts.Host, opts.Port, token).ConfigureAwait(false);
                 using var stream = tcp.GetStream();
 
+                // 修复（P-H3）：接收循环必须在登录等待之前启动——LoginCompletedAtMs 只有接收循环
+                // 解析登录回包（msgId 40002）才会置位；原实现先等登录再启动接收循环，导致登录必然
+                // 1s 超时、每个 bot 只发 1 个登录包就退出，EntitySync/TimeSync 循环从未运行，压测数据全空。
+                var reader = new LengthPrefixedPacketReader();
+                var buffer = new byte[4096];
+                long initialLastServerSendMs = 0;
+                var recvTask = Task.Run(() => ReceiveLoopAsync(stream, reader, buffer, token, initialLastServerSendMs), token);
+
                 if (!await LoginAndAwaitAsync(stream, token).ConfigureAwait(false))
                 {
                     return;
                 }
 
-                var reader = new LengthPrefixedPacketReader();
-                var buffer = new byte[4096];
                 var stopwatch = Stopwatch.StartNew();
                 long nextSyncAtMs = 0;
                 long nextTimeSyncAtMs = 0;
                 long lastServerSendMs = 0;
-
-                var recvTask = Task.Run(() => ReceiveLoopAsync(stream, reader, buffer, token, lastServerSendMs), token);
 
                 while (!token.IsCancellationRequested && stopwatch.Elapsed.TotalSeconds < opts.DurationSeconds)
                 {
@@ -238,6 +242,7 @@ namespace Bots
                 }
                 catch (OperationCanceledException) { }
                 catch (IOException) { }
+                catch (ObjectDisposedException) { } // 方法退出/登录失败时 using 释放流引发的正常终止
             }
 
             // ---- WebSocket 实现（占位：默认未开启；启用时取消注释） ----

@@ -54,6 +54,10 @@ public sealed class TickEngine
     private readonly PriorityQueue<(long dueTick, long seq, TimerHandle handle), long> timers = new();
     private long timerSeq;
 
+    // 跨线程投递队列（锁内入队，tick 线程独占消费——用于把非 tick 线程的实体访问迁移到 tick 线程，
+    // 如 FSW 热更新线程的 OnReload 对实体属性/定时器的修改，避免与 tick 逻辑并发竞争）
+    private readonly Queue<Action> postedActions = new();
+
     /// <summary>每 tick 回调（frame 为帧号，从 1 开始）。</summary>
     public event Action<long>? OnTick;
 
@@ -125,6 +129,20 @@ public sealed class TickEngine
         }
     }
 
+    /// <summary>
+    /// 跨线程投递：把 action 排入队列，在下一个 tick 开始时于 tick 线程上执行（线程安全）。
+    /// 用于把非 tick 线程（FSW/网络线程等）产生的、需要独占 tick 线程的实体操作迁移过来。
+    /// 投递动作在定时器回调与 OnTick 之前执行，保证与帧内逻辑严格串行。
+    /// </summary>
+    public void Post(Action action)
+    {
+        if (action == null) throw new ArgumentNullException(nameof(action));
+        lock (postedActions)
+        {
+            postedActions.Enqueue(action);
+        }
+    }
+
     private void Loop()
     {
         int intervalMs = Math.Max(1, 1000 / hertz);
@@ -173,6 +191,28 @@ public sealed class TickEngine
 
     internal void TickOnce(long currentFrame)
     {
+        // 先执行跨线程投递的动作（tick 线程独占，与定时器/OnTick 严格串行）
+        while (true)
+        {
+            Action? action = null;
+            lock (postedActions)
+            {
+                if (postedActions.Count == 0)
+                {
+                    break;
+                }
+                action = postedActions.Dequeue();
+            }
+            try
+            {
+                action();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "TickEngine 跨线程投递动作异常");
+            }
+        }
+
         // 到期定时器（锁内只出队，锁外执行回调；周期定时器由 handle 重新入队）
         while (true)
         {

@@ -30,6 +30,9 @@ namespace DB.Handlers
                 Log.Warning("收到无效的 AddFriendRequest，数据无法被反序列化。");
                 return;
             }
+            // 账号级串行（P1-2）：同一用户的好友写操作按序执行，防止重复好友/并发覆盖
+            await RunPerUser(UserKey(request.UserId), async () =>
+            {
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -118,6 +121,7 @@ namespace DB.Handlers
             {
                 Log.Error($"添加好友异常: {ex}");
             }
+            });
         }
 
         /// <summary>
@@ -134,6 +138,9 @@ namespace DB.Handlers
                 Log.Warning("收到无效的 RemoveFriendRequest，数据无法被反序列化。");
                 return;
             }
+            // 账号级串行（P1-2）：同一用户的好友移除按序执行
+            await RunPerUser(UserKey(request.UserId), async () =>
+            {
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -184,6 +191,7 @@ namespace DB.Handlers
             {
                 Log.Error($"删除好友异常: {ex}");
             }
+            });
         }
 
         /// <summary>
@@ -200,6 +208,9 @@ namespace DB.Handlers
                 Log.Warning("收到无效的 SetFriendRemarkRequest，数据无法被反序列化。");
                 return;
             }
+            // 账号级串行（P1-2）：同一用户的好友备注更新按序执行
+            await RunPerUser(UserKey(request.UserId), async () =>
+            {
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -246,6 +257,7 @@ namespace DB.Handlers
             {
                 Log.Error($"设置好友备注异常: {ex}");
             }
+            });
         }
 
         /// <summary>
@@ -258,6 +270,9 @@ namespace DB.Handlers
         public static async Task HandleGetFriendsRequest(ISession session, DbGetFriendsRequest? request, long? requestId = null)
         {
             if (request == null) return;
+            // 账号级串行（P1-2）：好友列表读取入队，保证读到先前已排队的写结果（read-your-writes）
+            await RunPerUser(UserKey(request.UserId), async () =>
+            {
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -295,6 +310,7 @@ namespace DB.Handlers
             {
                 Log.Error($"获取好友列表异常: {ex}");
             }
+            });
         }
 
     }

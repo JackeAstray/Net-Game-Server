@@ -19,6 +19,12 @@ public static class InternalAuthExtensions
     {
         var filter = new Framework.Core.Security.InternalAuthFilter(sharedSecret, nodeId);
         byte[] authPacket = filter.BuildAuthPacket();
-        client.Send(authPacket);
+        // 帧长度修复（P1）：auth 包为裸 [MsgId][payload]，显式加长度头再发送，
+        // 避免裸包触发 TcpSession.Send 的长度启发式误判（MsgId 恰等于负载长度时漏加前缀）。
+        byte[] payload = authPacket.AsSpan(4).ToArray();
+        byte[] framed = Network.Routing.PacketBuilder.BuildPacket(
+            System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(authPacket.AsSpan(0, 4)),
+            payload, out int totalLength);
+        client.SendFromPool(framed, totalLength);
     }
 }

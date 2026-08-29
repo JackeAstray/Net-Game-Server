@@ -366,7 +366,13 @@ public static class Program
             }
             p.Exited += (_, _) => OnProcessExited(managed, topology);
             p.Start();
-            if (captureOutput) p.BeginOutputReadLine();
+            // 安全修复（P1）：stderr 与 stdout 都必须启用异步读取，否则子进程写满 stderr 管道缓冲（64KB）会阻塞挂起，
+            // 而进程仍存活、看护不会重启它 —— 恰好是报错最多的节点最容易踩中。
+            if (captureOutput)
+            {
+                p.BeginOutputReadLine();
+                p.BeginErrorReadLine();
+            }
             managed.Process = p;
             Console.WriteLine($"START {managed.Spec.InstanceId} type={spec.Type} pid={p.Id} port={managed.Spec.EffectivePort} count={managed.StartCount}");
         }

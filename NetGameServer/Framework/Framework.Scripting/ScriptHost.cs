@@ -29,6 +29,8 @@ public sealed class ScriptHost : IDisposable
     private readonly ConcurrentDictionary<string, object?> _reloadStates = new(StringComparer.Ordinal);
     /// <summary>每个类型当前生效的 ScriptVersion（KBE-Gap-Review S4）：热更新时若版本号变更则全量打日志，便于诊断破坏性变更。</summary>
     private readonly ConcurrentDictionary<string, int> _scriptVersions = new(StringComparer.Ordinal);
+    /// <summary>每个类型当前生效脚本程序集的可回收加载上下文（P1-5 程序集泄漏修复：热更新后卸载旧 ALC，旧程序集可被 GC 回收）。</summary>
+    private readonly ConcurrentDictionary<string, System.Runtime.Loader.AssemblyLoadContext> scriptContexts = new(StringComparer.Ordinal);
     private FileSystemWatcher? watcher;
     private readonly object compileGate = new();
 
@@ -167,22 +169,29 @@ public sealed class ScriptHost : IDisposable
     /// <summary>实体创建时通知脚本（并订阅实体属性变更事件）。</summary>
     public void NotifyCreate(EntityObj entity)
     {
-        if (scripts.TryGetValue(entity.TypeName, out var script))
+        if (scripts.TryGetValue(entity.TypeName, out _))
         {
+            // 安全修复（P1）：回调内按当前注册的脚本实例解析，避免热更新后属性变更仍派发给旧实例。
             Action<string, object?, object?> handler = (name, oldValue, newValue) =>
             {
                 try
                 {
-                    script.OnPropertyChanged(entity, name, oldValue, newValue);
+                    if (scripts.TryGetValue(entity.TypeName, out var currentScript))
+                    {
+                        currentScript.OnPropertyChanged(entity, name, oldValue, newValue);
+                    }
                 }
                 catch (Exception ex)
                 {
-                    Log.Error(ex, $"脚本 {script.EntityType} OnPropertyChanged 异常 EntityId:{entity.EntityId} Prop:{name}");
+                    Log.Error(ex, $"脚本 {entity.TypeName} OnPropertyChanged 异常 EntityId:{entity.EntityId} Prop:{name}");
                 }
             };
             propertyHandlers[entity.EntityId] = handler;
             entity.PropertyChanged += handler;
-            script.OnCreate(entity);
+            if (scripts.TryGetValue(entity.TypeName, out var script))
+            {
+                script.OnCreate(entity);
+            }
         }
     }
 
@@ -209,18 +218,42 @@ public sealed class ScriptHost : IDisposable
     public void AttachTickEngine(Framework.Tick.TickEngine engine) => TickEngine = engine;
 
     /// <summary>
-    /// 通知热更新（KBE-Gap-Review S4）：旧实例的 OnReload 钩子按类型下每个实体各调用一次。
+    /// 通知热更新（KBE-Gap-Review S4）：新实例的 OnReload 钩子按类型下每个实体各调用一次。
     /// 错误隔离：单实体异常不影响其他实体迁移。
+    /// 安全修复（P1）：
+    ///   1) 改为调用 newScript.OnReload（迁移钩子必须挂在新的代码实例上），
+    ///      否则存量实体出现新旧代码混跑、新实例字段永远为 null。
+    ///   2) 跨线程迁移（P1-3 竞争）：LoadScriptFile 由 FSW 线程触发，直接遍历实体调用 OnReload
+    ///      会与 Battle tick 线程的实体处理/定时器并发竞争（entity.Get/Set、AddTimer 竞态）。
+    ///      这里通过 TickEngine.Post 把整段实体访问投递到 tick 线程串行执行；
+    ///      未挂载 TickEngine（启动早期）时回退为直接执行。
     /// </summary>
     private void NotifyReload(string typeName, IEntityScript oldScript, IEntityScript newScript, object? state)
     {
+        if (TickEngine != null)
+        {
+            TickEngine.Post(() => NotifyReloadOnTick(typeName, oldScript, newScript, state));
+        }
+        else
+        {
+            NotifyReloadOnTick(typeName, oldScript, newScript, state);
+        }
+    }
+
+    private void NotifyReloadOnTick(string typeName, IEntityScript oldScript, IEntityScript newScript, object? state)
+    {
+        // 取消旧实例的全部定时器（P1）：OnReload 挂在 newScript 上后，旧实例的字段级句柄
+        // 已不可达（脚本里 healTimer?.Cancel() 操作的是新实例的 null 字段），若不在此取消，
+        // 旧定时器会继续运行并与新实例重挂的定时器叠加（回血/掉落速率翻倍）且把旧实例/旧程序集钉在堆上。
+        (oldScript as EntityScriptBase)?.CancelAllTimers();
+
         foreach (var manager in entityManagers.Keys)
         {
             foreach (var entity in manager.GetAllEntitiesByType(typeName))
             {
                 try
                 {
-                    oldScript.OnReload(entity, state);
+                    newScript.OnReload(entity, state);
                 }
                 catch (Exception ex)
                 {
@@ -303,19 +336,28 @@ public sealed class ScriptHost : IDisposable
         try
         {
             string code = File.ReadAllText(filePath);
-            var options = ScriptOptions.Default
-                .WithReferences(
-                    typeof(IEntityScript).Assembly,        // Framework.Scripting
-                    typeof(EntityObj).Assembly,            // Framework.Entity
-                    typeof(Log).Assembly,                  // Framework.Core
-                    typeof(object).Assembly)               // System.Private.CoreLib
-                .WithImports("System", "System.Collections.Generic", "Framework.Entity", "Framework.Scripting", "Framework.Core");
 
-            var script = CSharpScript.Create<object>(code, options, globalsType: typeof(ScriptGlobals));
-            var diagnostics = script.Compile();
-            var errors = diagnostics.Where(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error).ToList();
-            if (errors.Count > 0)
+            // 程序集泄漏修复（P1-5）：从 CSharpScript（载入永不回收的默认 ALC）改为
+            // CSharpCompilation + 可回收 AssemblyLoadContext，热更新后卸载旧版本程序集。
+            // 脚本约定 "return new XxxScript();" 是 CSharpScript 的顶层 return，CSharpCompilation
+            // 不支持，改为编译后按类型扫描实例化 IEntityScript。
+            string compileSource = StripTrailingReturn(code);
+            var syntaxTree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(compileSource);
+            var compilation = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create(
+                "Script_" + Path.GetFileNameWithoutExtension(filePath),
+                new[] { syntaxTree },
+                references: GetScriptReferences(),
+                options: new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(
+                    Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary,
+                    optimizationLevel: Microsoft.CodeAnalysis.OptimizationLevel.Release));
+
+            using var emitStream = new MemoryStream();
+            var emitResult = compilation.Emit(emitStream);
+            if (!emitResult.Success)
             {
+                var errors = emitResult.Diagnostics
+                    .Where(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error)
+                    .ToList();
                 var ex = new InvalidOperationException($"脚本 {filePath} 编译失败: {errors.Count} 个错误");
                 foreach (var err in errors)
                 {
@@ -323,12 +365,22 @@ public sealed class ScriptHost : IDisposable
                 }
                 throw ex;
             }
-            var state = script.RunAsync(new ScriptGlobals(this)).GetAwaiter().GetResult();
 
-            // 脚本约定：主体返回 IEntityScript 实例
-            if (state.ReturnValue is not IEntityScript instance)
+            emitStream.Position = 0;
+            var context = new ScriptLoadContext();
+            var assembly = context.LoadFromStream(emitStream);
+
+            // 替换原 "return new XxxScript();" 约定：扫描实现 IEntityScript 的具体类型并实例化
+            System.Type? scriptType = assembly.GetTypes().FirstOrDefault(t =>
+                typeof(IEntityScript).IsAssignableFrom(t) && !t.IsAbstract && !t.IsInterface);
+            if (scriptType == null)
             {
-                Log.Warn($"脚本 {filePath} 未返回 IEntityScript 实例（需以 return new XxxScript(); 结尾），已跳过。");
+                Log.Warn($"脚本 {filePath} 未包含 IEntityScript 实现类型（需声明继承 EntityScriptBase 的类），已跳过。");
+                return;
+            }
+            if (Activator.CreateInstance(scriptType) is not IEntityScript instance)
+            {
+                Log.Warn($"脚本 {filePath} 无法实例化 {scriptType.FullName}，已跳过。");
                 return;
             }
 
@@ -368,6 +420,21 @@ public sealed class ScriptHost : IDisposable
                 NotifyReload(typeName, oldScript, instance, reloadState);
             }
 
+            // 卸载上一版本的可回收 ALC：旧实例此时已无强引用（scripts 已替换、
+            // 旧定时器已由 NotifyReload 取消、属性回调按当前实例解析），Unload 后程序集可被 GC 回收。
+            if (scriptContexts.TryRemove(typeName, out var oldContext))
+            {
+                try
+                {
+                    oldContext.Unload();
+                }
+                catch (Exception ex)
+                {
+                    Log.Warn($"脚本 {typeName} 旧程序集卸载发起失败（引用释放后由 GC 自动回收）: {ex.Message}");
+                }
+            }
+            scriptContexts[typeName] = context;
+
             ScriptLoaded?.Invoke(typeName, instance);
             ScriptReloaded?.Invoke(typeName, newVersion, oldVersion);
         }
@@ -380,10 +447,57 @@ public sealed class ScriptHost : IDisposable
         }
     }
 
+    /// <summary>
+    /// 去除脚本文件尾部的顶层 "return new XxxScript();"（仅 CSharpScript 支持顶层 return，CSharpCompilation 不支持）。
+    /// 仅当该 return 是文件最后一条语句（其后无有效内容）时剥离；若 return 后有尾随内容（如测试注入的非法代码），
+    /// 原样返回让编译失败——这是错误隔离的关键：热更新文件若在 return 后混入内容，必须按编译错误处理而非静默丢弃。
+    /// </summary>
+    private static string StripTrailingReturn(string code)
+    {
+        string trimmed = code.TrimEnd();
+        int idx = trimmed.LastIndexOf("return new ", StringComparison.Ordinal);
+        if (idx < 0) return code;
+        int semi = trimmed.IndexOf(';', idx);
+        if (semi < 0) return code;
+        if (trimmed.AsSpan(semi + 1).Trim().Length != 0) return code;
+        return trimmed.Substring(0, idx);
+    }
+
+    /// <summary>脚本编译引用：运行时已加载的全部非动态程序集（框架 + BCL + Shared），可回收 ALC 经回退默认上下文解析。</summary>
+    private static Microsoft.CodeAnalysis.MetadataReference[] GetScriptReferences()
+    {
+        var refs = new List<Microsoft.CodeAnalysis.MetadataReference>();
+        foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            if (asm.IsDynamic || string.IsNullOrEmpty(asm.Location))
+            {
+                continue;
+            }
+            refs.Add(Microsoft.CodeAnalysis.MetadataReference.CreateFromFile(asm.Location));
+        }
+        return refs.ToArray();
+    }
+
+    /// <summary>脚本程序集的可回收加载上下文（P1-5）：引用一律回退默认上下文（框架/BCL 已在默认 ALC 中）。</summary>
+    private sealed class ScriptLoadContext : System.Runtime.Loader.AssemblyLoadContext
+    {
+        public ScriptLoadContext() : base(isCollectible: true) { }
+
+        protected override System.Reflection.Assembly? Load(System.Reflection.AssemblyName assemblyName) => null;
+    }
+
     public void Dispose()
     {
         watcher?.Dispose();
         watcher = null;
+        foreach (var (typeName, context) in scriptContexts)
+        {
+            if (scriptContexts.TryRemove(typeName, out _))
+            {
+                try { context.Unload(); }
+                catch { /* 引用未释放时由 GC 自动回收 */ }
+            }
+        }
     }
 }
 

@@ -28,6 +28,11 @@ namespace Login.Handlers
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> findPasswordCooldowns =
             new System.Collections.Concurrent.ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
+        // 安全修复（P0）：找回密码一次性验证码登记表（内存态，带过期时间）。
+        // 阶段一仅登记，阶段二校验通过后才真正重置密码，杜绝"请求即锁号"的 DoS。
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, PendingPasswordReset> pendingPasswordResets =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, PendingPasswordReset>(StringComparer.OrdinalIgnoreCase);
+
         /// <summary>
         /// 创建 LoginHandler 的实例。
         /// </summary>

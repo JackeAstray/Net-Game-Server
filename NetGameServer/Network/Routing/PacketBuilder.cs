@@ -35,6 +35,32 @@ public static class PacketBuilder
     }
 
     /// <summary>
+    /// 直接打包带二进制尾部路由元数据的包（性能优化 P-M2）：一次性把
+    /// [TotalLength(4)][MsgId(4)][body][metadataJson][magic(4)][metaLength(4)] 写入池化缓冲，
+    /// 取代"先 Attach 元数据拼出中间数组、再 BuildPacket 拷贝一次"的两步两拷贝。
+    /// 返回值所有权交由 PacketSender.Send 释放（调用方不手动 Return）。
+    /// </summary>
+    public static byte[] BuildPacketWithMetadata(int msgId, ReadOnlySpan<byte> payload, ReadOnlySpan<byte> metadataJson, out int totalLength)
+    {
+        const uint metadataMagic = 0x4154454D; // "META"，与 BinaryRouteMetadata 保持一致
+        const int footerSize = 8;
+
+        int innerLength = 4 + payload.Length + metadataJson.Length + footerSize;
+        totalLength = 4 + innerLength;
+
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(totalLength);
+        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(0, 4), innerLength);
+        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(4, 4), msgId);
+        payload.CopyTo(buffer.AsSpan(8));
+
+        int footerStart = 8 + payload.Length;
+        metadataJson.CopyTo(buffer.AsSpan(footerStart));
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(footerStart + metadataJson.Length, 4), metadataMagic);
+        BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(footerStart + metadataJson.Length + 4, 4), metadataJson.Length);
+        return buffer;
+    }
+
+    /// <summary>
     /// 构建包含会话标识、消息标识和负载的数据包：前8字节为会话标识（Little-Endian），接着4字节为消息标识（Little-Endian），随后为负载数据。
     /// </summary>
     /// <remarks>返回的是新分配的缓冲区；整数使用小端字节序写入，负载通过 ReadOnlySpan.CopyTo 复制。</remarks>

@@ -241,7 +241,9 @@ namespace Center.Handlers
                 return false;
             }
 
-            if (roomEntry.Info.OwnerUserId > 0 && requesterUserId > 0 && roomEntry.Info.OwnerUserId != requesterUserId)
+            // 安全修复（P1）：仅已实名房主可修改设置/开赛；Owner=0（匹配房）或未绑定请求者一律拒绝，
+            // 防止任意玩家绕过房主校验接管/锁死房间。
+            if (roomEntry.Info.OwnerUserId <= 0 || requesterUserId <= 0 || roomEntry.Info.OwnerUserId != requesterUserId)
             {
                 errorResponse = new CenterUpdateRoomSettingsResponse
                 {

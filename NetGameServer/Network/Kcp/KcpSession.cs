@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using System.Net.Sockets.Kcp;
@@ -17,6 +18,8 @@ public sealed class KcpSession : ISession
     private readonly Kcp<KcpSegment> kcp;
     private readonly KcpOutputCallback outputCallback;
     private readonly ArrayBufferWriter<byte> recvWriter = new(1024);
+    /// <summary>KCP 状态互斥锁（P1 三线程并发修复）：接收线程 Input、驱动线程 Update、应用线程 Send 并发触碰同一 Kcp 实例会破坏收发窗口。</summary>
+    private readonly object kcpGate = new();
 
     public long SessionId { get; }
 
@@ -62,8 +65,11 @@ public sealed class KcpSession : ISession
     /// <summary>KCP 更新（由 KcpServer 每 tick 调用，驱动发送/重传/超时）。</summary>
     internal void Update()
     {
-        var now = DateTimeOffset.UtcNow;
-        kcp.Update(ref now);
+        lock (kcpGate)
+        {
+            var now = DateTimeOffset.UtcNow;
+            kcp.Update(ref now);
+        }
     }
 
     /// <summary>把收到的 UDP 数据报送入 KCP，并尝试取出完整应用数据包。</summary>
@@ -71,16 +77,28 @@ public sealed class KcpSession : ISession
     internal bool Input(ReadOnlySpan<byte> data)
     {
         LastActivityTime = DateTime.UtcNow;
-        kcp.Input(data);
-        var now = DateTimeOffset.UtcNow;
-        kcp.Update(ref now);
-
+        List<byte[]>? packets = null;
         bool gotPacket = false;
-        while (kcp.TryRecv(recvWriter) > 0)
+        lock (kcpGate)
         {
-            gotPacket = true;
-            OnDataReceived?.Invoke(this, recvWriter.WrittenMemory.ToArray());
-            recvWriter.Clear();
+            kcp.Input(data);
+            var now = DateTimeOffset.UtcNow;
+            kcp.Update(ref now);
+
+            while (kcp.TryRecv(recvWriter) > 0)
+            {
+                gotPacket = true;
+                (packets ??= new List<byte[]>(2)).Add(recvWriter.WrittenMemory.ToArray());
+                recvWriter.Clear();
+            }
+        }
+        // 锁外回调：避免持锁触发应用层（应用回调可能向其他会话 Send，防止跨会话锁序死锁）
+        if (packets != null)
+        {
+            foreach (var packet in packets)
+            {
+                OnDataReceived?.Invoke(this, packet);
+            }
         }
         return gotPacket;
     }
@@ -91,10 +109,13 @@ public sealed class KcpSession : ISession
         if (data.Length == 0) return;
         try
         {
-            kcp.Send(data.Span, null);
-            LastActivityTime = DateTime.UtcNow;
-            // 立即驱动一次发送（否则要等下一个 Update tick）
-            Update();
+            lock (kcpGate)
+            {
+                kcp.Send(data.Span, null);
+                LastActivityTime = DateTime.UtcNow;
+                // 立即驱动一次发送（否则要等下一个 Update tick）；Update 内部再取锁（Monitor 可重入）
+                Update();
+            }
         }
         catch (Exception ex)
         {

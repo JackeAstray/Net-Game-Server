@@ -82,6 +82,10 @@ namespace Shared.Messages
         public const int FindPasswordWithCodeReq = 10012;
         public const int FindPasswordWithCodeRes = 10013;
 
+        // 安全修复（P0）：找回密码第二阶段——提交验证码+新密码完成重置（匿名可达，走 Login 区间旧路由）
+        public const int ResetPasswordWithCodeReq = 10014;
+        public const int ResetPasswordWithCodeRes = 10015;
+
         // === 游戏服务器客户端通信 (20000-29999 网关转发过来) ===
         // public const int PlayerMoveReq = 20001;
         // ...

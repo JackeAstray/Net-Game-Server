@@ -20,16 +20,25 @@ public class KcpClientWrapper : INetworkClient
     private CancellationTokenSource? cts;
     private bool isRunning;
     private readonly ArrayBufferWriter<byte> recvWriter = new(1024);
+    /// <summary>KCP 状态互斥锁（P1 三线程并发修复）：接收线程 Input、驱动线程 Update、Send 并发触碰同一 Kcp 实例。</summary>
+    private readonly object kcpGate = new();
 
     public event SessionConnectedHandler? OnConnected;
     public event DataReceivedHandler? OnDataReceived;
     public event SessionDisconnectedHandler? OnDisconnected;
 
-    public KcpClientWrapper(string host, int port, uint conv = 0x4B434550)
+    public KcpClientWrapper(string host, int port, uint? conv = null)
     {
         this.host = host;
         this.port = port;
-        this.conv = conv;
+        // P1 conv 随机化：不再使用可猜测的固定转换号（防会话固定攻击），每次连接随机生成
+        this.conv = conv ?? CreateRandomConv();
+    }
+
+    /// <summary>生成随机非零 KCP 转换号（高位置位确保永不为 0，避免与"任意转换号"语义冲突）。</summary>
+    private static uint CreateRandomConv()
+    {
+        return (uint)System.Security.Cryptography.RandomNumberGenerator.GetInt32(int.MaxValue) | 0x80000000u;
     }
 
     public async Task ConnectAsync()
@@ -76,14 +85,17 @@ public class KcpClientWrapper : INetworkClient
             while (!token.IsCancellationRequested && udpClient != null)
             {
                 var result = await udpClient.ReceiveAsync(token);
-                kcp?.Input(result.Buffer);
-                var now = DateTimeOffset.UtcNow;
-                kcp?.Update(ref now);
-
-                while (kcp != null && kcp.TryRecv(recvWriter) > 0)
+                lock (kcpGate)
                 {
-                    OnDataReceived?.Invoke(null!, recvWriter.WrittenMemory.ToArray());
-                    recvWriter.Clear();
+                    kcp?.Input(result.Buffer);
+                    var now = DateTimeOffset.UtcNow;
+                    kcp?.Update(ref now);
+
+                    while (kcp != null && kcp.TryRecv(recvWriter) > 0)
+                    {
+                        OnDataReceived?.Invoke(null!, recvWriter.WrittenMemory.ToArray());
+                        recvWriter.Clear();
+                    }
                 }
             }
         }
@@ -104,10 +116,13 @@ public class KcpClientWrapper : INetworkClient
             while (!token.IsCancellationRequested)
             {
                 await Task.Delay(10, token);
-                if (kcp != null)
+                lock (kcpGate)
                 {
-                    var now = DateTimeOffset.UtcNow;
-                    kcp.Update(ref now);
+                    if (kcp != null)
+                    {
+                        var now = DateTimeOffset.UtcNow;
+                        kcp.Update(ref now);
+                    }
                 }
             }
         }
@@ -121,9 +136,12 @@ public class KcpClientWrapper : INetworkClient
         if (kcp == null || data.Length == 0) return;
         try
         {
-            kcp.Send(data.Span, null);
-            var now = DateTimeOffset.UtcNow;
-            kcp.Update(ref now);
+            lock (kcpGate)
+            {
+                kcp.Send(data.Span, null);
+                var now = DateTimeOffset.UtcNow;
+                kcp.Update(ref now);
+            }
         }
         catch (Exception ex)
         {

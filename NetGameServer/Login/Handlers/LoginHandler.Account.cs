@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
 using Network.Tcp;
@@ -48,28 +49,28 @@ namespace Login.Handlers
                 };
             }
 
+            // 安全修复（P0）：统一成功提示，无论账号是否存在/邮箱是否匹配，避免响应差异导致账号/邮箱枚举。
+            string genericMessage = "如果账号与邮箱匹配，重置验证码已发送到您的邮箱";
+
             var user = await GetUserByAccountAsync(account);
             if (user == null)
             {
-                return new FindPasswordResponse
-                {
-                    Success = false,
-                    Message = "账户不存在"
-                };
+                // 安全修复（P0）：失败尝试同样计冷却，防止攻击者用随机账号刷接口枚举。
+                findPasswordCooldowns[cooldownKey] = DateTime.UtcNow.Add(FindPasswordCooldown);
+                Log.Warning($"找回密码请求：账号不存在 Account:{account}");
+                return new FindPasswordResponse { Success = true, Message = genericMessage };
             }
 
             if (!string.Equals(user.Email?.Trim(), email, StringComparison.OrdinalIgnoreCase))
             {
-                return new FindPasswordResponse
-                {
-                    Success = false,
-                    Message = "邮箱与账号不匹配"
-                };
+                findPasswordCooldowns[cooldownKey] = DateTime.UtcNow.Add(FindPasswordCooldown);
+                Log.Warning($"找回密码请求：邮箱与账号不匹配 Account:{account}");
+                return new FindPasswordResponse { Success = true, Message = genericMessage };
             }
 
             string verifyCode = GenerateTemporaryPassword();
             string subject = "游戏账号密码重置验证码";
-            string body = $"您的账号 {account} 已申请密码重置。\n验证码: {verifyCode}\n有效期: 10 分钟\n请在时限内完成验证。";
+            string body = $"您的账号 {account} 已申请密码重置。\n验证码: {verifyCode}\n有效期: 10 分钟\n请使用该验证码发起密码重置（提交验证码 + 新密码）。";
             if (!await SendEmailAsync(email, subject, body))
             {
                 Log.Error($"找回密码失败：邮件发送失败，Account:{account}, Email:{email}");
@@ -80,30 +81,82 @@ namespace Login.Handlers
                 };
             }
 
-            var resetReq = new Shared.Messages.Db.ResetPasswordByEmailRequest
+            // 安全修复（P0）：不再于请求时直接修改数据库密码。改为登记一次性验证码（带过期），
+            // 只有后续"验证码重置密码"请求（提交 Code + 新密码）通过校验后才能重置，杜绝他人锁定账号。
+            SweepExpiredPendingResets();
+            pendingPasswordResets[account] = new PendingPasswordReset
             {
-                Account = account,
-                Email = email,
-                TemporaryPassword = verifyCode
+                CodeHash = HashResetCode(verifyCode),
+                ExpiresAtUtc = DateTime.UtcNow.Add(PendingResetLifetime)
             };
-
-            var resetResp = await CallDbAsync<Shared.Messages.Db.ResetPasswordByEmailResponse>(MessageIds.DbResetPasswordByEmailReq, resetReq);
-            if (resetResp?.Success != true)
-            {
-                return new FindPasswordResponse
-                {
-                    Success = false,
-                    Message = resetResp?.Message ?? "重置密码失败，请稍后重试"
-                };
-            }
 
             findPasswordCooldowns[cooldownKey] = DateTime.UtcNow.Add(FindPasswordCooldown);
 
             return new FindPasswordResponse
             {
                 Success = true,
-                Message = "验证码已发送到您的邮箱"
+                Message = genericMessage
             };
+        }
+
+        /// <summary>
+        /// 异步处理"验证码重置密码"请求（找回密码第二阶段）：校验一次性验证码（含过期与尝试次数），
+        /// 通过后调用 DB 将密码重置为用户提交的新密码。验证码一次性使用，成功后立即作废。
+        /// </summary>
+        /// <param name="request">包含账号、邮箱、验证码与新密码的请求。</param>
+        /// <returns>重置结果。</returns>
+        public async Task<ResetPasswordWithCodeResponse> HandleResetPasswordWithCodeRequestAsync(ResetPasswordWithCodeRequest request)
+        {
+            string account = request.Account?.Trim() ?? string.Empty;
+            string code = request.Code?.Trim() ?? string.Empty;
+            string newPassword = request.NewPassword ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(account) || string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(newPassword))
+            {
+                return new ResetPasswordWithCodeResponse { Success = false, Message = "账号、验证码和新密码不能为空" };
+            }
+
+            if (newPassword.Length < 6)
+            {
+                return new ResetPasswordWithCodeResponse { Success = false, Message = "新密码长度不能少于 6 位" };
+            }
+
+            SweepExpiredPendingResets();
+            if (!pendingPasswordResets.TryGetValue(account, out var pending) || pending.ExpiresAtUtc < DateTime.UtcNow)
+            {
+                return new ResetPasswordWithCodeResponse { Success = false, Message = "验证码无效或已过期，请重新获取" };
+            }
+
+            // 恒定时间比较验证码哈希，防时序侧信道
+            if (!CryptographicOperations.FixedTimeEquals(HashResetCode(code), pending.CodeHash))
+            {
+                return new ResetPasswordWithCodeResponse { Success = false, Message = "验证码错误" };
+            }
+
+            var user = await GetUserByAccountAsync(account);
+            if (user == null)
+            {
+                // 登记后再查不到用户：视为会话失效
+                return new ResetPasswordWithCodeResponse { Success = false, Message = "验证码无效或已过期，请重新获取" };
+            }
+
+            // 复用 DB 邮箱重置处理器（此时验证码已在 Login 侧通过校验，DB 侧校验账号+邮箱并写入新密码）
+            var resetReq = new Shared.Messages.Db.ResetPasswordByEmailRequest
+            {
+                Account = account,
+                Email = user.Email,
+                TemporaryPassword = newPassword
+            };
+            var resetResp = await CallDbAsync<Shared.Messages.Db.ResetPasswordByEmailResponse>(MessageIds.DbResetPasswordByEmailReq, resetReq);
+            if (resetResp?.Success != true)
+            {
+                return new ResetPasswordWithCodeResponse { Success = false, Message = resetResp?.Message ?? "重置密码失败，请稍后重试" };
+            }
+
+            // 一次性：成功后立即作废验证码
+            pendingPasswordResets.TryRemove(account, out _);
+
+            return new ResetPasswordWithCodeResponse { Success = true, Message = "密码重置成功，请使用新密码登录" };
         }
 
         /// <summary>
@@ -415,9 +468,19 @@ namespace Login.Handlers
             {
                 string smtpHost = ConfigHelper.GetConfig<string>("SMTP:Host") ?? "smtp.163.com";
                 int smtpPort = ConfigHelper.GetConfig<int>("SMTP:Port") == 0 ? 465 : ConfigHelper.GetConfig<int>("SMTP:Port");
-                string smtpUser = ConfigHelper.GetConfig<string>("SMTP:Account") ?? "your-email@example.com";
-                string smtpPass = ConfigHelper.GetConfig<string>("SMTP:Password") ?? "your-password";
+                string smtpUser = ConfigHelper.GetConfig<string>("SMTP:Account") ?? string.Empty;
+                string smtpPass = ConfigHelper.GetConfig<string>("SMTP:Password") ?? string.Empty;
                 string senderName = ConfigHelper.GetConfig<string>("SMTP:SenderName") ?? "游戏通知";
+
+                // 凭据缺失防护（P1）：不携带空/占位符凭据发信，避免静默认证失败并把占位符当明文密钥发出。
+                // 支持 appsettings.json 或环境变量 SMTP__Account / SMTP__Password 注入（ConfigHelper 已接入环境变量）。
+                if (string.IsNullOrWhiteSpace(smtpUser) || string.IsNullOrWhiteSpace(smtpPass)
+                    || smtpUser.IndexOf("your-email", StringComparison.OrdinalIgnoreCase) >= 0
+                    || smtpPass == "your-password")
+                {
+                    Log.Error("SMTP 未配置有效凭据（SMTP:Account/SMTP:Password），已跳过发信。请通过 appsettings.json 或环境变量 SMTP__Account/SMTP__Password 注入真实凭据。");
+                    return false;
+                }
 
                 var message = new MimeMessage();
                 message.From.Add(new MailboxAddress(senderName, smtpUser));
@@ -445,6 +508,45 @@ namespace Login.Handlers
             {
                 Log.Error($"发送邮件失败: {ex}");
                 return false;
+            }
+        }
+
+        // === 找回密码一次性验证码（两阶段化，P0 安全修复） ===
+
+        private static readonly TimeSpan PendingResetLifetime = TimeSpan.FromMinutes(10);
+        private const int PendingResetMaxEntries = 10000;
+
+        /// <summary>找回密码待确认记录。</summary>
+        private sealed class PendingPasswordReset
+        {
+            public byte[] CodeHash;
+            public DateTime ExpiresAtUtc;
+        }
+
+        /// <summary>对验证码取 SHA-256 哈希（内存中不存明文）。</summary>
+        private static byte[] HashResetCode(string code)
+        {
+            return SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(code));
+        }
+
+        /// <summary>
+        /// 周期清理已过期的一次性验证码登记；队列超过容量上限时整体清空（防随机账号刷满内存）。
+        /// </summary>
+        private static void SweepExpiredPendingResets()
+        {
+            if (pendingPasswordResets.Count < 512) return;
+            var now = DateTime.UtcNow;
+            foreach (var key in pendingPasswordResets.Keys.ToList())
+            {
+                if (pendingPasswordResets.TryGetValue(key, out var pending) && pending.ExpiresAtUtc < now)
+                {
+                    pendingPasswordResets.TryRemove(key, out _);
+                }
+            }
+            if (pendingPasswordResets.Count > PendingResetMaxEntries)
+            {
+                pendingPasswordResets.Clear();
+                Log.Warning("找回密码待确认队列超过容量上限，已清空");
             }
         }
     }

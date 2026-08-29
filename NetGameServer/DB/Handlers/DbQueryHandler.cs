@@ -15,6 +15,22 @@ namespace DB.Handlers
     /// </summary>
     public partial class DbQueryHandler
     {
+        /// <summary>
+        /// 账号级串行（P1-2 丢失更新修复）：同一用户/账号的读-改-写请求严格按提交顺序执行，
+        /// 防止并发写同一用户行时相互覆盖（登录计数、在线状态、密码、好友/黑名单列表），
+        /// 也保证同一用户的读请求能读到先前已排队的写结果（read-your-writes）。
+        /// 不同 key 之间并发执行（固定 worker 池 ≈ CPU 核数，覆盖 PBKDF2 这类 CPU 密集段的并行度）；
+        /// 仅用户/账号维度的读写请求入队，全局只读查询（GetMaxUid/OnlineStats/AccountQuery 等）不排队。
+        /// </summary>
+        private static readonly Framework.Core.OrderedTaskQueue perUserQueue =
+            new("DbPerUser", maxConcurrency: Environment.ProcessorCount);
+
+        private static string AccountKey(string account) => "A:" + account;
+
+        private static string UserKey(long userId) => "U:" + userId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+        /// <summary>按用户/账号键串行执行一次 DB 读写（异常由队列内部捕获记录，不向上抛）。</summary>
+        private static Task RunPerUser(object key, Func<Task> work) => perUserQueue.EnqueueAsync(key, work);
 
         /// <summary>
         /// 将响应对象序列化为 UTF-8 JSON，按 msgId 前缀封包并通过会话发送；异常被捕获并记录。
@@ -46,10 +62,10 @@ namespace DB.Handlers
                     payload = Shared.RouteMetadata.AttachRequestId(payload, requestId.Value);
                 }
 
-                byte[] packet = new byte[payload.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), msgId);
-                payload.CopyTo(packet.AsSpan(4));
-                session.Send(packet);
+                // 帧长度修复（P1）：统一用 BuildPacket 加长度头 + PacketSender 免启发式发送，
+                // 避免裸 [MsgId][payload] 触发 TcpSession.Send 的长度启发式误判（MsgId 恰等于负载长度时漏加前缀导致对端流错位）。
+                byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
+                Network.PacketSender.Send(session, packet, totalLength);
             }
             catch (Exception ex)
             {

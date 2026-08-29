@@ -144,6 +144,24 @@ namespace Login.Handlers
                 SendToGateway(session, clientSessionId, MessageIds.FindPasswordWithCodeRes, res);
             };
 
+            // 处理验证码重置密码请求（找回密码第二阶段：提交验证码 + 新密码，匿名可达）
+            handlers[MessageIds.ResetPasswordWithCodeReq] = async (payload, session, clientSessionId) =>
+            {
+                var req = Shared.Json.DeserializeFromUtf8Bytes<ResetPasswordWithCodeRequest>(payload.Span);
+                if (req == null)
+                {
+                    SendToGateway(session, clientSessionId, MessageIds.ResetPasswordWithCodeRes, new ResetPasswordWithCodeResponse
+                    {
+                        Success = false,
+                        Message = "请求数据格式错误"
+                    });
+                    return;
+                }
+
+                var res = await loginHandler.HandleResetPasswordWithCodeRequestAsync(req);
+                SendToGateway(session, clientSessionId, MessageIds.ResetPasswordWithCodeRes, res);
+            };
+
             return handlers;
         }
 

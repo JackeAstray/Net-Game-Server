@@ -71,18 +71,26 @@ namespace Gateway
 
             void NotifyPlayerDisconnected(long clientSessionId)
             {
-                var disconnectPayload = Shared.RouteMetadata.AttachClientSessionId(Array.Empty<byte>(), clientSessionId);
-                var disconnectPacket = PacketBuilder.BuildPacket(MessageIds.PlayerDisconnectNotif, disconnectPayload, out int totalLength);
-                var outbound = disconnectPacket.AsSpan(0, totalLength).ToArray();
-                System.Buffers.ArrayPool<byte>.Shared.Return(disconnectPacket);
-
-                Shared.Log.Info($"Gateway 广播玩家断线通知 MsgId:{MessageIds.PlayerDisconnectNotif} ClientSessionId:{clientSessionId} PacketLength:{totalLength}");
-                loginSender.SendOrBuffer(outbound);
-                gameSender.SendOrBuffer(outbound);
-                // 断线通知广播到全部 Battle 节点（玩家可能挂在任一节点）
-                foreach (var sender in battleNodeSenders.Values)
+                // 安全修复（P2）：断线通知属尽力而为，任一后端未连接/发送失败不得中断断开流程或产生未观察异常。
+                try
                 {
-                    sender.SendOrBuffer(outbound);
+                    var disconnectPayload = Shared.RouteMetadata.AttachClientSessionId(Array.Empty<byte>(), clientSessionId);
+                    var disconnectPacket = PacketBuilder.BuildPacket(MessageIds.PlayerDisconnectNotif, disconnectPayload, out int totalLength);
+                    var outbound = disconnectPacket.AsSpan(0, totalLength).ToArray();
+                    System.Buffers.ArrayPool<byte>.Shared.Return(disconnectPacket);
+
+                    Shared.Log.Info($"Gateway 广播玩家断线通知 MsgId:{MessageIds.PlayerDisconnectNotif} ClientSessionId:{clientSessionId} PacketLength:{totalLength}");
+                    loginSender?.SendOrBuffer(outbound);
+                    gameSender?.SendOrBuffer(outbound);
+                    // 断线通知广播到全部 Battle 节点（玩家可能挂在任一节点）
+                    foreach (var sender in battleNodeSenders.Values)
+                    {
+                        sender?.SendOrBuffer(outbound);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Warning($"Gateway 广播玩家断线通知异常 ClientSessionId:{clientSessionId} Exception:{ex.Message}");
                 }
             }
 
@@ -112,25 +120,27 @@ namespace Gateway
                         int payloadLength = data.Length - 4;
                         Shared.Log.Debug("Gateway 接收到客户端数据 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint, msgId, data.Length, payloadLength);
 
-                        byte[] payload = data.Slice(4).ToArray();
-                        byte[] routedPayload = Shared.RouteMetadata.AttachClientSessionId(payload, session.SessionId);
+                        // 安全修复（P0）：先剥离客户端可能注入的 __* 路由元数据（JSON 内嵌 / 伪造二进制尾部块），
+                        // 再由网关附加受信任的元数据，防止未登录客户端伪造 __userId/__uid/__nickname 冒充他人。
+                        byte[] payload = Shared.RouteMetadata.StripClientFields(data.Slice(4));
                         int boundUserId = Gateway.Managers.GatewaySessionManager.Instance.GetUserIdBySessionId(session.SessionId);
-                        if (boundUserId > 0)
+                        // 安全修复（P0）：Game 节点业务消息（好友/账户/背包，20000-29999 + 50000-69999）
+                        // 必须已登录绑定，未绑定会话拒绝转发。
+                        // 注意：Center(30000-39999)/Battle(40000-49999) 属会话路由消息（匹配/加入对局），
+                        // 系统支持访客匹配——身份以 clientSessionId 为准、由服务端回包建立节点绑定；
+                        // 身份伪造已由 StripClientFields + 受信元数据附加闭环（见上），此处为 Game 的纵深防御。
+                        if (boundUserId <= 0 && ((msgId >= 20000 && msgId < 30000) || (msgId >= 50000 && msgId < 70000)))
                         {
-                            routedPayload = Shared.RouteMetadata.AttachUserId(routedPayload, boundUserId);
+                            Shared.Log.Warning($"Gateway 拒绝未登录会话的 Game 业务消息 MsgId:{msgId} SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                            return;
                         }
 
                         string boundUid = Gateway.Managers.GatewaySessionManager.Instance.GetUidBySessionId(session.SessionId);
-                        if (!string.IsNullOrWhiteSpace(boundUid))
-                        {
-                            routedPayload = Shared.RouteMetadata.AttachUid(routedPayload, boundUid);
-                        }
-
                         string boundNickname = Gateway.Managers.GatewaySessionManager.Instance.GetNicknameBySessionId(session.SessionId);
-                        if (!string.IsNullOrWhiteSpace(boundNickname))
-                        {
-                            routedPayload = Shared.RouteMetadata.AttachNickname(routedPayload, boundNickname);
-                        }
+                        // 性能优化（P-H1）：批量附加全部路由元数据（一次解析 + 一次构建），
+                        // 取代逐字段 Attach 的 4 次 body 拷贝 + 4 次 JSON 序列化。
+                        byte[] routedPayload = Shared.RouteMetadata.AttachClientRouteMetadata(
+                            payload, session.SessionId, boundUserId > 0 ? boundUserId : (int?)null, boundUid, boundNickname);
 
                         byte[] wrapperMsg = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int routedLength);
                         byte[] outbound = wrapperMsg.AsSpan(0, routedLength).ToArray();

@@ -32,6 +32,9 @@ namespace DB.Handlers
                 return;
             }
 
+            // 账号级串行（P1-2）：同一账号的改密读改写按序执行（与登录同 key）
+            await RunPerUser(AccountKey(request.Account), async () =>
+            {
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -87,15 +90,15 @@ namespace DB.Handlers
                 }
 
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
-                byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbChangePasswordRes);
-                data.CopyTo(packet.AsSpan(4));
-                session.Send(packet);
+                // 帧长度修复（P1）：统一 BuildPacket 加长度头 + PacketSender 免启发式发送
+                byte[] packet = Network.Routing.PacketBuilder.BuildPacket(Shared.Messages.MessageIds.DbChangePasswordRes, data, out int totalLength);
+                Network.PacketSender.Send(session, packet, totalLength);
             }
             catch (Exception ex)
             {
                 Log.Error($"更改密码异常: {ex}");
             }
+            });
         }
 
         /// <summary>
@@ -113,6 +116,9 @@ namespace DB.Handlers
                 return;
             }
 
+            // 账号级串行（P1-2）：同一账号的邮箱重置读改写按序执行（与登录/改密同 key）
+            await RunPerUser(AccountKey(request.Account), async () =>
+            {
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -142,15 +148,15 @@ namespace DB.Handlers
                 }
 
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
-                byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbResetPasswordByEmailRes);
-                data.CopyTo(packet.AsSpan(4));
-                session.Send(packet);
+                // 帧长度修复（P1）：统一 BuildPacket 加长度头 + PacketSender 免启发式发送
+                byte[] packet = Network.Routing.PacketBuilder.BuildPacket(Shared.Messages.MessageIds.DbResetPasswordByEmailRes, data, out int totalLength);
+                Network.PacketSender.Send(session, packet, totalLength);
             }
             catch (Exception ex)
             {
                 Log.Error($"邮箱重置密码异常: {ex}");
             }
+            });
         }
 
         // --- Friend系统处理程序 ---

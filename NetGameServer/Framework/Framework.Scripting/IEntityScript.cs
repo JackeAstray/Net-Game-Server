@@ -83,12 +83,34 @@ public abstract class EntityScriptBase : IEntityScript
     /// 用法：AddTimer(entity, 1000, () => DoHeal(), repeat: true)；
     /// 返回 <see cref="Framework.Tick.TimerHandle"/>，可用 handle.Cancel() 取消（典型如 entity 销毁前）。
     /// 底层未注入 TickEngine 时返回 null。public 以让 csx 脚本访问。
+    /// 句柄同时登记到实例级清单，热更新时由框架统一取消旧实例定时器（P1：防新旧定时器叠加/旧实例泄漏）。
     /// </summary>
     public Framework.Tick.TimerHandle? AddTimer(EntityObj entity, int intervalMs, Action callback, bool repeat = false)
     {
         var engine = ScriptHost.Current?.TickEngine;
         if (engine == null) return null;
-        return engine.AddTimer(intervalMs, WrapWithEntity(entity, callback), repeat);
+        var handle = engine.AddTimer(intervalMs, WrapWithEntity(entity, callback), repeat);
+        lock (_timers)
+        {
+            _timers.Add(handle);
+        }
+        return handle;
+    }
+
+    private readonly object _timersGate = new();
+    private readonly System.Collections.Generic.List<Framework.Tick.TimerHandle> _timers = new();
+
+    /// <summary>取消本实例创建的全部定时器（热更新迁移时由 ScriptHost 调用，供跨实例定时器收尾）。</summary>
+    internal void CancelAllTimers()
+    {
+        lock (_timersGate)
+        {
+            foreach (var handle in _timers)
+            {
+                handle.Cancel();
+            }
+            _timers.Clear();
+        }
     }
 
     private static Action WrapWithEntity(EntityObj entity, Action callback)

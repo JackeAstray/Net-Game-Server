@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.Text;
 using Newtonsoft.Json.Linq;
 
@@ -137,6 +138,64 @@ public static class RouteMetadata
     }
 
     /// <summary>
+    /// 批量附加客户端路由元数据（性能优化 P-H1）：一次解析 + 一次构建，替代逐字段 Attach
+    /// （每客户端消息从 4 次 body 拷贝 + 4 次 JSON 序列化降为 1 次）。
+    /// 可选字段传 null/空值时跳过；客户端会话标识为必填。
+    /// </summary>
+    public static byte[] AttachClientRouteMetadata(ReadOnlyMemory<byte> payload, long clientSessionId, int? userId, string? uid, string? nickname)
+    {
+        var fields = new List<KeyValuePair<string, string>>(4);
+        fields.Add(new KeyValuePair<string, string>(ClientSessionIdField, clientSessionId.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        if (userId.HasValue && userId.Value > 0)
+        {
+            fields.Add(new KeyValuePair<string, string>(UserIdField, userId.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        }
+        if (!string.IsNullOrWhiteSpace(uid))
+        {
+            fields.Add(new KeyValuePair<string, string>(UidField, uid));
+        }
+        if (!string.IsNullOrWhiteSpace(nickname))
+        {
+            fields.Add(new KeyValuePair<string, string>(NicknameField, nickname));
+        }
+        return Framework.Protocol.BinaryRouteMetadata.AttachMany(payload.Span, fields);
+    }
+
+    /// <summary>
+    /// 剥离客户端可注入的路由元数据：移除负载中所有以 "__" 开头的字段（JSON 内嵌键 或 二进制尾部元数据键）。
+    /// Gateway 在附加自身元数据前调用，防止客户端伪造 __userId/__uid/__nickname 等身份字段冒充他人（P0 安全修复）。
+    /// </summary>
+    public static byte[] StripClientFields(ReadOnlyMemory<byte> payload)
+    {
+        if (payload.IsEmpty) return payload.ToArray();
+
+        // 二进制尾部元数据路径：剥离客户端伪造的 "__" 键，并清理正文中残留的 JSON "__" 字段（防双重伪造）
+        if (Framework.Protocol.BinaryRouteMetadata.TryParse(payload.Span, out var body, out var fields))
+        {
+            bool footerChanged = false;
+            foreach (var k in new List<string>(fields.Keys))
+            {
+                if (k.StartsWith("__", StringComparison.Ordinal))
+                {
+                    fields.Remove(k);
+                    footerChanged = true;
+                }
+            }
+
+            byte[] cleanBody = StripJsonClientFields(body, out bool bodyChanged);
+            if (footerChanged || bodyChanged)
+            {
+                // 无剩余元数据字段时直接返回正文，避免遗留空 META 尾部
+                return fields.Count == 0 ? cleanBody : Framework.Protocol.BinaryRouteMetadata.Rebuild(cleanBody, fields);
+            }
+            return payload.ToArray();
+        }
+
+        // 纯 JSON 负载：移除所有 "__" 前缀键
+        return StripJsonClientFields(payload, out _);
+    }
+
+    /// <summary>
     /// 尝试从给定的负载中提取请求标识符。
     /// </summary>
     /// <remarks>使用预定义的 RequestId 字段进行提取，返回的 cleanPayload 已移除该字段以便后续处理。</remarks>
@@ -151,19 +210,40 @@ public static class RouteMetadata
 
     public static bool TryExtractUserId(ReadOnlyMemory<byte> payload, out int userId, out byte[] cleanPayload)
     {
-        bool ok = TryExtractLongField(payload, UserIdField, out long value, out cleanPayload);
-        userId = ok ? (int)value : 0;
-        return ok;
+        // 安全修复（P0）：身份字段只接受 Gateway 附加的二进制元数据，
+        // 拒绝"旧格式 JSON 内嵌"回退，防止客户端伪造 __userId 冒充任意用户。
+        if (Framework.Protocol.BinaryRouteMetadata.TryExtractLong(payload.Span, UserIdField, out long value, out cleanPayload))
+        {
+            userId = (int)value;
+            return true;
+        }
+        userId = 0;
+        cleanPayload = payload.ToArray();
+        return false;
     }
 
     public static bool TryExtractUid(ReadOnlyMemory<byte> payload, out string uid, out byte[] cleanPayload)
     {
-        return TryExtractStringField(payload, UidField, out uid, out cleanPayload);
+        // 安全修复（P0）：同 TryExtractUserId，只接受二进制元数据，拒绝 JSON 内嵌伪造。
+        if (Framework.Protocol.BinaryRouteMetadata.TryExtractString(payload.Span, UidField, out uid, out cleanPayload))
+        {
+            return true;
+        }
+        uid = string.Empty;
+        cleanPayload = payload.ToArray();
+        return false;
     }
 
     public static bool TryExtractNickname(ReadOnlyMemory<byte> payload, out string nickname, out byte[] cleanPayload)
     {
-        return TryExtractStringField(payload, NicknameField, out nickname, out cleanPayload);
+        // 安全修复（P0）：只接受二进制元数据，拒绝 JSON 内嵌伪造。
+        if (Framework.Protocol.BinaryRouteMetadata.TryExtractString(payload.Span, NicknameField, out nickname, out cleanPayload))
+        {
+            return true;
+        }
+        nickname = string.Empty;
+        cleanPayload = payload.ToArray();
+        return false;
     }
 
     /// <summary>
@@ -481,5 +561,41 @@ public static class RouteMetadata
         {
             return false;
         }
+    }
+
+    /// <summary>判断负载去掉前导空白后是否为 JSON 对象（以 '{' 开头）。避免对二进制负载做无谓的 JSON 解析。</summary>
+    private static bool LooksLikeJsonObject(ReadOnlyMemory<byte> payload)
+    {
+        var span = payload.Span;
+        int i = 0;
+        while (i < span.Length && (span[i] == (byte)' ' || span[i] == (byte)'\t' || span[i] == (byte)'\r' || span[i] == (byte)'\n'))
+        {
+            i++;
+        }
+        return i < span.Length && span[i] == (byte)'{';
+    }
+
+    /// <summary>若负载是 JSON 对象，则移除所有以 "__" 开头的键并返回重建字节；否则原样返回副本。</summary>
+    private static byte[] StripJsonClientFields(ReadOnlyMemory<byte> payload, out bool changed)
+    {
+        changed = false;
+        if (!LooksLikeJsonObject(payload)) return payload.ToArray();
+        if (!TryParseObject(payload, out var obj)) return payload.ToArray();
+
+        var keys = new List<string>();
+        foreach (var prop in obj.Properties())
+        {
+            if (prop.Name.StartsWith("__", StringComparison.Ordinal))
+            {
+                keys.Add(prop.Name);
+            }
+        }
+        if (keys.Count == 0) return payload.ToArray();
+        foreach (var k in keys)
+        {
+            obj.Remove(k);
+        }
+        changed = true;
+        return Encoding.UTF8.GetBytes(obj.ToString(Newtonsoft.Json.Formatting.None));
     }
 }

@@ -80,6 +80,9 @@ public class AvatarScript : EntityScriptBase
     {
         // KBE-Gap-Review S4：热更新显式状态迁移
         // state 由宿主在重新加载前通过 SetReloadState 注入；这里从 entity 自身恢复
+        // 安全修复（P1）：先取消旧实例的定时器句柄，避免热更新后 repeat 定时器叠加导致回血速率随热更次数线性放大
+        healTimer?.Cancel();
+        healTimer = null;
         damageTaken = entity.Get<int>("Score"); // 复用 Score 字段作为累计受伤
         // 重新挂载定时器（旧实例的句柄已无效）
         healTimer = AddTimer(entity, 1000, () => TickHeal(entity), repeat: true);

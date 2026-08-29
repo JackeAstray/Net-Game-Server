@@ -371,9 +371,18 @@ namespace Battle.Handlers
         /// <summary>组装 [MsgId(4)][Payload(带 __targetSessionId 路由元数据)] 并零拷贝发送。</summary>
         private void SendPacket(Network.ISession gatewaySession, long targetSessionId, int msgId, byte[] payload)
         {
-            byte[] routedPayload = Shared.RouteMetadata.AttachTargetSessionId(payload, targetSessionId);
-            byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
+            // 性能优化（P-M2）：直接组装 [len][msgId][body][元数据尾部块] 到池化缓冲，
+            // 替代 AttachTargetSessionId 的"字典+JSON+中间数组"两步（每目标省 2 次分配 + 1 次 payload 拷贝）。
+            byte[] metaJson = BuildTargetMetadataJson(targetSessionId);
+            byte[] packet = Network.Routing.PacketBuilder.BuildPacketWithMetadata(msgId, payload, metaJson, out int totalLength);
             Network.PacketSender.Send(gatewaySession, packet, totalLength);
+        }
+
+        /// <summary>构造单字段路由元数据 JSON（{"__targetSessionId":"&lt;id&gt;"}），避免逐包分配字典/序列化器。</summary>
+        private static byte[] BuildTargetMetadataJson(long targetSessionId)
+        {
+            string json = "{\"__targetSessionId\":\"" + targetSessionId.ToString(System.Globalization.CultureInfo.InvariantCulture) + "\"}";
+            return System.Text.Encoding.UTF8.GetBytes(json);
         }
 
         /// <summary>向单个玩家发送全量快照。</summary>

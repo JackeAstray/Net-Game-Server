@@ -10,12 +10,13 @@ namespace Battle.Entities;
 /// </summary>
 public static class GameplayEntityDefs
 {
-    /// <summary>野怪：Hp/MaxHp/Score 公开，Position 公开（巡逻移动广播给视野内玩家）。</summary>
+    /// <summary>野怪：Hp/MaxHp/Score 公开，Position 公开（巡逻移动广播给视野内玩家），IsDead 服务端内部（不广播）。</summary>
     public static readonly EntityDef Npc = new EntityDef { Name = "Npc" }
         .Add("Hp", EntityPropertyType.Int32)
         .Add("MaxHp", EntityPropertyType.Int32)
         .Add("Score", EntityPropertyType.Int32)
-        .Add("Position", EntityPropertyType.Float3);
+        .Add("Position", EntityPropertyType.Float3)
+        .Add("IsDead", EntityPropertyType.Bool, syncToClient: false);
 
     /// <summary>任务：内部状态（进度/目标）不参与客户端广播（对标 KBE CELL_PRIVATE）。</summary>
     public static readonly EntityDef Quest = new EntityDef { Name = "Quest" }

@@ -28,6 +28,9 @@ namespace DB.Handlers
         public static async Task HandleAddBlacklistRequest(ISession session, DbAddBlacklistRequest? request, long? requestId = null)
         {
             if (request == null) return;
+            // 账号级串行（P1-2）：同一用户的拉黑操作按序执行
+            await RunPerUser(UserKey(request.UserId), async () =>
+            {
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -98,6 +101,7 @@ namespace DB.Handlers
             {
                 Log.Error($"添加黑名单异常: {ex}");
             }
+            });
         }
 
         /// <summary>
@@ -116,6 +120,9 @@ namespace DB.Handlers
                 Log.Warning("收到无效的 RemoveBlacklistRequest，数据无法被反序列化。");
                 return;
             }
+            // 账号级串行（P1-2）：同一用户的移出黑名单按序执行
+            await RunPerUser(UserKey(request.UserId), async () =>
+            {
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -163,6 +170,7 @@ namespace DB.Handlers
             {
                 Log.Error($"移除黑名单异常: {ex}");
             }
+            });
         }
 
         /// <summary>
@@ -180,6 +188,9 @@ namespace DB.Handlers
                 Log.Warning("收到无效的 GetBlacklistRequest，数据无法被反序列化。");
                 return;
             }
+            // 账号级串行（P1-2）：黑名单读取入队，保证读到已排队的写结果（read-your-writes）
+            await RunPerUser(UserKey(request.UserId), async () =>
+            {
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -216,6 +227,7 @@ namespace DB.Handlers
             {
                 Log.Error($"获取黑名单异常: {ex}");
             }
+            });
         }
 
         /// <summary>
@@ -336,6 +348,9 @@ namespace DB.Handlers
                 return;
             }
 
+            // 账号级串行（P1-2）：同一发起者的好友申请按序执行（防重复申请）
+            await RunPerUser(UserKey(request.RequesterUserId), async () =>
+            {
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -439,6 +454,7 @@ namespace DB.Handlers
             {
                 Log.Error($"创建好友申请异常: {ex}");
             }
+            });
         }
 
         public static async Task HandleGetFriendApplyListRequest(ISession session, DbGetFriendApplyListRequest? request, long? requestId = null)
@@ -449,6 +465,9 @@ namespace DB.Handlers
                 return;
             }
 
+            // 账号级串行（P1-2）：申请列表读取入队，保证读到已排队的处理结果
+            await RunPerUser(UserKey(request.UserId), async () =>
+            {
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -498,6 +517,7 @@ namespace DB.Handlers
             {
                 Log.Error($"获取好友申请列表异常: {ex}");
             }
+            });
         }
 
         public static async Task HandleFriendApplyRequest(ISession session, DbHandleFriendApplyRequest? request, long? requestId = null)
@@ -508,6 +528,9 @@ namespace DB.Handlers
                 return;
             }
 
+            // 账号级串行（P1-2）：同一接收者的申请处理按序执行（防重复接受/并发建好友）
+            await RunPerUser(UserKey(request.UserId), async () =>
+            {
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -621,6 +644,7 @@ namespace DB.Handlers
             {
                 Log.Error($"处理好友申请异常: {ex}");
             }
+            });
         }
 
     }

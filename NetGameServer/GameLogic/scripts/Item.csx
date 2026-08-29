@@ -104,6 +104,9 @@ public class ItemScript : EntityScriptBase
     public override void OnReload(Entity entity, object? oldState)
     {
         // KBE-Gap-Review S4：热更新后恢复状态 + 重新挂定时器
+        // 安全修复（P1）：先取消旧实例的定时器句柄，避免热更新后 repeat 定时器叠加导致掉落速率随热更次数线性放大
+        autoDropTimer?.Cancel();
+        autoDropTimer = null;
         pickedTotal = entity.Get<int>("Count");
         autoDropTimer = AddTimer(entity, AutoDropIntervalMs, () => TickAutoDrop(entity), repeat: true);
         Log.Info("Item", "Item {EntityId} 脚本热更新完成", entity.EntityId);

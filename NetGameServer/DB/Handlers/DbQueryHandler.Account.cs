@@ -67,17 +67,9 @@ namespace DB.Handlers
                 // 将响应模型序列化为JSON UTF-8字节数组
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
 
-                // 创建一个足够容纳协议头(4字节)和数据长度的字节数组
-                byte[] packet = new byte[data.Length + 4];
-
-                // 写入消息ID
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbGetMaxUidRes);
-
-                // 将序列化后的数据复制到数据包中（从第4字节后开始）
-                data.CopyTo(packet.AsSpan(4));
-
-                // 通过网络会话发送响应数据包
-                session.Send(packet);
+                // 帧长度修复（P1）：统一 BuildPacket 加长度头 + PacketSender 免启发式发送
+                byte[] packet = Network.Routing.PacketBuilder.BuildPacket(Shared.Messages.MessageIds.DbGetMaxUidRes, data, out int totalLength);
+                Network.PacketSender.Send(session, packet, totalLength);
             }
             catch (Exception ex)
             {
@@ -99,6 +91,9 @@ namespace DB.Handlers
                 return;
             }
 
+            // 账号级串行（P1-2）：同一账号的登录读改写按序执行，防止并发写丢更新
+            await RunPerUser(AccountKey(request.Account), async () =>
+            {
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -155,15 +150,15 @@ namespace DB.Handlers
                 };
 
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
-                byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbLoginVerifyRes);
-                data.CopyTo(packet.AsSpan(4));
-                session.Send(packet);
+                // 帧长度修复（P1）：统一 BuildPacket 加长度头 + PacketSender 免启发式发送
+                byte[] packet = Network.Routing.PacketBuilder.BuildPacket(Shared.Messages.MessageIds.DbLoginVerifyRes, data, out int totalLength);
+                Network.PacketSender.Send(session, packet, totalLength);
             }
             catch (Exception ex)
             {
                 Log.Error($"验证登录异常: {ex}");
             }
+            });
         }
 
         /// <summary>
@@ -180,6 +175,9 @@ namespace DB.Handlers
                 return;
             }
 
+            // 账号级串行（P1-2）：同一账号的注册读改写按序执行（与登录同 key，注册后立即可见）
+            await RunPerUser(AccountKey(request.Account), async () =>
+            {
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -239,15 +237,15 @@ namespace DB.Handlers
                 }
 
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
-                byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbRegisterVerifyRes);
-                data.CopyTo(packet.AsSpan(4));
-                session.Send(packet);
+                // 帧长度修复（P1）：统一 BuildPacket 加长度头 + PacketSender 免启发式发送
+                byte[] packet = Network.Routing.PacketBuilder.BuildPacket(Shared.Messages.MessageIds.DbRegisterVerifyRes, data, out int totalLength);
+                Network.PacketSender.Send(session, packet, totalLength);
             }
             catch (Exception ex)
             {
                 Log.Error($"注册账号异常: {ex}");
             }
+            });
         }
 
         /// <summary>
@@ -290,10 +288,9 @@ namespace DB.Handlers
                 }
 
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
-                byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbAccountQueryRes);
-                data.CopyTo(packet.AsSpan(4));
-                session.Send(packet);
+                // 帧长度修复（P1）：统一 BuildPacket 加长度头 + PacketSender 免启发式发送
+                byte[] packet = Network.Routing.PacketBuilder.BuildPacket(Shared.Messages.MessageIds.DbAccountQueryRes, data, out int totalLength);
+                Network.PacketSender.Send(session, packet, totalLength);
             }
             catch (Exception ex)
             {
@@ -333,10 +330,9 @@ namespace DB.Handlers
                 };
 
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
-                byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbOnlineStatsRes);
-                data.CopyTo(packet.AsSpan(4));
-                session.Send(packet);
+                // 帧长度修复（P1）：统一 BuildPacket 加长度头 + PacketSender 免启发式发送
+                byte[] packet = Network.Routing.PacketBuilder.BuildPacket(Shared.Messages.MessageIds.DbOnlineStatsRes, data, out int totalLength);
+                Network.PacketSender.Send(session, packet, totalLength);
             }
             catch (Exception ex)
             {
@@ -355,6 +351,9 @@ namespace DB.Handlers
         public static async Task HandleUpdateOnlineStateRequest(ISession session, UpdateOnlineStateRequest? request)
         {
             if (request == null) return;
+            // 账号级串行（P1-2）：同一用户的在线状态读改写按序执行，防止并发在线/离线更新相互覆盖
+            await RunPerUser(UserKey(request.UserId), async () =>
+            {
             try
             {
                 var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
@@ -379,15 +378,15 @@ namespace DB.Handlers
 
                 var response = new UpdateOnlineStateResponse { Success = true };
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
-                byte[] packet = new byte[data.Length + 4];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), Shared.Messages.MessageIds.DbUpdateOnlineStateRes);
-                data.CopyTo(packet.AsSpan(4));
-                session.Send(packet);
+                // 帧长度修复（P1）：统一 BuildPacket 加长度头 + PacketSender 免启发式发送
+                byte[] packet = Network.Routing.PacketBuilder.BuildPacket(Shared.Messages.MessageIds.DbUpdateOnlineStateRes, data, out int totalLength);
+                Network.PacketSender.Send(session, packet, totalLength);
             }
             catch (Exception ex)
             {
                 Log.Error($"更新在线状态异常: {ex}");
             }
+            });
         }
 
     }

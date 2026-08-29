@@ -34,6 +34,10 @@ namespace Shared
             var builder = new ConfigurationBuilder()
                 .SetBasePath(Directory.GetCurrentDirectory())
                 .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+                // 环境变量注入（P1 凭据治理）：SMTP__Password / ConnectionStrings__MySqlConnection /
+                // CenterNodeSharedSecret 等凭据与配置可由环境变量覆盖，部署无需把明文密钥写入 appsettings.json。
+                // 置于 JSON 之后、内存覆盖之前：环境变量优先于配置文件，但仍低于 Machine/NodeLaunchArgs 的运行时覆盖。
+                .AddEnvironmentVariables()
                 // 内存源放最后，优先级最高，Machine / NodeLaunchArgs 写入的覆盖生效
                 .AddInMemoryCollection(_runtimeOverrides);
 

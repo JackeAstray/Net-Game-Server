@@ -212,7 +212,9 @@ namespace Center.Handlers
                 };
             }
 
-            if (room.Info.OwnerUserId > 0 && requesterUserId > 0 && room.Info.OwnerUserId != requesterUserId)
+            // 安全修复（P1）：仅已实名房主可关房；Owner=0（匹配房）或未绑定请求者一律拒绝，
+            // 防止任意玩家关闭整局（DoS）。
+            if (room.Info.OwnerUserId <= 0 || requesterUserId <= 0 || room.Info.OwnerUserId != requesterUserId)
             {
                 return new CenterCloseRoomResponse
                 {

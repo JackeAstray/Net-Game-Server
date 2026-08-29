@@ -43,7 +43,12 @@ namespace Gateway
                 var authFilter = new Framework.Core.Security.InternalAuthFilter(sharedSecret, gatewayNodeId);
                 byte[] authPacket = authFilter.BuildAuthPacket();
                 Shared.Log.Info($"Gateway 向后端发送内部认证握手 Length:{authPacket.Length}");
-                client.Send(authPacket);
+                // 帧长度修复（P1）：auth 包为裸 [MsgId][payload]，显式加长度头再发送，避免长度启发式误判
+                byte[] payload = authPacket.AsSpan(4).ToArray();
+                byte[] framed = Network.Routing.PacketBuilder.BuildPacket(
+                    System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(authPacket.AsSpan(0, 4)),
+                    payload, out int totalLength);
+                client.SendFromPool(framed, totalLength);
             }
 
             // 读取 Login 后端配置（支持默认端口）
@@ -176,7 +181,7 @@ namespace Gateway
                     try
                     {
                         Shared.Log.Debug("Gateway 广播 Game 回包 MsgId:{MsgId} PacketLength:{PacketLength}", msgId, totalLength);
-                        Gateway.Managers.GatewaySessionManager.Instance.Broadcast(packet.AsSpan(0, totalLength).ToArray());
+                        Gateway.Managers.GatewaySessionManager.Instance.Broadcast(packet, totalLength);
                     }
                     finally
                     {
@@ -262,7 +267,7 @@ namespace Gateway
                     try
                     {
                         Shared.Log.Debug("Gateway 广播 Center 回包 MsgId:{MsgId} PacketLength:{PacketLength}", msgId, broadcastLength);
-                        Gateway.Managers.GatewaySessionManager.Instance.Broadcast(packet.AsSpan(0, broadcastLength).ToArray());
+                        Gateway.Managers.GatewaySessionManager.Instance.Broadcast(packet, broadcastLength);
                     }
                     finally { System.Buffers.ArrayPool<byte>.Shared.Return(packet); }
                     return;
@@ -392,7 +397,7 @@ namespace Gateway
                 try
                 {
                     Shared.Log.Debug("Gateway 广播 Battle 回包 MsgId:{MsgId} PacketLength:{PacketLength}", msgId, totalLength);
-                    Gateway.Managers.GatewaySessionManager.Instance.Broadcast(packet.AsSpan(0, totalLength).ToArray());
+                    Gateway.Managers.GatewaySessionManager.Instance.Broadcast(packet, totalLength);
                 }
                 finally { System.Buffers.ArrayPool<byte>.Shared.Return(packet); }
                 return;

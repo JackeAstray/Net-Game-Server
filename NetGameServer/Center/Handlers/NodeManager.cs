@@ -181,7 +181,7 @@ namespace Center.Handlers
             var now = DateTime.UtcNow;
             var candidates = nodes.Values
                 .Where(n => n.NodeType.Equals("Battle", StringComparison.OrdinalIgnoreCase)
-                            && n.Session.IsConnected
+                            && n.Session != null && n.Session.IsConnected
                             && now - n.LastHeartbeat <= NodeHeartbeatStaleThreshold)
                 .ToList();
 
@@ -189,7 +189,7 @@ namespace Center.Handlers
             {
                 // 回退：所有候选心跳都过期时，仍按“已连接 + 负载最低”兜底（保留旧行为）
                 var fallback = nodes.Values
-                    .Where(n => n.NodeType.Equals("Battle", StringComparison.OrdinalIgnoreCase) && n.Session.IsConnected)
+                    .Where(n => n.NodeType.Equals("Battle", StringComparison.OrdinalIgnoreCase) && n.Session != null && n.Session.IsConnected)
                     .OrderBy(n => n.CurrentLoad)
                     .FirstOrDefault();
                 return fallback?.NodeId;
@@ -340,7 +340,8 @@ namespace Center.Handlers
                     MachineId = node.MachineId,
                     SupervisedBy = node.SupervisedBy,
                     LastHeartbeat = node.LastHeartbeat,
-                    IsConnected = node.Session.IsConnected
+                    // 安全修复（P1）：恢复节点的 Session 为 null，避免访问 IsConnected 抛 NRE
+                    IsConnected = node.Session != null && node.Session.IsConnected
                 })
                 .OrderBy(node => node.MachineId)
                 .ThenBy(node => node.NodeType)
@@ -407,8 +408,8 @@ namespace Center.Handlers
                         InstanceId = node.InstanceId,
                         MachineId = node.MachineId,
                         SupervisedBy = node.SupervisedBy,
-                        Session = null!,
-                        LastHeartbeat = DateTime.UtcNow
+                        Session = null!,   // 恢复的节点会话为 null，待节点重连后由 RegisterNode 填充
+                        LastHeartbeat = DateTime.MinValue  // 安全修复（P1）：恢复节点心跳置旧，避免其在重连前被当作新鲜候选而访问 Session 抛 NRE
                     });
                     restored++;
                 }

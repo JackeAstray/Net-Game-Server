@@ -70,6 +70,11 @@ namespace DB.Handlers
     /// 基于 MessageDispatcher 的强类型处理器（DB 服务器）。
     /// 使用生成的消息类 + MemoryPack 二进制序列化（JSON 兼容回退），消灭手写 MsgId 分支。
     /// 全部 20 个 DB 请求消息已注册；未注册的 MsgId 由调用方回退旧路由。
+    ///
+    /// 并发/包序修复（P2）：由 RegisterSync（同步包装、异步 handler 被 fire-and-forget 丢弃、
+    /// 产生 CS4014 且"先写后读"可能乱序）改为 Register + async/await 显式等待：
+    /// 每个请求真正处理完成后 TryDispatch 才返回，配合 AsyncEventGuard 的接收循环内联派发，
+    /// 同一连接的后续请求不再越过未完成的前一个请求（消除登录/好友/在线状态等读写的乱序交错）。
     /// </summary>
     public static class DbDispatcher
     {
@@ -93,15 +98,15 @@ namespace DB.Handlers
             // ---- 账户/登录类 ----
 
             // 获取最大 UID
-            dispatcher.RegisterSync<DbGetMaxUid>((ctx, msg) =>
+            dispatcher.Register<DbGetMaxUid>(async (ctx, msg) =>
             {
-                DbQueryHandler.HandleGetMaxUidRequest(Routed(ctx, out _), new GetMaxUidRequest());
+                await DbQueryHandler.HandleGetMaxUidRequest(Routed(ctx, out _), new GetMaxUidRequest());
             }, jsonFallback: true);
 
             // 登录验证
-            dispatcher.RegisterSync<DbLoginVerify>((ctx, msg) =>
+            dispatcher.Register<DbLoginVerify>(async (ctx, msg) =>
             {
-                DbQueryHandler.HandleLoginVerifyRequest(Routed(ctx, out _), new LoginVerifyRequest
+                await DbQueryHandler.HandleLoginVerifyRequest(Routed(ctx, out _), new LoginVerifyRequest
                 {
                     Account = msg.Account,
                     Password = msg.Password
@@ -109,9 +114,9 @@ namespace DB.Handlers
             }, jsonFallback: true);
 
             // 注册验证
-            dispatcher.RegisterSync<DbRegisterVerify>((ctx, msg) =>
+            dispatcher.Register<DbRegisterVerify>(async (ctx, msg) =>
             {
-                DbQueryHandler.HandleRegisterVerifyRequest(Routed(ctx, out _), new RegisterVerifyRequest
+                await DbQueryHandler.HandleRegisterVerifyRequest(Routed(ctx, out _), new RegisterVerifyRequest
                 {
                     Account = msg.Account,
                     Password = msg.Password,
@@ -121,24 +126,24 @@ namespace DB.Handlers
             }, jsonFallback: true);
 
             // 账户查询
-            dispatcher.RegisterSync<DbAccountQuery>((ctx, msg) =>
+            dispatcher.Register<DbAccountQuery>(async (ctx, msg) =>
             {
-                DbQueryHandler.HandleAccountQueryRequest(Routed(ctx, out _), new AccountQueryRequest
+                await DbQueryHandler.HandleAccountQueryRequest(Routed(ctx, out _), new AccountQueryRequest
                 {
                     Account = msg.Account
                 });
             }, jsonFallback: true);
 
             // 在线统计
-            dispatcher.RegisterSync<DbOnlineStats>((ctx, msg) =>
+            dispatcher.Register<DbOnlineStats>(async (ctx, msg) =>
             {
-                DbQueryHandler.HandleOnlineStatsRequest(Routed(ctx, out _), new OnlineStatsRequest());
+                await DbQueryHandler.HandleOnlineStatsRequest(Routed(ctx, out _), new OnlineStatsRequest());
             }, jsonFallback: true);
 
             // 更新在线状态
-            dispatcher.RegisterSync<DbUpdateOnlineState>((ctx, msg) =>
+            dispatcher.Register<DbUpdateOnlineState>(async (ctx, msg) =>
             {
-                DbQueryHandler.HandleUpdateOnlineStateRequest(Routed(ctx, out _), new UpdateOnlineStateRequest
+                await DbQueryHandler.HandleUpdateOnlineStateRequest(Routed(ctx, out _), new UpdateOnlineStateRequest
                 {
                     UserId = msg.UserId,
                     IsOnline = msg.IsOnline
@@ -146,9 +151,9 @@ namespace DB.Handlers
             }, jsonFallback: true);
 
             // 更改密码
-            dispatcher.RegisterSync<DbChangePassword>((ctx, msg) =>
+            dispatcher.Register<DbChangePassword>(async (ctx, msg) =>
             {
-                DbQueryHandler.HandleChangePasswordVerifyRequest(Routed(ctx, out _), new ChangePasswordVerifyRequest
+                await DbQueryHandler.HandleChangePasswordVerifyRequest(Routed(ctx, out _), new ChangePasswordVerifyRequest
                 {
                     UserId = msg.UserId,
                     Account = msg.Account,
@@ -158,9 +163,9 @@ namespace DB.Handlers
             }, jsonFallback: true);
 
             // 邮箱重置密码
-            dispatcher.RegisterSync<DbResetPasswordByEmail>((ctx, msg) =>
+            dispatcher.Register<DbResetPasswordByEmail>(async (ctx, msg) =>
             {
-                DbQueryHandler.HandleResetPasswordByEmailRequest(Routed(ctx, out _), new ResetPasswordByEmailRequest
+                await DbQueryHandler.HandleResetPasswordByEmailRequest(Routed(ctx, out _), new ResetPasswordByEmailRequest
                 {
                     Account = msg.Account,
                     Email = msg.Email,
@@ -171,10 +176,10 @@ namespace DB.Handlers
             // ---- 好友/黑名单/申请类（带 RequestId 请求关联）----
 
             // 好友：添加
-            dispatcher.RegisterSync<DbFriendAdd>((ctx, msg) =>
+            dispatcher.Register<DbFriendAdd>(async (ctx, msg) =>
             {
                 var session = Routed(ctx, out long requestId);
-                DbQueryHandler.HandleAddFriendRequest(session, new DbAddFriendRequest
+                await DbQueryHandler.HandleAddFriendRequest(session, new DbAddFriendRequest
                 {
                     UserId = msg.UserId,
                     FriendUniqueId = msg.FriendUniqueId,
@@ -183,10 +188,10 @@ namespace DB.Handlers
             }, jsonFallback: true);
 
             // 好友：移除
-            dispatcher.RegisterSync<DbFriendRemove>((ctx, msg) =>
+            dispatcher.Register<DbFriendRemove>(async (ctx, msg) =>
             {
                 var session = Routed(ctx, out long requestId);
-                DbQueryHandler.HandleRemoveFriendRequest(session, new DbRemoveFriendRequest
+                await DbQueryHandler.HandleRemoveFriendRequest(session, new DbRemoveFriendRequest
                 {
                     UserId = msg.UserId,
                     FriendUniqueId = msg.FriendUniqueId
@@ -194,10 +199,10 @@ namespace DB.Handlers
             }, jsonFallback: true);
 
             // 好友：设置备注
-            dispatcher.RegisterSync<DbFriendSetRemark>((ctx, msg) =>
+            dispatcher.Register<DbFriendSetRemark>(async (ctx, msg) =>
             {
                 var session = Routed(ctx, out long requestId);
-                DbQueryHandler.HandleSetFriendRemarkRequest(session, new DbSetFriendRemarkRequest
+                await DbQueryHandler.HandleSetFriendRemarkRequest(session, new DbSetFriendRemarkRequest
                 {
                     UserId = msg.UserId,
                     FriendUniqueId = msg.FriendUniqueId,
@@ -206,20 +211,20 @@ namespace DB.Handlers
             }, jsonFallback: true);
 
             // 好友：获取列表
-            dispatcher.RegisterSync<DbFriendGetList>((ctx, msg) =>
+            dispatcher.Register<DbFriendGetList>(async (ctx, msg) =>
             {
                 var session = Routed(ctx, out long requestId);
-                DbQueryHandler.HandleGetFriendsRequest(session, new DbGetFriendsRequest
+                await DbQueryHandler.HandleGetFriendsRequest(session, new DbGetFriendsRequest
                 {
                     UserId = msg.UserId
                 }, requestId > 0 ? requestId : null);
             }, jsonFallback: true);
 
             // 黑名单：添加
-            dispatcher.RegisterSync<DbBlacklistAdd>((ctx, msg) =>
+            dispatcher.Register<DbBlacklistAdd>(async (ctx, msg) =>
             {
                 var session = Routed(ctx, out long requestId);
-                DbQueryHandler.HandleAddBlacklistRequest(session, new DbAddBlacklistRequest
+                await DbQueryHandler.HandleAddBlacklistRequest(session, new DbAddBlacklistRequest
                 {
                     UserId = msg.UserId,
                     TargetUniqueId = msg.TargetUniqueId
@@ -227,10 +232,10 @@ namespace DB.Handlers
             }, jsonFallback: true);
 
             // 黑名单：移除
-            dispatcher.RegisterSync<DbBlacklistRemove>((ctx, msg) =>
+            dispatcher.Register<DbBlacklistRemove>(async (ctx, msg) =>
             {
                 var session = Routed(ctx, out long requestId);
-                DbQueryHandler.HandleRemoveBlacklistRequest(session, new DbRemoveBlacklistRequest
+                await DbQueryHandler.HandleRemoveBlacklistRequest(session, new DbRemoveBlacklistRequest
                 {
                     UserId = msg.UserId,
                     TargetUniqueId = msg.TargetUniqueId
@@ -238,40 +243,40 @@ namespace DB.Handlers
             }, jsonFallback: true);
 
             // 黑名单：获取列表
-            dispatcher.RegisterSync<DbBlacklistGetList>((ctx, msg) =>
+            dispatcher.Register<DbBlacklistGetList>(async (ctx, msg) =>
             {
                 var session = Routed(ctx, out long requestId);
-                DbQueryHandler.HandleGetBlacklistRequest(session, new DbGetBlacklistRequest
+                await DbQueryHandler.HandleGetBlacklistRequest(session, new DbGetBlacklistRequest
                 {
                     UserId = msg.UserId
                 }, requestId > 0 ? requestId : null);
             }, jsonFallback: true);
 
             // 按 UniqueId 解析用户
-            dispatcher.RegisterSync<DbResolveUserByUniqueId>((ctx, msg) =>
+            dispatcher.Register<DbResolveUserByUniqueId>(async (ctx, msg) =>
             {
                 var session = Routed(ctx, out long requestId);
-                DbQueryHandler.HandleResolveUserByUniqueIdRequest(session, new DbResolveUserByUniqueIdRequest
+                await DbQueryHandler.HandleResolveUserByUniqueIdRequest(session, new DbResolveUserByUniqueIdRequest
                 {
                     UniqueId = msg.UniqueId
                 }, requestId > 0 ? requestId : null);
             }, jsonFallback: true);
 
             // 按 UserId 解析用户
-            dispatcher.RegisterSync<DbResolveUserByUserId>((ctx, msg) =>
+            dispatcher.Register<DbResolveUserByUserId>(async (ctx, msg) =>
             {
                 var session = Routed(ctx, out long requestId);
-                DbQueryHandler.HandleResolveUserByUserIdRequest(session, new DbResolveUserByUserIdRequest
+                await DbQueryHandler.HandleResolveUserByUserIdRequest(session, new DbResolveUserByUserIdRequest
                 {
                     UserId = msg.UserId
                 }, requestId > 0 ? requestId : null);
             }, jsonFallback: true);
 
             // 好友申请：发起
-            dispatcher.RegisterSync<DbFriendApplyCreate>((ctx, msg) =>
+            dispatcher.Register<DbFriendApplyCreate>(async (ctx, msg) =>
             {
                 var session = Routed(ctx, out long requestId);
-                DbQueryHandler.HandleCreateFriendApplyRequest(session, new DbCreateFriendApplyRequest
+                await DbQueryHandler.HandleCreateFriendApplyRequest(session, new DbCreateFriendApplyRequest
                 {
                     RequesterUserId = msg.RequesterUserId,
                     TargetUniqueId = msg.TargetUniqueId,
@@ -280,20 +285,20 @@ namespace DB.Handlers
             }, jsonFallback: true);
 
             // 好友申请：列表查询
-            dispatcher.RegisterSync<DbFriendApplyList>((ctx, msg) =>
+            dispatcher.Register<DbFriendApplyList>(async (ctx, msg) =>
             {
                 var session = Routed(ctx, out long requestId);
-                DbQueryHandler.HandleGetFriendApplyListRequest(session, new DbGetFriendApplyListRequest
+                await DbQueryHandler.HandleGetFriendApplyListRequest(session, new DbGetFriendApplyListRequest
                 {
                     UserId = msg.UserId
                 }, requestId > 0 ? requestId : null);
             }, jsonFallback: true);
 
             // 好友申请：处理（接受/拒绝）
-            dispatcher.RegisterSync<DbFriendApplyHandle>((ctx, msg) =>
+            dispatcher.Register<DbFriendApplyHandle>(async (ctx, msg) =>
             {
                 var session = Routed(ctx, out long requestId);
-                DbQueryHandler.HandleFriendApplyRequest(session, new DbHandleFriendApplyRequest
+                await DbQueryHandler.HandleFriendApplyRequest(session, new DbHandleFriendApplyRequest
                 {
                     UserId = msg.UserId,
                     ApplyId = msg.ApplyId,

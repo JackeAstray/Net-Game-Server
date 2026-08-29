@@ -22,6 +22,9 @@ public static class BinaryRouteMetadata
     public const string RequestIdField = "__requestId";
     public const string UserIdField = "__userId";
 
+    /// <summary>用给定的正文与元数据字段重建完整负载（[body][metadataJson][magic(4)][len(4)]）。供宿主在剥离/清理元数据字段后重建包。</summary>
+    public static byte[] Rebuild(ReadOnlyMemory<byte> body, Dictionary<string, string> fields) => BuildCore(body.Span, fields);
+
     /// <summary>追加一个 long 字段到负载尾部。</summary>
     public static byte[] AttachLong(ReadOnlySpan<byte> body, string field, long value) =>
         Attach(body, field, value.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -33,6 +36,24 @@ public static class BinaryRouteMetadata
     /// <summary>追加一个布尔字段到负载尾部。</summary>
     public static byte[] AttachBool(ReadOnlySpan<byte> body, string field, bool value) =>
         Attach(body, field, value ? "1" : "0");
+
+    /// <summary>
+    /// 批量追加多个字段（性能优化 P-H1）：只解析一次已有元数据、只构建一次尾部块，
+    /// 避免逐字段 Attach 造成的对同一 body 的重复拷贝与重复 JSON 序列化（Gateway 每客户端消息节省 3 次拷贝 + 3 次 JSON）。
+    /// </summary>
+    /// <param name="body">原始正文（可带或不带既有尾部块）。</param>
+    /// <param name="fields">要附加/覆盖的字段集合（后出现的同名键覆盖先前的）。</param>
+    public static byte[] AttachMany(ReadOnlySpan<byte> body, IReadOnlyList<KeyValuePair<string, string>> fields)
+    {
+        var merged = new Dictionary<string, string>(StringComparer.Ordinal);
+        bool parsed = TryParse(body, out var existingBody, out var existingFields);
+        if (parsed)
+        {
+            foreach (var (k, v) in existingFields) merged[k] = v;
+        }
+        foreach (var (k, v) in fields) merged[k] = v;
+        return parsed ? BuildCore(existingBody.Span, merged) : BuildCore(body, merged);
+    }
 
     /// <summary>提取 long 字段并返回剥离后的 body；字段不存在时返回 false。</summary>
     public static bool TryExtractLong(ReadOnlySpan<byte> payload, string field, out long value, out byte[] body)
@@ -65,14 +86,14 @@ public static class BinaryRouteMetadata
     {
         // 解析已有元数据（若存在），合并字段
         var fields = new Dictionary<string, string>(StringComparer.Ordinal);
-        var cleanBody = body.ToArray();
         if (TryParse(body, out var existingBody, out var existingFields))
         {
-            cleanBody = existingBody.ToArray();
             foreach (var (k, v) in existingFields) fields[k] = v;
+            fields[field] = value;
+            return BuildCore(existingBody.Span, fields);
         }
         fields[field] = value;
-        return Build(cleanBody, fields);
+        return BuildCore(body, fields);
     }
 
     private static bool TryExtract(ReadOnlySpan<byte> payload, string field, out string value, out byte[] body)
@@ -89,7 +110,7 @@ public static class BinaryRouteMetadata
             return false;
         }
         fields.Remove(field);
-        body = fields.Count == 0 ? cleanBody.ToArray() : Build(cleanBody, fields);
+        body = fields.Count == 0 ? cleanBody.ToArray() : BuildCore(cleanBody.Span, fields);
         return true;
     }
     /// <summary>解析尾部元数据。格式：[body][json][magic(4)][len(4)]</summary>
@@ -128,13 +149,13 @@ public static class BinaryRouteMetadata
         return true;
     }
 
-    private static byte[] Build(ReadOnlyMemory<byte> body, Dictionary<string, string> fields)
+    private static byte[] BuildCore(ReadOnlySpan<byte> body, Dictionary<string, string> fields)
     {
         // 用 System.Text.Json 序列化小对象（比 Newtonsoft 快）
         byte[] metaBytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(fields);
         int total = body.Length + metaBytes.Length + FooterSize;
         byte[] result = new byte[total];
-        body.Span.CopyTo(result);
+        body.CopyTo(result);
         metaBytes.CopyTo(result.AsSpan(body.Length));
         var footer = result.AsSpan(body.Length + metaBytes.Length, FooterSize);
         BinaryPrimitives.WriteUInt32LittleEndian(footer.Slice(0, 4), Magic);
