@@ -21,6 +21,9 @@
   <Project Path="Tests/MachineVerify/MachineVerify.csproj" />
   <Project Path="Tools/Supervisor/Supervisor.csproj" />
   <Project Path="Tools/Machine/Machine.csproj" />
+  <Project Path="Tools/ExcelToJson/ExcelToJson.csproj" />
+  <Project Path="Tools/ClientGen/ClientGen.csproj" />
+  <Project Path="Tests/ClientGenVerify/ClientGenVerify.csproj" />
   <Project Path="Bots/Bots.csproj" />
   <Project Path="Logger/Logger.csproj" />
 </Solution>

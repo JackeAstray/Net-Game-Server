@@ -1,0 +1,2135 @@
+{
+  "version": 1,
+  "messages": [
+    {
+      "id": 40001,
+      "name": "BattleJoin",
+      "target": "Battle",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "SceneName",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "SceneType",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "MaxPlayers",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "CustomRules",
+          "type": "map:string,string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 40002,
+      "name": "BattleJoinResult",
+      "target": "Battle",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 40003,
+      "name": "BattleFrameSync",
+      "target": "Battle",
+      "fields": [
+        {
+          "name": "FrameId",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "Inputs",
+          "type": "list:PlayerInput",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 40004,
+      "name": "BattleLeaveRoom",
+      "target": "Battle",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 40005,
+      "name": "BattleLeaveRoomResult",
+      "target": "Battle",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 40006,
+      "name": "ScriptAction",
+      "target": "Battle",
+      "fields": [
+        {
+          "name": "EntityId",
+          "type": "int64",
+          "optional": false
+        },
+        {
+          "name": "Method",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Args",
+          "type": "list:int32",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 40010,
+      "name": "ClientTimeSync",
+      "target": "Battle",
+      "fields": [
+        {
+          "name": "ClientSendMs",
+          "type": "int64",
+          "optional": false
+        },
+        {
+          "name": "LastServerSendMs",
+          "type": "int64",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 40011,
+      "name": "ServerTimeSync",
+      "target": "Battle",
+      "fields": [
+        {
+          "name": "ClientSendMs",
+          "type": "int64",
+          "optional": false
+        },
+        {
+          "name": "ServerRecvMs",
+          "type": "int64",
+          "optional": false
+        },
+        {
+          "name": "ServerSendMs",
+          "type": "int64",
+          "optional": false
+        },
+        {
+          "name": "AuthFrame",
+          "type": "int64",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 40101,
+      "name": "EntitySync",
+      "target": "Battle",
+      "fields": [
+        {
+          "name": "Position",
+          "type": "Vector3",
+          "optional": false
+        },
+        {
+          "name": "Rotation",
+          "type": "Vector3",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 40102,
+      "name": "EntityEnterViewNotify",
+      "target": "Battle",
+      "fields": [
+        {
+          "name": "Entities",
+          "type": "list:EntityState",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 40103,
+      "name": "EntityLeaveViewNotify",
+      "target": "Battle",
+      "fields": [
+        {
+          "name": "EntityIds",
+          "type": "list:int64",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 40104,
+      "name": "EntityStateUpdateNotify",
+      "target": "Battle",
+      "fields": [
+        {
+          "name": "State",
+          "type": "EntityState",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 40105,
+      "name": "EntityDeltaSync",
+      "target": "Battle",
+      "fields": [
+        {
+          "name": "EntityId",
+          "type": "int64",
+          "optional": false
+        },
+        {
+          "name": "Props",
+          "type": "bytes",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 40106,
+      "name": "EntitySnapshot",
+      "target": "Battle",
+      "fields": [
+        {
+          "name": "EntityId",
+          "type": "int64",
+          "optional": false
+        },
+        {
+          "name": "Props",
+          "type": "bytes",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30001,
+      "name": "CenterMatch",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "CategoryId",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30002,
+      "name": "CenterMatchResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "BattleNodeId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "SceneId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "SceneType",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30003,
+      "name": "CenterCreateRoom",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "SceneType",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "IsPrivate",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "RoomName",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Password",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "MaxPlayers",
+          "type": "int32",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30004,
+      "name": "CenterCreateRoomResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "RoomName",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "BattleNodeId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "SceneId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "HasPassword",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "MaxPlayers",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "CurrentPlayers",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30005,
+      "name": "CenterListRooms",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "SceneType",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "IncludePrivate",
+          "type": "bool",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30006,
+      "name": "CenterListRoomsResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Rooms",
+          "type": "list:RoomInfo",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30007,
+      "name": "CenterJoinRoom",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Password",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30008,
+      "name": "CenterJoinRoomResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "RoomName",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "BattleNodeId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "SceneId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "SceneType",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "HasPassword",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "MaxPlayers",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "CurrentPlayers",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30009,
+      "name": "CenterCloseRoom",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30010,
+      "name": "CenterCloseRoomResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30011,
+      "name": "RoomClosedNotify",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30012,
+      "name": "CenterUpdateRoomSettings",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "SceneType",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "RoomName",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Password",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "MaxPlayers",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "IsPrivate",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "CustomRules",
+          "type": "map:string,string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30013,
+      "name": "CenterUpdateRoomSettingsResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30014,
+      "name": "RoomSettingsChangedNotify",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30015,
+      "name": "CenterStartRoomGame",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30016,
+      "name": "CenterStartRoomGameResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "BattleNodeId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "SceneId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "SceneType",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30017,
+      "name": "RoomGameStartedNotify",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30018,
+      "name": "RoomMemberList",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30019,
+      "name": "RoomMemberListResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Room",
+          "type": "RoomInfo",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30020,
+      "name": "RoomMemberListChangedNotify",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30021,
+      "name": "RoomReady",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "IsReady",
+          "type": "bool",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30022,
+      "name": "RoomReadyResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Room",
+          "type": "RoomInfo",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30023,
+      "name": "RoomReadyChangedNotify",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "UserId",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "IsReady",
+          "type": "bool",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30024,
+      "name": "RoomTransferOwner",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "TargetUserId",
+          "type": "int32",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30025,
+      "name": "RoomTransferOwnerResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Room",
+          "type": "RoomInfo",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30026,
+      "name": "RoomOwnerChangedNotify",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "NewOwnerUserId",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30027,
+      "name": "RoomKickMember",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "TargetUserId",
+          "type": "int32",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30028,
+      "name": "RoomKickMemberResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Room",
+          "type": "RoomInfo",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30029,
+      "name": "RoomKickedNotify",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30030,
+      "name": "CenterRoomChat",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Content",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30031,
+      "name": "CenterRoomChatResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30032,
+      "name": "CenterRoomChatNotify",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "SenderUserId",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "SenderNickname",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Content",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "SendTime",
+          "type": "int64",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30033,
+      "name": "CenterLeaveRoom",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 30034,
+      "name": "CenterLeaveRoomResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 60001,
+      "name": "ChatSend",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "SenderId",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "SenderUniqueId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "SenderName",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "ReceiverId",
+          "type": "int32",
+          "optional": true
+        },
+        {
+          "name": "ReceiverUniqueId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Channel",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Content",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 60002,
+      "name": "ChatSendResult",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 60003,
+      "name": "ChatNotify",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "MessageId",
+          "type": "int64",
+          "optional": false
+        },
+        {
+          "name": "SenderId",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "SenderUniqueId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "SenderName",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "ReceiverId",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "ReceiverUniqueId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Channel",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "Content",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "SendTime",
+          "type": "int64",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50001,
+      "name": "FriendAdd",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "TargetUniqueId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Remark",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50002,
+      "name": "FriendAddResult",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50003,
+      "name": "FriendRemove",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "FriendUniqueId",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50004,
+      "name": "FriendRemoveResult",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50005,
+      "name": "FriendSetRemark",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "FriendUniqueId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Remark",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50006,
+      "name": "FriendSetRemarkResult",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50007,
+      "name": "FriendGetList",
+      "target": "Game",
+      "fields": []
+    },
+    {
+      "id": 50008,
+      "name": "FriendListResult",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Friends",
+          "type": "list:FriendInfo",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50009,
+      "name": "FriendInviteGame",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "FriendUniqueId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "SceneType",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "RoomName",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50010,
+      "name": "FriendInviteGameResult",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50011,
+      "name": "FriendInviteGameNotify",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "InviterUniqueId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "InviterNickname",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "SceneType",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "RoomName",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50012,
+      "name": "BlacklistAdd",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "TargetUniqueId",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50013,
+      "name": "BlacklistAddResult",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50014,
+      "name": "BlacklistRemove",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "TargetUniqueId",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50015,
+      "name": "BlacklistRemoveResult",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50016,
+      "name": "BlacklistGetList",
+      "target": "Game",
+      "fields": []
+    },
+    {
+      "id": 50017,
+      "name": "BlacklistListResult",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Blacklists",
+          "type": "list:BlacklistInfo",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50018,
+      "name": "FriendApply",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "TargetUniqueId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50019,
+      "name": "FriendApplyResult",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50020,
+      "name": "FriendApplyNotify",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "ApplyId",
+          "type": "int64",
+          "optional": false
+        },
+        {
+          "name": "RequesterUserId",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "RequesterUniqueId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "RequesterNickname",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "CreateTimeUtc",
+          "type": "int64",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50021,
+      "name": "FriendApplyList",
+      "target": "Game",
+      "fields": []
+    },
+    {
+      "id": 50022,
+      "name": "FriendApplyListResult",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Applies",
+          "type": "list:FriendApplyInfo",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50023,
+      "name": "FriendApplyHandle",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "ApplyId",
+          "type": "int64",
+          "optional": false
+        },
+        {
+          "name": "Accept",
+          "type": "bool",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50024,
+      "name": "FriendApplyHandleResult",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50025,
+      "name": "FriendOnlineStatusNotify",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "UserId",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "UniqueId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "IsOnline",
+          "type": "bool",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50026,
+      "name": "FriendInviteGameAck",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "InviterUniqueId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Accept",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Reason",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50027,
+      "name": "FriendInviteGameAckResult",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 50028,
+      "name": "FriendInviteGameAckNotify",
+      "target": "Game",
+      "fields": [
+        {
+          "name": "InviteeUniqueId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "InviteeNickname",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Accept",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Reason",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 10001,
+      "name": "Login",
+      "target": "Login",
+      "fields": [
+        {
+          "name": "Account",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Password",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 10002,
+      "name": "LoginResult",
+      "target": "Login",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "UserId",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "Token",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "UniqueId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Nickname",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Email",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "LastLoginTime",
+          "type": "int64",
+          "optional": false
+        },
+        {
+          "name": "LoginCount",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "IsAdmin",
+          "type": "bool",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 10003,
+      "name": "Register",
+      "target": "Login",
+      "fields": [
+        {
+          "name": "Account",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Password",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Nickname",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 10004,
+      "name": "RegisterResult",
+      "target": "Login",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 10005,
+      "name": "Logout",
+      "target": "Login",
+      "fields": [
+        {
+          "name": "UserId",
+          "type": "int32",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 10006,
+      "name": "LogoutResult",
+      "target": "Login",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 10007,
+      "name": "ResetPassword",
+      "target": "Login",
+      "fields": [
+        {
+          "name": "Account",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "OldPassword",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "NewPassword",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 10008,
+      "name": "ResetPasswordResult",
+      "target": "Login",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 10009,
+      "name": "UpdateNickname",
+      "target": "Login",
+      "fields": [
+        {
+          "name": "UserId",
+          "type": "int32",
+          "optional": false
+        },
+        {
+          "name": "NewNickname",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 10010,
+      "name": "UpdateNicknameResult",
+      "target": "Login",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 10011,
+      "name": "KickedOff",
+      "target": "Login",
+      "fields": [
+        {
+          "name": "Reason",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Time",
+          "type": "int64",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 10012,
+      "name": "FindPasswordWithCode",
+      "target": "Login",
+      "fields": [
+        {
+          "name": "Account",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Email",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 10013,
+      "name": "FindPasswordWithCodeResult",
+      "target": "Login",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    }
+  ],
+  "structs": [
+    {
+      "name": "Vector3",
+      "fields": [
+        {
+          "name": "X",
+          "type": "float"
+        },
+        {
+          "name": "Y",
+          "type": "float"
+        },
+        {
+          "name": "Z",
+          "type": "float"
+        }
+      ]
+    },
+    {
+      "name": "EntityState",
+      "fields": [
+        {
+          "name": "EntityId",
+          "type": "int64"
+        },
+        {
+          "name": "Nickname",
+          "type": "string"
+        },
+        {
+          "name": "Position",
+          "type": "Vector3"
+        },
+        {
+          "name": "Rotation",
+          "type": "Vector3"
+        },
+        {
+          "name": "Hp",
+          "type": "int32"
+        },
+        {
+          "name": "MaxHp",
+          "type": "int32"
+        },
+        {
+          "name": "Score",
+          "type": "int32"
+        },
+        {
+          "name": "Equipment",
+          "type": "list:int32"
+        }
+      ]
+    },
+    {
+      "name": "PlayerInput",
+      "fields": [
+        {
+          "name": "InputId",
+          "type": "int64"
+        },
+        {
+          "name": "Buttons",
+          "type": "int32"
+        },
+        {
+          "name": "MoveX",
+          "type": "float"
+        },
+        {
+          "name": "MoveY",
+          "type": "float"
+        }
+      ]
+    },
+    {
+      "name": "RoomInfo",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string"
+        },
+        {
+          "name": "RoomName",
+          "type": "string"
+        },
+        {
+          "name": "SceneId",
+          "type": "string"
+        },
+        {
+          "name": "SceneType",
+          "type": "string"
+        },
+        {
+          "name": "BattleNodeId",
+          "type": "string"
+        },
+        {
+          "name": "OwnerUserId",
+          "type": "int32"
+        },
+        {
+          "name": "IsPrivate",
+          "type": "bool"
+        },
+        {
+          "name": "HasPassword",
+          "type": "bool"
+        },
+        {
+          "name": "MaxPlayers",
+          "type": "int32"
+        },
+        {
+          "name": "CurrentPlayers",
+          "type": "int32"
+        },
+        {
+          "name": "RoomStatus",
+          "type": "string"
+        },
+        {
+          "name": "CreatedAtUtc",
+          "type": "int64"
+        }
+      ]
+    },
+    {
+      "name": "FriendInfo",
+      "fields": [
+        {
+          "name": "FriendUserId",
+          "type": "int32"
+        },
+        {
+          "name": "FriendUniqueId",
+          "type": "string"
+        },
+        {
+          "name": "Nickname",
+          "type": "string"
+        },
+        {
+          "name": "Remark",
+          "type": "string"
+        },
+        {
+          "name": "IsOnline",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "BlacklistInfo",
+      "fields": [
+        {
+          "name": "BlockedUserId",
+          "type": "int32"
+        },
+        {
+          "name": "BlockedUniqueId",
+          "type": "string"
+        },
+        {
+          "name": "BlockedNickname",
+          "type": "string"
+        },
+        {
+          "name": "AddTime",
+          "type": "int64"
+        }
+      ]
+    },
+    {
+      "name": "FriendApplyInfo",
+      "fields": [
+        {
+          "name": "ApplyId",
+          "type": "int64"
+        },
+        {
+          "name": "RequesterUserId",
+          "type": "int32"
+        },
+        {
+          "name": "RequesterUniqueId",
+          "type": "string"
+        },
+        {
+          "name": "RequesterNickname",
+          "type": "string"
+        },
+        {
+          "name": "Message",
+          "type": "string"
+        },
+        {
+          "name": "Status",
+          "type": "string"
+        },
+        {
+          "name": "CreateTimeUtc",
+          "type": "int64"
+        }
+      ]
+    }
+  ]
+}

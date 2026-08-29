@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>ClientGenVerify</RootNamespace>
+    <AssemblyName>ClientGenVerify</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 服务器真实 MemoryPack 类（被验证的基准） -->
+    <ProjectReference Include="..\..\Framework\Framework.Protocol\Framework.Protocol.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 生成器产出的客户端 C#（MemoryPack 兼容编解码）直接链接进来，编译即验证全部 Unity 产物 -->
+    <Compile Include="..\..\Tools\ClientGen\Output\Unity\MessageIds.cs" Link="Gen\MessageIds.cs" />
+    <Compile Include="..\..\Tools\ClientGen\Output\Unity\MemoryPackCodec.cs" Link="Gen\MemoryPackCodec.cs" />
+    <Compile Include="..\..\Tools\ClientGen\Output\Unity\Messages.cs" Link="Gen\Messages.cs" />
+    <Compile Include="..\..\Tools\ClientGen\Output\Unity\NetClient.cs" Link="Gen\NetClient.cs" />
+    <Compile Include="..\..\Tools\ClientGen\Output\Unity\Demo.cs" Link="Gen\Demo.cs" />
+  </ItemGroup>
+
+</Project>
