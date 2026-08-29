@@ -33,12 +33,12 @@ namespace Game.Handlers
         public static bool IsFriendListLoaded(int userId) => userId > 0 && FriendCache.ContainsKey(userId);
 
         /// <summary>
-        /// 清理长期未回执的 PendingFriendRequests（DB 无响应/掉线时防无界增长）。
-        /// 仅在待处理项超过阈值且距上次清扫 ≥ 5 秒时执行。
+        /// 清理长期未回执的 PendingFriendRequests（DB 无响应/掉线时防无界增长），
+        /// 并对每个超时请求主动回一个失败响应（V6 修复：客户端不再永久挂起）。
+        /// 每 5 秒最多执行一次（无论待处理数多少，此前 Count&lt;256 时完全不清扫会导致小规模泄漏 + 客户端挂起）。
         /// </summary>
         private static void SweepExpiredPendingRequests()
         {
-            if (PendingFriendRequests.Count < 256) return;
             long now = DateTime.UtcNow.Ticks;
             long last = Interlocked.Read(ref lastPendingSweepTicks);
             if (now - last < TimeSpan.FromSeconds(5).Ticks) return;
@@ -51,8 +51,27 @@ namespace Game.Handlers
                     if (PendingFriendRequests.TryRemove(kv.Key, out _))
                     {
                         Shared.Log.Warning($"好友 DB 请求超时清理 RequestId:{kv.Key} SessionId:{kv.Value.SessionId} MsgId:{kv.Value.ResponseMsgId}");
+                        TrySendTimeoutResponse(kv.Value);
                     }
                 }
+            }
+        }
+
+        /// <summary>V6 修复：DB 请求超时后主动向客户端回一个失败响应，避免请求永久挂起无回包。</summary>
+        private static void TrySendTimeoutResponse(PendingFriendRequest pending)
+        {
+            if (pending.GatewaySession == null || pending.SessionId <= 0)
+            {
+                return;
+            }
+            try
+            {
+                SendResponseBySessionId(pending.GatewaySession, pending.SessionId, pending.ResponseMsgId,
+                    new { Success = false, Message = "服务器处理超时，请重试" });
+            }
+            catch (Exception ex)
+            {
+                Shared.Log.Warning($"超时失败响应发送异常 SessionId:{pending.SessionId} Exception:{ex.Message}");
             }
         }
 
@@ -156,7 +175,7 @@ namespace Game.Handlers
             }
 
             long requestId = System.Threading.Interlocked.Increment(ref requestIdSeed);
-            byte[] payload = Shared.Json.SerializeToUtf8Bytes(request);
+            byte[] payload = Shared.Json.SerializeToUtf8Bytes(request!);
             byte[] routedPayload = Shared.RouteMetadata.AttachRequestId(payload, requestId);
             byte[] packet = PacketBuilder.BuildPacket(dbMsgId, routedPayload, out int totalLength);
 
@@ -196,7 +215,7 @@ namespace Game.Handlers
         /// <param name="response">要序列化为 UTF-8 JSON 并作为负载发送的响应对象。</param>
         private static void SendSimpleResponse<T>(ClientSessionWrapper session, int msgId, T response)
         {
-            var payload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(response), session.SessionId);
+            var payload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(response!), session.SessionId);
             var packet = PacketBuilder.BuildPacket(msgId, payload, out int packetLength);
             try
             {

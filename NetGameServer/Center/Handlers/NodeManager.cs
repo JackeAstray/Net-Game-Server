@@ -275,7 +275,8 @@ namespace Center.Handlers
         public ServerNodeInfo? GetNodeByType(string nodeType)
         {
             return nodes.Values.FirstOrDefault(n =>
-                n.NodeType.Equals(nodeType, StringComparison.OrdinalIgnoreCase) && n.Session.IsConnected);
+                n.NodeType.Equals(nodeType, StringComparison.OrdinalIgnoreCase) &&
+                n.Session != null && n.Session.IsConnected);
         }
 
         /// <summary>

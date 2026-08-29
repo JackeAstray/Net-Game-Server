@@ -42,6 +42,16 @@ public sealed class ProtocolSourceGenerator : IIncrementalGenerator
         "[GameMessage] 消息名 {0}（ID {1}）与 .def 生成的常量 {2} 重复：请先删除对应的 .def 消息",
         "Protocol", DiagnosticSeverity.Error, true);
 
+    private static readonly DiagnosticDescriptor InvalidId = new(
+        "NGSGEN005", "消息 ID 非法",
+        "[GameMessage] {0} 的 ID 为 {1}：消息 ID 必须为正整数",
+        "Protocol", DiagnosticSeverity.Error, true);
+
+    private static readonly DiagnosticDescriptor ValueTypeMessage = new(
+        "NGSGEN006", "消息类型不能为 struct",
+        "[GameMessage] 类型 {0} 是 struct：[GameMessage] 要求 class（引用语义 + MemoryPack 兼容），请改为 class",
+        "Protocol", DiagnosticSeverity.Error, true);
+
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         var messages = context.SyntaxProvider.ForAttributeWithMetadataName(
@@ -96,6 +106,12 @@ public sealed class ProtocolSourceGenerator : IIncrementalGenerator
         var seenNames = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var m in messages)
         {
+            // G2 修复：ID 非法（≤0）与 struct 消息此前未校验，可能生成坏路由表
+            if (m.Id <= 0)
+                spc.ReportDiagnostic(Diagnostic.Create(InvalidId, m.Location, m.Name, m.Id));
+            if (m.IsValueType)
+                spc.ReportDiagnostic(Diagnostic.Create(ValueTypeMessage, m.Location, m.Name));
+
             if (seenIds.TryGetValue(m.Id, out var idOwner))
                 spc.ReportDiagnostic(Diagnostic.Create(DuplicateId, m.Location, m.Id, m.Name, idOwner));
             else
@@ -269,7 +285,10 @@ public sealed class ProtocolSourceGenerator : IIncrementalGenerator
         cs.AppendLine("/// <summary>协议清单（protocol.json，[GameMessage] 迁移消息，供 ClientGen 生成客户端代码）。</summary>");
         cs.AppendLine("public static class ProtocolManifest");
         cs.AppendLine("{");
-        cs.Append("    public const string Json = \"\"\"").Append(json).AppendLine("\"\"\";");
+        // G1 修复：此前用原始字符串字面量 """...""" 嵌入 json——原始字符串不处理转义，
+        // json 中任何 \" \\ \n 都会被原样保留导致常量值非法 JSON（当前输入都是标识符才侥幸正常）。
+        // 改为普通双引号字符串并对 json 做 C# 转义，保证常量值恒等于原始 JSON。
+        cs.Append("    public const string Json = \"").Append(Escape(json)).AppendLine("\";");
         cs.AppendLine("}");
         return (json, cs.ToString());
     }
@@ -317,6 +336,7 @@ internal sealed record MessageDef(
     bool IsInternal,
     string Namespace,
     IReadOnlyList<FieldDef> Fields,
+    bool IsValueType,
     Location Location)
 {
     public static MessageDef? TryCreate(GeneratorAttributeSyntaxContext ctx, CancellationToken ct)
@@ -349,6 +369,7 @@ internal sealed record MessageDef(
             isInternal,
             type.ContainingNamespace?.ToDisplayString() ?? string.Empty,
             TypeMapper.GetFields(type, ctx.SemanticModel.Compilation),
+            type.IsValueType,
             ctx.TargetNode.GetLocation());
     }
 }

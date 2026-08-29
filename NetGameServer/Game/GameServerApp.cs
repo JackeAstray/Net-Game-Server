@@ -18,7 +18,7 @@ namespace Game
     /// </summary>
     public static class GameServerApp
     {
-        public static TcpClientWrapper DbClient { get; private set; }
+        public static TcpClientWrapper DbClient { get; private set; } = null!;
         private static System.Threading.CancellationTokenSource? centerHeartbeatCts;
 
         /// <summary>
@@ -38,17 +38,19 @@ namespace Game
             string authSecret = Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret");
             var gatewayAuthFilters = new System.Collections.Concurrent.ConcurrentDictionary<long, Framework.Core.Security.InternalAuthFilter>();
 
+            // V5 修复：网关连接 -> 经它路由的客户端会话集合。
+            // 网关连接断开时必须级联清理这些客户端在 Game 侧的全部状态（会话绑定/聊天限频/好友在线），防泄漏。
+            var gatewayClients = new System.Collections.Concurrent.ConcurrentDictionary<long, System.Collections.Concurrent.ConcurrentDictionary<long, byte>>();
+
             // 创建网络管理器，用于管理多个服务器实例
             var networkManager = new NetworkManager();
             // 创建 TCP 服务器实例以接收客户端连接
             var tcpServer = new TcpServer();
 
             // 创建消息路由器，将收到的消息分发到对应的处理器
+            // 注：PlayerDisconnectNotif 不在此注册（下方 OnDataReceived 内联按 originalSessionId 处理；
+            // 此前的重复注册会误用网关会话 ID 解绑错误目标，并造成该消息被处理两次）。
             var router = new global::Network.Routing.MessageRouter();
-            router.RegisterHandler(MessageIds.PlayerDisconnectNotif, (clientSession, payload) =>
-            {
-                Game.Managers.PlayerSessionManager.Instance.UnbindSession(clientSession.SessionId);
-            });
             // 注册聊天处理器（示例），处理聊天相关消息并将其挂载到路由器
             var chatHandler = new Handlers.ChatHandler(networkManager);
             chatHandler.Register(router);
@@ -69,6 +71,20 @@ namespace Game
             {
                 gatewayAuthFilters.TryRemove(session.SessionId, out _);
                 Log.Info($"客户端断开连接，原因: {reason}");
+
+                // V5 修复：网关连接断开时级联清理经该网关路由的全部客户端会话状态
+                // （此前只删 authFilter，PlayerSessionManager 绑定/聊天限频/好友在线全部泄漏）。
+                if (gatewayClients.TryRemove(session.SessionId, out var clients))
+                {
+                    foreach (var clientId in clients.Keys)
+                    {
+                        int offlineUserId = Game.Managers.PlayerSessionManager.Instance.GetUserIdBySessionId(clientId);
+                        Game.Handlers.FriendHandler.NotifyFriendOnlineStatus(session, clientId, offlineUserId, false);
+                        Game.Managers.PlayerSessionManager.Instance.UnbindSession(clientId);
+                        Handlers.ChatHandler.RemoveSession(clientId);
+                    }
+                    Log.Warning($"网关断开，级联清理客户端会话 {clients.Count} 个");
+                }
             };
 
             // 数据接收事件：统一协议 [MsgId][Payload]，路由元数据在 payload 内
@@ -127,7 +143,7 @@ namespace Game
                     if (Log.IsDebugEnabled)
                     {
                         Log.Debug("Game 接收到客户端数据 Session:{Session} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} RawHexPreview:{RawHexPreview} Utf8Preview:{Utf8Preview}",
-                            session.SessionId, session.RemoteEndPoint, msgId, data.Length, payloadLength,
+                            session.SessionId, session.RemoteEndPoint!, msgId, data.Length, payloadLength,
                             BuildHexPreview(payloadPreview), BuildUtf8Preview(payloadPreview));
                     }
 
@@ -139,18 +155,35 @@ namespace Game
                         return;
                     }
 
+                    // V5 修复：登记该客户端会话与网关连接的关系（网关断开时用于级联清理）。
+                    if (originalSessionId > 0)
+                    {
+                        gatewayClients.GetOrAdd(session.SessionId, _ => new System.Collections.Concurrent.ConcurrentDictionary<long, byte>())[originalSessionId] = 0;
+                    }
+
                     if (msgId == MessageIds.PlayerDisconnectNotif)
                     {
                         int disconnectedUserId = Game.Managers.PlayerSessionManager.Instance.GetUserIdBySessionId(originalSessionId);
                         Game.Handlers.FriendHandler.NotifyFriendOnlineStatus(session, originalSessionId, disconnectedUserId, false);
                         Game.Managers.PlayerSessionManager.Instance.UnbindSession(originalSessionId);
+                        Handlers.ChatHandler.RemoveSession(originalSessionId);
+                        if (gatewayClients.TryGetValue(session.SessionId, out var clientsForGateway))
+                        {
+                            clientsForGateway.TryRemove(originalSessionId, out _);
+                        }
                     }
                     else
                     {
                         if (Shared.RouteMetadata.TryExtractUserId(cleanPayload, out int routedUserId, out var payloadWithoutUserId) && routedUserId > 0)
                         {
                             bool firstBind = Game.Managers.PlayerSessionManager.Instance.GetUserIdBySessionId(originalSessionId) <= 0;
-                            Game.Managers.PlayerSessionManager.Instance.BindSession(originalSessionId, routedUserId);
+                            long displacedSessionId = Game.Managers.PlayerSessionManager.Instance.BindSession(originalSessionId, routedUserId);
+                            if (displacedSessionId > 0)
+                            {
+                                // R4 修复：同账号异地登录——顶号，向旧会话发送踢下线通知
+                                Log.Warning($"同账号异地登录，顶号踢出旧会话 UserId:{routedUserId} OldSessionId:{displacedSessionId} NewSessionId:{originalSessionId}");
+                                SendKickedOff(session, displacedSessionId);
+                            }
                             if (firstBind)
                             {
                                 Game.Handlers.FriendHandler.WarmupSocialCache(session, originalSessionId, routedUserId);
@@ -203,80 +236,8 @@ namespace Game
 
                         if (responseMsgId > 0)
                         {
-                            string errorMessage = $"未支持的游戏消息类型: {msgId}";
-                            byte[] unknownPayload = responseMsgId switch
-                            {
-                                MessageIds.ChatMessageRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Chat.SendChatResponse
-                                {
-                                    Success = false,
-                                    Message = errorMessage
-                                }),
-                                MessageIds.AddFriendRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.AddFriendResponse
-                                {
-                                    Success = false,
-                                    Message = errorMessage
-                                }),
-                                MessageIds.RemoveFriendRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.RemoveFriendResponse
-                                {
-                                    Success = false,
-                                    Message = errorMessage
-                                }),
-                                MessageIds.SetFriendRemarkRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.SetFriendRemarkResponse
-                                {
-                                    Success = false,
-                                    Message = errorMessage
-                                }),
-                                MessageIds.GetFriendsRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.GetFriendsResponse
-                                {
-                                    Success = false,
-                                    Message = errorMessage,
-                                    Friends = Array.Empty<Shared.Messages.Social.FriendInfo>()
-                                }),
-                                MessageIds.InviteGameRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.InviteGameResponse
-                                {
-                                    Success = false,
-                                    Message = errorMessage
-                                }),
-                                MessageIds.AddBlacklistRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.AddBlacklistResponse
-                                {
-                                    Success = false,
-                                    Message = errorMessage
-                                }),
-                                MessageIds.RemoveBlacklistRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.RemoveBlacklistResponse
-                                {
-                                    Success = false,
-                                    Message = errorMessage
-                                }),
-                                MessageIds.GetBlacklistRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.GetBlacklistResponse
-                                {
-                                    Success = false,
-                                    Message = errorMessage,
-                                    Blacklists = Array.Empty<Shared.Messages.Social.BlacklistInfo>()
-                                }),
-                                MessageIds.FriendApplyRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.FriendApplyResponse
-                                {
-                                    Success = false,
-                                    Message = errorMessage
-                                }),
-                                MessageIds.FriendApplyListRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.FriendApplyListResponse
-                                {
-                                    Success = false,
-                                    Message = errorMessage,
-                                    Applies = Array.Empty<Shared.Messages.Social.FriendApplyInfo>()
-                                }),
-                                MessageIds.FriendApplyHandleRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.FriendApplyHandleResponse
-                                {
-                                    Success = false,
-                                    Message = errorMessage
-                                }),
-                                MessageIds.InviteGameAckRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.InviteGameAckResponse
-                                {
-                                    Success = false,
-                                    Message = errorMessage
-                                }),
-                                _ => Array.Empty<byte>()
-                            };
-
+                            // D2 修复：错误响应的逐类型构造已抽取为 BuildUnhandledMessageErrorPayload，避免热点内联 14 路重复 switch
+                            byte[] unknownPayload = BuildUnhandledMessageErrorPayload(responseMsgId, $"未支持的游戏消息类型: {msgId}");
                             if (unknownPayload.Length > 0)
                             {
                                 byte[] routedUnknownPayload = Shared.RouteMetadata.AttachTargetSessionId(unknownPayload, originalSessionId);
@@ -344,7 +305,7 @@ namespace Game
                     int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
                     var payload = data.Slice(4);
 
-                    Log.Debug("Game <- DB 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint, msgId, data.Length, payload.Length);
+                    Log.Debug("Game <- DB 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint!, msgId, data.Length, payload.Length);
 
                     bool handled = Handlers.FriendHandler.TryHandleDbResponse(session, msgId, payload);
                     if (!handled)
@@ -391,7 +352,7 @@ namespace Game
                     {
                         while (!cancellationToken.IsCancellationRequested)
                         {
-                            await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
+                            await Task.Delay(TimeSpan.FromSeconds(Shared.NodeHeartbeatDefaults.HeartbeatIntervalSeconds), cancellationToken);
                             SendNodeStatus(centerClient, nodeId, GetCurrentLoad());
                         }
                     }
@@ -417,7 +378,7 @@ namespace Game
                     }
 
                     int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
-                    Log.Debug("Game <- Center 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint, msgId, data.Length, data.Length - 4);
+                    Log.Debug("Game <- Center 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint!, msgId, data.Length, data.Length - 4);
                 }
                 catch (Exception ex)
                 {
@@ -533,6 +494,112 @@ namespace Game
         private static int GetCurrentLoad()
         {
             return Game.Managers.PlayerSessionManager.Instance.GetOnlinePlayerCount();
+        }
+
+        /// <summary>
+        /// 向指定客户端会话发送"被顶号踢下线"通知（R4 修复；经当前网关路由到目标会话）。
+        /// </summary>
+        private static void SendKickedOff(global::Network.ISession gatewaySession, long targetSessionId)
+        {
+            var msg = new Shared.Messages.Login.KickedOffMessage
+            {
+                Reason = "您的账号在其他设备登录",
+                Time = DateTime.UtcNow
+            };
+            byte[] payload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(msg), targetSessionId);
+            byte[] packet = PacketBuilder.BuildPacket(MessageIds.KickedOffNotif, payload, out int packetLength);
+            try
+            {
+                gatewaySession.Send(packet.AsSpan(0, packetLength).ToArray());
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"顶号踢出旧会话发送失败 TargetSessionId:{targetSessionId} Exception:{ex.Message}");
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            }
+        }
+
+        /// <summary>
+        /// 构造"未处理消息"的失败响应负载（D2 修复：将 14 路逐类型错误响应构造收敛为单一入口；
+        /// 列表型响应附带空数组，其余仅 Success/Message）。
+        /// </summary>
+        private static byte[] BuildUnhandledMessageErrorPayload(int responseMsgId, string errorMessage)
+        {
+            return responseMsgId switch
+            {
+                MessageIds.ChatMessageRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Chat.SendChatResponse
+                {
+                    Success = false,
+                    Message = errorMessage
+                }),
+                MessageIds.AddFriendRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.AddFriendResponse
+                {
+                    Success = false,
+                    Message = errorMessage
+                }),
+                MessageIds.RemoveFriendRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.RemoveFriendResponse
+                {
+                    Success = false,
+                    Message = errorMessage
+                }),
+                MessageIds.SetFriendRemarkRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.SetFriendRemarkResponse
+                {
+                    Success = false,
+                    Message = errorMessage
+                }),
+                MessageIds.GetFriendsRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.GetFriendsResponse
+                {
+                    Success = false,
+                    Message = errorMessage,
+                    Friends = Array.Empty<Shared.Messages.Social.FriendInfo>()
+                }),
+                MessageIds.InviteGameRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.InviteGameResponse
+                {
+                    Success = false,
+                    Message = errorMessage
+                }),
+                MessageIds.AddBlacklistRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.AddBlacklistResponse
+                {
+                    Success = false,
+                    Message = errorMessage
+                }),
+                MessageIds.RemoveBlacklistRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.RemoveBlacklistResponse
+                {
+                    Success = false,
+                    Message = errorMessage
+                }),
+                MessageIds.GetBlacklistRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.GetBlacklistResponse
+                {
+                    Success = false,
+                    Message = errorMessage,
+                    Blacklists = Array.Empty<Shared.Messages.Social.BlacklistInfo>()
+                }),
+                MessageIds.FriendApplyRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.FriendApplyResponse
+                {
+                    Success = false,
+                    Message = errorMessage
+                }),
+                MessageIds.FriendApplyListRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.FriendApplyListResponse
+                {
+                    Success = false,
+                    Message = errorMessage,
+                    Applies = Array.Empty<Shared.Messages.Social.FriendApplyInfo>()
+                }),
+                MessageIds.FriendApplyHandleRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.FriendApplyHandleResponse
+                {
+                    Success = false,
+                    Message = errorMessage
+                }),
+                MessageIds.InviteGameAckRes => Shared.Json.SerializeToUtf8Bytes(new Shared.Messages.Social.InviteGameAckResponse
+                {
+                    Success = false,
+                    Message = errorMessage
+                }),
+                _ => Array.Empty<byte>()
+            };
         }
 
         /// <summary>

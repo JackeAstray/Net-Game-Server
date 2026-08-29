@@ -38,24 +38,15 @@ namespace DB.Handlers
                 // 从当前作用域解析数据库上下文
                 var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
 
+                // P2 修复：原实现全表拉取 UniqueId 到内存找最大序号；改为单条 SQL 聚合。
+                // 注：UID 为定宽 9 位数字串（100000000+序号），字符串字典序 == 数值序，取 MAX 字符串即数值最大。
                 long maxSequence = 0;
-                var uniqueIds = await dbContext.Users
+                string? maxUniqueId = await dbContext.Users
                     .Where(u => !string.IsNullOrWhiteSpace(u.UniqueId))
-                    .Select(u => u.UniqueId)
-                    .ToListAsync();
-
-                foreach (var uniqueId in uniqueIds)
+                    .MaxAsync(u => u.UniqueId);
+                if (maxUniqueId != null && long.TryParse(maxUniqueId, out long maxUid))
                 {
-                    if (!long.TryParse(uniqueId, out long parsedUid))
-                    {
-                        continue;
-                    }
-
-                    long sequence = parsedUid % 100000000L;
-                    if (sequence > maxSequence)
-                    {
-                        maxSequence = sequence;
-                    }
+                    maxSequence = maxUid % 100000000L;
                 }
 
                 // 构造响应消息格式
@@ -74,6 +65,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"获取最大UID异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbGetMaxUidRes, "获取最大UID失败，服务器内部错误");
             }
         }
 
@@ -157,6 +149,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"验证登录异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbLoginVerifyRes, "登录验证失败，服务器内部错误");
             }
             });
         }
@@ -244,6 +237,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"注册账号异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbRegisterVerifyRes, "注册失败，服务器内部错误");
             }
             });
         }
@@ -295,6 +289,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"查询账户异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbAccountQueryRes, "账户查询失败，服务器内部错误");
             }
         }
 
@@ -337,6 +332,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"查询在线统计异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbOnlineStatsRes, "在线统计失败，服务器内部错误");
             }
         }
 
@@ -385,6 +381,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"更新在线状态异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbUpdateOnlineStateRes, "更新在线状态失败，服务器内部错误");
             }
             });
         }

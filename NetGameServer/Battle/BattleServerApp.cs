@@ -26,8 +26,10 @@ namespace Battle
         /// <summary>挂起玩家（断线重连）：clientSessionId -> 挂起截止时间（Ticks）。</summary>
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, long> suspendedPlayers = new();
 
-        /// <summary>实体迁移中的玩家会话（冻结集合）：迁移期间该会话的入站消息暂缓（对标 KBE 冻结实体迁移）。</summary>
-        private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, byte> migratingSessions = new();
+        /// <summary>实体迁移中的玩家会话（冻结集合）：迁移期间该会话的入站消息暂缓（对标 KBE 冻结实体迁移）。
+        /// 存储值 = 冻结截止时刻（UTC Ticks）。A8 修复：加超时，防丢失迁移回执导致会话被永久冻结丢消息。</summary>
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, long> migratingSessions = new();
+        private static readonly long MigrationFreezeTimeoutTicks = TimeSpan.FromSeconds(30).Ticks;
 
         /// <summary>挂到 tick 线程执行的动作（实体状态访问必须在单线程内进行）。</summary>
         private static readonly System.Collections.Concurrent.ConcurrentQueue<Action> tickActions = new();
@@ -217,7 +219,12 @@ namespace Battle
             try
             {
                 var scene = sceneManager?.FindSceneByEntityId(entityId);
-                var entity = scene?.EntityManager.GetEntity(entityId);
+                if (scene == null)
+                {
+                    Log.Warning($"实体脚本动作未找到目标场景 EntityId:{entityId} Method:{method}");
+                    return;
+                }
+                var entity = scene.EntityManager.GetEntity(entityId);
                 if (entity == null)
                 {
                     Log.Warning($"实体脚本动作未找到目标实体 EntityId:{entityId} Method:{method}");
@@ -506,12 +513,45 @@ namespace Battle
             }
         }
 
-        /// <summary>该客户端会话是否处于实体迁移冻结中。</summary>
-        public static bool IsClientMigrating(long clientSessionId) => migratingSessions.ContainsKey(clientSessionId);
+        /// <summary>该客户端会话是否处于实体迁移冻结中（A8 修复：过期冻结自动解除）。</summary>
+        public static bool IsClientMigrating(long clientSessionId)
+        {
+            if (!migratingSessions.TryGetValue(clientSessionId, out var deadline))
+            {
+                return false;
+            }
+            if (deadline < DateTime.UtcNow.Ticks)
+            {
+                // 冻结超时：自动解除并清理，避免该会话被永久冻结丢消息
+                if (migratingSessions.TryRemove(new System.Collections.Generic.KeyValuePair<long, long>(clientSessionId, deadline)))
+                {
+                    Log.Warning($"实体迁移冻结超时自动解冻 ClientSessionId:{clientSessionId}");
+                }
+                return false;
+            }
+            return true;
+        }
 
-        private static void FreezeClientSession(long clientSessionId) => migratingSessions[clientSessionId] = 0;
+        private static void FreezeClientSession(long clientSessionId)
+            => migratingSessions[clientSessionId] = DateTime.UtcNow.Ticks + MigrationFreezeTimeoutTicks;
 
         private static void UnfreezeClientSession(long clientSessionId) => migratingSessions.TryRemove(clientSessionId, out _);
+
+        /// <summary>扫描并清理已过期的迁移冻结条目（tick 线程周期调用，防字典无界增长）。</summary>
+        public static void SweepExpiredMigrationFreezes()
+        {
+            long now = DateTime.UtcNow.Ticks;
+            foreach (var kv in migratingSessions)
+            {
+                if (kv.Value < now)
+                {
+                    if (migratingSessions.TryRemove(new System.Collections.Generic.KeyValuePair<long, long>(kv.Key, kv.Value)))
+                    {
+                        Log.Warning($"实体迁移冻结超时清理 SessionId:{kv.Key}");
+                    }
+                }
+            }
+        }
 
         /// <summary>序列化玩家实体全部属性（含 CELL_PRIVATE 内部状态）为迁移负载；实体不存在返回 null。</summary>
         public static byte[]? SerializeEntityForMigration(long clientSessionId)
@@ -566,7 +606,7 @@ namespace Battle
             if (string.Equals(entityType, "Player", StringComparison.Ordinal))
             {
                 entity.OwnerClientId = entityId; // 玩家实体：属主 = 会话 ID = 实体 ID
-                sceneManager.BindPlayerToScene(entityId, sceneId);
+                sceneManager!.BindPlayerToScene(entityId, sceneId);
             }
             else if (ownerClientId.HasValue && ownerClientId.Value > 0)
             {
@@ -692,7 +732,7 @@ namespace Battle
             {
                 scene.EntityManager.RemoveEntity(clientSessionId);
                 scene.AoiManager?.RemoveEntity(clientSessionId);
-                sceneManager.UnbindPlayer(clientSessionId);
+                sceneManager!.UnbindPlayer(clientSessionId);
             }
             UnbindClientGateway(clientSessionId);
             SyncRoomPlayerCount(scene.SceneId);
@@ -898,6 +938,8 @@ namespace Battle
             BattleServerApp.persistService = persistService;
 
             sceneManager = new Battle.Handlers.SceneManager();
+            // 帧同步管理器声明提前：场景销毁事件在下方引用它做字典清理（闭包捕获要求先声明）。
+            Battle.Handlers.FrameSyncManager? frameSyncManager = null;
             // 场景创建：注册脚本实体管理器（全局数据事件用）+ 备份管理器（迭代 8：改为创建时注册一次，
             // 不再在每 tick 循环内重复 AddManager）+ 生成场景级玩法实体（Npc/Quest）
             sceneManager.SceneCreated += scene =>
@@ -905,6 +947,18 @@ namespace Battle
                 scriptHost.RegisterEntityManager(scene.EntityManager);
                 backupService.AddManager(scene.EntityManager);
                 SpawnSceneGameplayEntities(scene);
+            };
+            // 场景销毁：必须反向注销（A2/A3 修复）——此前 entityManagers/备份管理器只写不删、
+            // 帧同步字典从不清理、脚本定时器不取消，导致场景销毁后备份文件无限增长、幽灵定时器继续跑。
+            sceneManager.SceneDestroyed += scene =>
+            {
+                foreach (var entity in scene.EntityManager.GetAllEntities())
+                {
+                    scriptHost.NotifyDestroy(entity); // 通知脚本 OnDestroy（取消定时器、退订属性事件）
+                }
+                scriptHost.UnregisterEntityManager(scene.EntityManager);
+                backupService.RemoveManager(scene.EntityManager);
+                frameSyncManager?.RemoveScene(scene.SceneId);
             };
             var entitySyncHandler = new Battle.Handlers.EntitySyncHandler(sceneManager);
             BattleServerApp.entitySyncHandler = entitySyncHandler;
@@ -936,6 +990,8 @@ namespace Battle
                     {
                         Log.Warning($"实体远程调用超时清理 {expired} 个（未收到回执）");
                     }
+                    // A8 修复：清理过期的实体迁移冻结（防丢失迁移回执导致会话永久冻结）
+                    SweepExpiredMigrationFreezes();
                 }
 
                 // 性能 Profile（对标 KBE perf）：每 100 tick（5 秒 @20Hz）输出 tick 统计
@@ -948,9 +1004,8 @@ namespace Battle
             var battleMainHandler = new Battle.Handlers.BattleMainHandler(sceneManager);
 
             // 帧同步管理器：客户端输入入队，tick 引擎聚合广播权威帧
-            var frameSyncManager = new Battle.Handlers.FrameSyncManager(sceneManager, tickEngine);
-            frameSyncManager.SetSendAction((targetSessionId, msgId, payload) =>
-            {
+            frameSyncManager = new Battle.Handlers.FrameSyncManager(sceneManager, tickEngine);
+            frameSyncManager.SetSendAction((targetSessionId, msgId, payload) =>            {
                 var gatewaySession = GetGatewaySessionByClient(targetSessionId);
                 if (gatewaySession != null)
                 {
@@ -1033,7 +1088,7 @@ namespace Battle
                         }
                     }
 
-                    Log.Debug("Battle <- Gateway/Node 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint, msgId, data.Length, payloadLength);
+                    Log.Debug("Battle <- Gateway/Node 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint!, msgId, data.Length, payloadLength);
                     byte[] payload = data.Slice(4).ToArray();
 
                     long originalSessionId = 0;
@@ -1099,7 +1154,7 @@ namespace Battle
                     {
                         while (!cancellationToken.IsCancellationRequested)
                         {
-                            await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
+                            await Task.Delay(TimeSpan.FromSeconds(Shared.NodeHeartbeatDefaults.HeartbeatIntervalSeconds), cancellationToken);
                             SendNodeStatus(centerClient, nodeId, GetCurrentLoad());
                         }
                     }
@@ -1127,7 +1182,7 @@ namespace Battle
 
                     int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
                     int payloadLength = data.Length - 4;
-                    Log.Debug("Battle <- Center 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint, msgId, data.Length, payloadLength);
+                    Log.Debug("Battle <- Center 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint!, msgId, data.Length, payloadLength);
                     byte[] payload = data.Slice(4).ToArray();
 
                     EnqueueInbound(session, msgId, payload, 0);

@@ -7,9 +7,13 @@
 // - 同步权限：Level 公开广播；CooldownRemaining 为属主私有（OWN_CLIENT）；Casts 服务端内部
 // 客户端通过 ScriptAction(40006) 消息调用 CastSkill / QueryState。
 //
+// A1 修复：脚本宿主按类型只实例化一次，所有"每实体状态"按 entity.EntityId 键控存储。
+// 同时修复热更新冷却 Bug：按剩余冷却毫秒重挂定时器，而非从完整 CD 重新计时。
+//
 // KBE-Gap-Review 落地：S1/S2/S3/S4
 
 using System;
+using System.Collections.Concurrent;
 using Framework.Entity;
 using Framework.Scripting;
 using Framework.Tick;
@@ -24,7 +28,8 @@ public class SkillScript : EntityScriptBase
     private const int CastsToLevelUp = 3;
     private const int MaxLevel = 99;         // KBE-Gap-Review S3：等级上限
 
-    private TimerHandle? cooldownTimer;
+    // 每实体冷却定时器（A1 修复：按 EntityId 键控，跨实体互不串扰）
+    private readonly ConcurrentDictionary<long, TimerHandle> cooldownTimers = new();
 
     public override void OnCreate(Entity entity)
     {
@@ -72,9 +77,9 @@ public class SkillScript : EntityScriptBase
             }
 
             // KBE-Gap-Review S2：定时器到点清零冷却（事件驱动，不在 tick 递减）
-            cooldownTimer?.Cancel();
+            CancelCooldownTimer(entity.EntityId);
             MathClampSet(entity, "CooldownRemaining", CooldownMs, 0, int.MaxValue);
-            cooldownTimer = AddTimer(entity, CooldownMs, () => OnCooldownEnd(entity), repeat: false);
+            cooldownTimers[entity.EntityId] = AddTimer(entity, CooldownMs, () => OnCooldownEnd(entity), repeat: false);
 
             Log.Info("Skill", "Skill {EntityId} 释放技能！Lv.{Level} 造成 {Damage} 伤害（累计 {Total}），进入 {CD}ms 冷却",
                 entity.EntityId, entity.Get<int>("Level"), damage, total + damage, CooldownMs);
@@ -92,19 +97,28 @@ public class SkillScript : EntityScriptBase
 
     public override void OnDestroy(Entity entity)
     {
-        cooldownTimer?.Cancel();
-        cooldownTimer = null;
+        CancelCooldownTimer(entity.EntityId);
     }
 
     public override void OnReload(Entity entity, object? oldState)
     {
-        // KBE-Gap-Review S4：热更新后清空失效冷却定时器（重新挂载）
-        cooldownTimer?.Cancel();
-        if (entity.Get<int>("CooldownRemaining") > 0)
+        // KBE-Gap-Review S4 + A1：只清空并重挂该实体的冷却定时器
+        CancelCooldownTimer(entity.EntityId);
+        // 修复：按剩余冷却毫秒重挂，而不是从完整 CD 重新计时
+        int remainingMs = entity.Get<int>("CooldownRemaining");
+        if (remainingMs > 0)
         {
-            cooldownTimer = AddTimer(entity, CooldownMs, () => OnCooldownEnd(entity), repeat: false);
+            cooldownTimers[entity.EntityId] = AddTimer(entity, remainingMs, () => OnCooldownEnd(entity), repeat: false);
         }
         Log.Info("Skill", "Skill {EntityId} 脚本热更新完成", entity.EntityId);
+    }
+
+    private void CancelCooldownTimer(long entityId)
+    {
+        if (cooldownTimers.TryRemove(entityId, out var timer))
+        {
+            timer.Cancel();
+        }
     }
 }
 

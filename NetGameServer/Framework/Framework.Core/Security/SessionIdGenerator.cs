@@ -18,13 +18,10 @@ public static class SessionIdGenerator
     {
         var buf = new byte[8];
         Rng.GetBytes(buf);
-        // 只取高 32 位随机作为随机基座（转为 long 后再左移，避免无符号运算）
+        // 只取高 32 位随机作为随机基座（转为 long 后再左移，避免无符号运算）。
+        // 注：randomBits & 0x7FFFFFFF 保证非负，RandomBase 恒 ≥ 0（死分支 if(RandomBase<0) 已删除）。
         long randomBits = BitConverter.ToUInt32(buf, 0) & 0x7FFFFFFF;
         RandomBase = randomBits << 32;
-        if (RandomBase < 0)
-        {
-            RandomBase = 0; // 防御性：保证非负
-        }
     }
 
     /// <summary>

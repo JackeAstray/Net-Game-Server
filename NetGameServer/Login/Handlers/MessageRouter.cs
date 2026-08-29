@@ -177,17 +177,12 @@ namespace Login.Handlers
         /// <param name="response">要序列化为负载并发送的响应实例。</param>
         private static void SendToGateway<T>(Network.ISession gatewaySession, long clientSessionId, int msgId, T response)
         {
-            byte[] responsePayload = Shared.Json.SerializeToUtf8Bytes(response);
+            byte[] responsePayload = Shared.Json.SerializeToUtf8Bytes(response!);
             byte[] routedPayload = Shared.RouteMetadata.AttachClientSessionId(responsePayload, clientSessionId);
             byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
-            try
-            {
-                gatewaySession.Send(packet.AsSpan(0, totalLength).ToArray());
-            }
-            finally
-            {
-                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
-            }
+            // P1 修复：零拷贝直传（缓冲所有权移交给 PacketSender，TcpSession 写入后自动归还）。
+            // 此前 ToArray() 会多复制 2-3 份字节；调用方不再手动 Return 池化缓冲。
+            Network.PacketSender.Send(gatewaySession, packet, totalLength);
         }
     }
 }

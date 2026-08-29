@@ -60,6 +60,11 @@ namespace Game.Handlers
             string roomName = req.RoomName?.Trim() ?? string.Empty;
 
             DateTime now = DateTime.UtcNow;
+            // V13 修复：偶发清理过期的邀请限频记录（防 InviteRateLimit 按用户永久增长）
+            if (InviteRateLimit.Count >= 1024 && (InviteRateLimit.Count & 255) == 0)
+            {
+                CleanupStaleInviteRateLimit(now);
+            }
             if (InviteRateLimit.TryGetValue(userId, out var lastInviteTime) && now - lastInviteTime < InviteMinInterval)
             {
                 SendSimpleResponse(session, MessageIds.InviteGameRes, new InviteGameResponse { Success = false, Message = "邀请过于频繁，请稍后再试" });
@@ -224,7 +229,7 @@ namespace Game.Handlers
         /// <param name="response">要序列化并发送的响应对象。</param>
         private static void SendResponseBySessionId<T>(global::Network.ISession gameSession, long sessionId, int msgId, T response)
         {
-            byte[] payload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(response), sessionId);
+            byte[] payload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(response!), sessionId);
             byte[] packet = PacketBuilder.BuildPacket(msgId, payload, out int packetLength);
             try
             {
@@ -311,6 +316,18 @@ namespace Game.Handlers
                 if (now - pair.Value > InviteDedupWindow)
                 {
                     InviteDedupCache.TryRemove(pair.Key, out _);
+                }
+            }
+        }
+
+        /// <summary>清理超过 8 个最小间隔（约 24s）未活动的邀请限频记录（V13 兜底防无界增长）。</summary>
+        private static void CleanupStaleInviteRateLimit(DateTime now)
+        {
+            foreach (var kv in InviteRateLimit)
+            {
+                if (now - kv.Value > InviteMinInterval * 8)
+                {
+                    InviteRateLimit.TryRemove(kv.Key, out _);
                 }
             }
         }

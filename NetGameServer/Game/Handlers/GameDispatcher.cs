@@ -41,14 +41,9 @@ public sealed class GameSessionContext : ISessionContext
     {
         byte[] routedPayload = Shared.RouteMetadata.AttachTargetSessionId(payload, targetSessionId);
         byte[] packet = global::Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
-        try
-        {
-            gatewaySession.Send(packet.AsSpan(0, totalLength).ToArray());
-        }
-        finally
-        {
-            System.Buffers.ArrayPool<byte>.Shared.Return(packet);
-        }
+        // P1 修复：零拷贝直传（缓冲所有权移交给 PacketSender，TcpSession 写入后自动归还）。
+        // 此前 ToArray() 会多复制 2-3 份字节；调用方不再手动 Return 池化缓冲。
+        global::Network.PacketSender.Send(gatewaySession, packet, totalLength);
     }
 }
 

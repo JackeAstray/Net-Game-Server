@@ -13,18 +13,18 @@ namespace Shared.Messages.Db
 
     public class LoginVerifyRequest
     {
-        public string Account { get; set; }
-        public string Password { get; set; }
+        public string Account { get; set; } = string.Empty;
+        public string Password { get; set; } = string.Empty;
     }
 
     public class LoginVerifyResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
         public long UserId { get; set; }
-        public string UniqueId { get; set; }
-        public string Nickname { get; set; }
-        public string Email { get; set; }
+        public string UniqueId { get; set; } = string.Empty;
+        public string Nickname { get; set; } = string.Empty;
+        public string Email { get; set; } = string.Empty;
         public DateTime LastLoginTime { get; set; }
         public int LoginCount { get; set; }
         public bool IsAdmin { get; set; }
@@ -32,21 +32,21 @@ namespace Shared.Messages.Db
 
     public class RegisterVerifyRequest
     {
-        public string Account { get; set; }
-        public string Password { get; set; }
-        public string Nickname { get; set; }
+        public string Account { get; set; } = string.Empty;
+        public string Password { get; set; } = string.Empty;
+        public string Nickname { get; set; } = string.Empty;
         public long Uid { get; set; }
     }
 
     public class RegisterVerifyResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
     }
 
     public class AccountQueryRequest
     {
-        public string Account { get; set; }
+        public string Account { get; set; } = string.Empty;
     }
 
     public class AccountQueryResponse
@@ -55,8 +55,8 @@ namespace Shared.Messages.Db
         public bool IsOnline { get; set; }
         public bool IsLocked { get; set; }
         public bool IsAdmin { get; set; }
-        public string Email { get; set; }
-        public string Message { get; set; }
+        public string Email { get; set; } = string.Empty;
+        public string Message { get; set; } = string.Empty;
     }
 
     public class OnlineStatsRequest
@@ -84,67 +84,67 @@ namespace Shared.Messages.Db
     public class ChangePasswordVerifyRequest
     {
         public int UserId { get; set; }
-        public string Account { get; set; }
-        public string OldPassword { get; set; }
-        public string NewPassword { get; set; }
+        public string Account { get; set; } = string.Empty;
+        public string OldPassword { get; set; } = string.Empty;
+        public string NewPassword { get; set; } = string.Empty;
     }
 
     public class ChangePasswordVerifyResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
     }
 
     public class ResetPasswordByEmailRequest
     {
-        public string Account { get; set; }
-        public string Email { get; set; }
-        public string TemporaryPassword { get; set; }
+        public string Account { get; set; } = string.Empty;
+        public string Email { get; set; } = string.Empty;
+        public string TemporaryPassword { get; set; } = string.Empty;
     }
 
     public class ResetPasswordByEmailResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
     }
 
     // --- Friend System Models ---
     public class DbAddFriendRequest
     {
         public int UserId { get; set; }
-        public string FriendUniqueId { get; set; }
-        public string Remark { get; set; }
+        public string FriendUniqueId { get; set; } = string.Empty;
+        public string Remark { get; set; } = string.Empty;
     }
 
     public class DbAddFriendResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
     }
 
     public class DbRemoveFriendRequest
     {
         public int UserId { get; set; }
-        public string FriendUniqueId { get; set; }
+        public string FriendUniqueId { get; set; } = string.Empty;
     }
 
     public class DbRemoveFriendResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
     }
 
     public class DbSetFriendRemarkRequest
     {
         public int UserId { get; set; }
-        public string FriendUniqueId { get; set; }
-        public string Remark { get; set; }
+        public string FriendUniqueId { get; set; } = string.Empty;
+        public string Remark { get; set; } = string.Empty;
     }
 
     public class DbSetFriendRemarkResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
     }
 
     public class DbGetFriendsRequest
@@ -155,42 +155,42 @@ namespace Shared.Messages.Db
     public class DbFriendItem
     {
         public int FriendUserId { get; set; }
-        public string FriendUniqueId { get; set; }
-        public string FriendNickname { get; set; }
-        public string Remark { get; set; }
+        public string FriendUniqueId { get; set; } = string.Empty;
+        public string FriendNickname { get; set; } = string.Empty;
+        public string Remark { get; set; } = string.Empty;
         public DateTime AddTime { get; set; }
     }
 
     public class DbGetFriendsResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
-        public List<DbFriendItem> Friends { get; set; }
+        public string Message { get; set; } = string.Empty;
+        public List<DbFriendItem> Friends { get; set; } = new();
     }
 
     public class DbAddBlacklistRequest
     {
         public int UserId { get; set; }
-        public string TargetUniqueId { get; set; }
+        public string TargetUniqueId { get; set; } = string.Empty;
     }
 
     public class DbAddBlacklistResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
         public int TargetUserId { get; set; }
     }
 
     public class DbRemoveBlacklistRequest
     {
         public int UserId { get; set; }
-        public string TargetUniqueId { get; set; }
+        public string TargetUniqueId { get; set; } = string.Empty;
     }
 
     public class DbRemoveBlacklistResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
         public int TargetUserId { get; set; }
     }
 
@@ -202,30 +202,30 @@ namespace Shared.Messages.Db
     public class DbBlacklistItem
     {
         public int BlockedUserId { get; set; }
-        public string BlockedUniqueId { get; set; }
-        public string BlockedNickname { get; set; }
+        public string BlockedUniqueId { get; set; } = string.Empty;
+        public string BlockedNickname { get; set; } = string.Empty;
         public DateTime AddTime { get; set; }
     }
 
     public class DbGetBlacklistResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
-        public List<DbBlacklistItem> Blacklists { get; set; }
+        public string Message { get; set; } = string.Empty;
+        public List<DbBlacklistItem> Blacklists { get; set; } = new();
     }
 
     public class DbResolveUserByUniqueIdRequest
     {
-        public string UniqueId { get; set; }
+        public string UniqueId { get; set; } = string.Empty;
     }
 
     public class DbResolveUserByUniqueIdResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
         public int UserId { get; set; }
-        public string UniqueId { get; set; }
-        public string Nickname { get; set; }
+        public string UniqueId { get; set; } = string.Empty;
+        public string Nickname { get; set; } = string.Empty;
     }
 
     public class DbResolveUserByUserIdRequest
@@ -236,10 +236,10 @@ namespace Shared.Messages.Db
     public class DbResolveUserByUserIdResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
         public int UserId { get; set; }
-        public string UniqueId { get; set; }
-        public string Nickname { get; set; }
+        public string UniqueId { get; set; } = string.Empty;
+        public string Nickname { get; set; } = string.Empty;
     }
 
     public class DbCreateFriendApplyRequest

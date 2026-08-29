@@ -68,7 +68,7 @@ public sealed class KcpSession : ISession
         lock (kcpGate)
         {
             var now = DateTimeOffset.UtcNow;
-            kcp.Update(ref now);
+            kcp.Update(in now);
         }
     }
 
@@ -83,7 +83,7 @@ public sealed class KcpSession : ISession
         {
             kcp.Input(data);
             var now = DateTimeOffset.UtcNow;
-            kcp.Update(ref now);
+            kcp.Update(in now);
 
             while (kcp.TryRecv(recvWriter) > 0)
             {

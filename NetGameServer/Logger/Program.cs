@@ -34,7 +34,7 @@ namespace Logger
 
                 // 保持运行直到 Ctrl+C
                 TaskCompletionSource<bool> exitSignal = new TaskCompletionSource<bool>();
-                Console.CancelKeyPress += (object sender, ConsoleCancelEventArgs e) =>
+                Console.CancelKeyPress += (object? sender, ConsoleCancelEventArgs e) =>
                 {
                     e.Cancel = true;
                     exitSignal.TrySetResult(true);

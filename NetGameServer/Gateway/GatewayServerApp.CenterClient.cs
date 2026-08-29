@@ -57,7 +57,7 @@ namespace Gateway
                     {
                         while (!cancellationToken.IsCancellationRequested)
                         {
-                            await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
+                            await Task.Delay(TimeSpan.FromSeconds(Shared.NodeHeartbeatDefaults.HeartbeatIntervalSeconds), cancellationToken);
                             SendNodeStatus(centerClient, nodeId, Gateway.Managers.GatewaySessionManager.Instance.GetOnlineCount());
                         }
                     }

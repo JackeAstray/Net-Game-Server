@@ -32,6 +32,29 @@ namespace DB.Handlers
         /// <summary>按用户/账号键串行执行一次 DB 读写（异常由队列内部捕获记录，不向上抛）。</summary>
         private static Task RunPerUser(object key, Func<Task> work) => perUserQueue.EnqueueAsync(key, work);
 
+        // P1 修复：按类型缓存响应属性反射结果，避免每个响应都调用 GetProperty（响应量大时反射开销不可忽略）。
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, (System.Reflection.PropertyInfo? Success, System.Reflection.PropertyInfo? Message)>
+            ResponsePropCache = new();
+
+        /// <summary>V6 修复：处理器失败时统一回一个失败响应（成功/失败都回包，避免调用方按 RequestId 等待时永久挂起）。
+        /// RequestContextSession.Send 会自动附加 RequestId，调用方即可关联到原请求。</summary>
+        /// <param name="session">要发送的目标会话（RequestContextSession 或其包装）。</param>
+        /// <param name="msgId">响应消息 ID。</param>
+        /// <param name="message">失败原因文本。</param>
+        private static void SendFailureResponse(ISession session, int msgId, string message)
+        {
+            try
+            {
+                byte[] payload = Shared.Json.SerializeToUtf8Bytes(new { Success = false, Message = message });
+                byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
+                Network.PacketSender.Send(session, packet, totalLength);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"发送 DB 失败响应异常 MsgId:{msgId} Exception:{ex}");
+            }
+        }
+
         /// <summary>
         /// 将响应对象序列化为 UTF-8 JSON，按 msgId 前缀封包并通过会话发送；异常被捕获并记录。
         /// </summary>
@@ -48,15 +71,20 @@ namespace DB.Handlers
             {
                 if (response != null)
                 {
-                    var successProperty = typeof(T).GetProperty("Success");
-                    if (successProperty?.PropertyType == typeof(bool) && successProperty.GetValue(response) is bool success && !success)
+                    var props = ResponsePropCache.GetOrAdd(typeof(T), t =>
                     {
-                        string message = typeof(T).GetProperty("Message")?.GetValue(response)?.ToString() ?? string.Empty;
+                        var success = t.GetProperty("Success");
+                        var message = t.GetProperty("Message");
+                        return (success, message);
+                    });
+                    if (props.Success?.PropertyType == typeof(bool) && props.Success.GetValue(response) is bool success && !success)
+                    {
+                        string message = props.Message?.GetValue(response)?.ToString() ?? string.Empty;
                         Log.Warning($"DB 响应失败 MsgId:{msgId} RequestId:{requestId?.ToString() ?? "none"} Message:{message}");
                     }
                 }
 
-                byte[] payload = Shared.Json.SerializeToUtf8Bytes(response);
+                byte[] payload = Shared.Json.SerializeToUtf8Bytes(response!);
                 if (requestId.HasValue)
                 {
                     payload = Shared.RouteMetadata.AttachRequestId(payload, requestId.Value);

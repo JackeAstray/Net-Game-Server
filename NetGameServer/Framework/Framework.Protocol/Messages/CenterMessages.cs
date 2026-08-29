@@ -1,4 +1,4 @@
-﻿using Framework.Protocol;
+using Framework.Protocol;
 using MemoryPack;
 
 // ============================================================
@@ -226,7 +226,7 @@ public partial class RoomMemberListResult
 {
     public bool Success { get; set; } = new();
     public string Message { get; set; } = string.Empty;
-    public RoomInfo Room { get; set; } = new();
+    public RoomInfo? Room { get; set; }
 }
 
 [MemoryPackable]
@@ -251,7 +251,7 @@ public partial class RoomReadyResult
 {
     public bool Success { get; set; } = new();
     public string Message { get; set; } = string.Empty;
-    public RoomInfo Room { get; set; } = new();
+    public RoomInfo? Room { get; set; }
 }
 
 [MemoryPackable]
@@ -277,7 +277,7 @@ public partial class RoomTransferOwnerResult
 {
     public bool Success { get; set; } = new();
     public string Message { get; set; } = string.Empty;
-    public RoomInfo Room { get; set; } = new();
+    public RoomInfo? Room { get; set; }
 }
 
 [MemoryPackable]
@@ -303,7 +303,7 @@ public partial class RoomKickMemberResult
 {
     public bool Success { get; set; } = new();
     public string Message { get; set; } = string.Empty;
-    public RoomInfo Room { get; set; } = new();
+    public RoomInfo? Room { get; set; }
 }
 
 [MemoryPackable]

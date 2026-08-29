@@ -22,21 +22,16 @@ namespace DB
         /// 对外暴露的 ServiceProvider，供其他模块获取 DbContext 或其他注入服务。
         /// 在 InitializeDatabase 中构建并赋值。
         /// </summary>
-        public static ServiceProvider ServiceProvider { get; private set; }
+        public static ServiceProvider ServiceProvider { get; private set; } = null!;
 
         /// <summary>
         /// 使用 PBKDF2 (HMACSHA256) 对明文密码进行加盐哈希，并以包含算法、迭代次数、盐和哈希值的可存储字符串返回。
         /// </summary>
-        /// <remarks>返回值包含验证所需的所有组件；验证时应使用相同的算法、迭代次数和盐。为保持长期安全性，可能需要根据当前最佳实践调整迭代次数或算法。</remarks>
+        /// <remarks>统一委托到 <see cref="Framework.Core.Security.PasswordHasher"/>，与 Center 房间密码共享同一实现。</remarks>
         /// <param name="rawPassword">要哈希的明文密码。</param>
-        /// <returns>格式为 'PBKDF2$<iterations>$<saltBase64>$<hashBase64>' 的字符串；使用 100000 次迭代、16 字节盐和 32 字节输出（SHA-256）。</returns>
+        /// <returns>格式为 'PBKDF2$&lt;iterations&gt;$&lt;saltBase64&gt;$&lt;hashBase64&gt;' 的字符串。</returns>
         public static string HashPassword(string rawPassword)
-        {
-            const int iterations = 100_000;
-            byte[] salt = RandomNumberGenerator.GetBytes(16);
-            byte[] hash = Rfc2898DeriveBytes.Pbkdf2(rawPassword, salt, iterations, HashAlgorithmName.SHA256, 32);
-            return $"PBKDF2${iterations}${Convert.ToBase64String(salt)}${Convert.ToBase64String(hash)}";
-        }
+            => Framework.Core.Security.PasswordHasher.HashPassword(rawPassword);
 
         /// <summary>
         /// 判断字符串是否为以 "PBKDF2$" 前缀标识且非空白的 PBKDF2 哈希。
@@ -45,50 +40,16 @@ namespace DB
         /// <param name="storedPassword">要验证的保存密码字符串。</param>
         /// <returns>如果 storedPassword 非空白且以 "PBKDF2$" 开头则为 true，否则为 false。</returns>
         public static bool IsPbkdf2Hash(string storedPassword)
-        {
-            return !string.IsNullOrWhiteSpace(storedPassword) && storedPassword.StartsWith("PBKDF2$", StringComparison.Ordinal);
-        }
+            => Framework.Core.Security.PasswordHasher.IsPbkdf2Hash(storedPassword);
 
         /// <summary>
         /// 验证原始密码是否与使用 PBKDF2（SHA-256）派生并以固定时间比较的存储哈希匹配。
         /// </summary>
-        /// <remarks>在存储字符串不是 PBKDF2 格式、解析失败或迭代次数无效时返回 false。使用固定时间比较以减轻时序攻击风险。</remarks>
         /// <param name="rawPassword">要验证的明文密码。</param>
-        /// <param name="storedPassword">以 PBKDF2 格式存储的密码，格式为：pbkdf2$iterations$base64Salt$base64Hash。</param>
+        /// <param name="storedPassword">以 PBKDF2 格式存储的密码。</param>
         /// <returns>若密码匹配则返回 true，否则返回 false。</returns>
         public static bool VerifyPbkdf2Password(string rawPassword, string storedPassword)
-        {
-            if (!IsPbkdf2Hash(storedPassword))
-            {
-                return false;
-            }
-
-            string[] parts = storedPassword.Split('$');
-            if (parts.Length != 4)
-            {
-                return false;
-            }
-
-            if (!int.TryParse(parts[1], out int iterations) || iterations <= 0)
-            {
-                return false;
-            }
-
-            byte[] salt;
-            byte[] expectedHash;
-            try
-            {
-                salt = Convert.FromBase64String(parts[2]);
-                expectedHash = Convert.FromBase64String(parts[3]);
-            }
-            catch
-            {
-                return false;
-            }
-
-            byte[] actualHash = Rfc2898DeriveBytes.Pbkdf2(rawPassword, salt, iterations, HashAlgorithmName.SHA256, expectedHash.Length);
-            return CryptographicOperations.FixedTimeEquals(actualHash, expectedHash);
-        }
+            => Framework.Core.Security.PasswordHasher.VerifyPassword(rawPassword, storedPassword);
 
         /// <summary>
         /// 初始化数据库连接与初始数据：
@@ -125,19 +86,16 @@ namespace DB
                     Shared.Log.Info("数据库检查完毕.");
 
                     int regionId = Shared.ConfigHelper.GetConfig<int>("RegionId") == 0 ? 1 : Shared.ConfigHelper.GetConfig<int>("RegionId");
+                    // P2 修复：原实现把全表 UniqueId 拉进内存找最大序号，用户量大时启动慢且占内存。
+                    // 改为单条 SQL 聚合（SELECT MAX(UniqueId) WHERE UniqueId IS NOT NULL）。
+                    // 注：UID 为定宽 9 位数字串（100000000+序号），字符串字典序 == 数值序，取 MAX 字符串即数值最大。
                     long currentMaxSequence = 0;
-                    foreach (var uniqueId in dbContext.Users.Where(u => !string.IsNullOrWhiteSpace(u.UniqueId)).Select(u => u.UniqueId).ToList())
+                    string? maxUniqueId = dbContext.Users
+                        .Where(u => !string.IsNullOrWhiteSpace(u.UniqueId))
+                        .Max(u => u.UniqueId);
+                    if (maxUniqueId != null && long.TryParse(maxUniqueId, out long maxUid))
                     {
-                        if (!long.TryParse(uniqueId, out long parsedUid))
-                        {
-                            continue;
-                        }
-
-                        long sequence = parsedUid % 100000000L;
-                        if (sequence > currentMaxSequence)
-                        {
-                            currentMaxSequence = sequence;
-                        }
+                        currentMaxSequence = maxUid % 100000000L;
                     }
 
                     Shared.UIDGenerator.Initialize(regionId, currentMaxSequence);
@@ -160,12 +118,19 @@ namespace DB
                         }
 
                         long adminUid = Shared.UIDGenerator.GenerateLongUID();
+                        // D5 修复：超级管理员 ID/邮箱改为可配置，消除硬编码魔数（Id=1000）与个人邮箱。
+                        int adminId = Shared.ConfigHelper.GetConfig<int>("Admin:Id");
+                        if (adminId <= 0)
+                        {
+                            adminId = 1000;
+                        }
+                        string adminEmail = Shared.ConfigHelper.GetConfig<string>("Admin:Email") ?? string.Empty;
                         var adminUser = new Shared.Data.User
                         {
-                            Id = 1000,
+                            Id = adminId,
                             Account = "SuperAdmin",
                             Password = HashPassword(defaultAdminPassword),
-                            Email = "982109683@qq.com",
+                            Email = adminEmail,
                             Nickname = "超级管理员",
                             UniqueId = adminUid.ToString(),
                             RegistrationTime = DateTime.UtcNow,
@@ -366,6 +331,17 @@ namespace DB
                         }
 
                         Shared.Log.Warning($"DB 拒绝未认证连接的业务消息 MsgId:{msgId} SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                        return;
+                    }
+                }
+                else
+                {
+                    // 安全修复：未登记认证过滤器 = 未认证连接，默认 fail-closed 拒绝
+                    // （此前会跳过认证直接放行业务消息，对齐 Center/Login/Game 的 fail-closed 语义）。
+                    if (!Shared.ConfigHelper.GetConfig<bool>("AllowUnauthenticatedInternal"))
+                    {
+                        Shared.Log.Warning($"DB 拒绝无认证过滤器连接的消息 MsgId:{msgId} SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}（fail-closed）");
+                        session.Close();
                         return;
                     }
                 }

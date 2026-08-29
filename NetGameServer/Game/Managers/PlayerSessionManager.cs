@@ -22,27 +22,39 @@ namespace Game.Managers
         // UID -> SessionId UID到会话ID的映射
         private readonly ConcurrentDictionary<string, long> uidSessions = new();
 
+        // R4 修复：双向映射更新的互斥锁——此前 BindSession 的多步 TryRemove/TryAdd 非原子，
+        // 并发下可能出现两字典不一致（session→user 已更新而 user→session 仍指向旧会话）。
+        private readonly object bindGate = new();
+
         /// <summary>
         /// 建立会话标识与用户标识的双向映射；在冲突时移除先前的对应关系。
+        /// R4 修复：全程在互斥锁内原子更新，返回被顶替的旧会话 ID（0 表示无），供调用方顶号踢出。
         /// </summary>
         /// <remarks>若 sessionId 已绑定到不同的用户，则从 userSessions 中移除该先前用户的映射；若 userId 已绑定到不同的会话，则从 sessionUsers
-        /// 中移除该先前会话的映射。随后在两个字典中设置新的映射。线程安全取决于所用集合的并发特性（例如 ConcurrentDictionary）。</remarks>
+        /// 中移除该先前会话的映射并作为"被顶替会话"返回。随后在两个字典中设置新的映射。</remarks>
         /// <param name="sessionId">要绑定的会话标识。</param>
         /// <param name="userId">要绑定的用户标识。</param>
-        public void BindSession(long sessionId, int userId)
+        /// <returns>被该次绑定顶替掉的旧会话 ID；无顶替时返回 0。</returns>
+        public long BindSession(long sessionId, int userId)
         {
-            if (sessionUsers.TryGetValue(sessionId, out int previousUserId) && previousUserId != userId)
+            lock (bindGate)
             {
-                userSessions.TryRemove(previousUserId, out _);
-            }
+                long displacedSessionId = 0;
+                if (sessionUsers.TryGetValue(sessionId, out int previousUserId) && previousUserId != userId)
+                {
+                    userSessions.TryRemove(previousUserId, out _);
+                }
 
-            if (userSessions.TryGetValue(userId, out long previousSessionId) && previousSessionId != sessionId)
-            {
-                sessionUsers.TryRemove(previousSessionId, out _);
-            }
+                if (userSessions.TryGetValue(userId, out long previousSessionId) && previousSessionId != sessionId)
+                {
+                    displacedSessionId = previousSessionId;
+                    sessionUsers.TryRemove(previousSessionId, out _);
+                }
 
-            sessionUsers[sessionId] = userId;
-            userSessions[userId] = sessionId;
+                sessionUsers[sessionId] = userId;
+                userSessions[userId] = sessionId;
+                return displacedSessionId;
+            }
         }
 
         /// <summary>
@@ -57,18 +69,21 @@ namespace Game.Managers
                 return;
             }
 
-            if (sessionUids.TryGetValue(sessionId, out string? previousUid) && previousUid != uid)
+            lock (bindGate)
             {
-                uidSessions.TryRemove(previousUid, out _);
-            }
+                if (sessionUids.TryGetValue(sessionId, out string? previousUid) && previousUid != uid)
+                {
+                    uidSessions.TryRemove(previousUid, out _);
+                }
 
-            if (uidSessions.TryGetValue(uid, out long previousSessionId) && previousSessionId != sessionId)
-            {
-                sessionUids.TryRemove(previousSessionId, out _);
-            }
+                if (uidSessions.TryGetValue(uid, out long previousSessionId) && previousSessionId != sessionId)
+                {
+                    sessionUids.TryRemove(previousSessionId, out _);
+                }
 
-            sessionUids[sessionId] = uid;
-            uidSessions[uid] = sessionId;
+                sessionUids[sessionId] = uid;
+                uidSessions[uid] = sessionId;
+            }
         }
 
         /// <summary>

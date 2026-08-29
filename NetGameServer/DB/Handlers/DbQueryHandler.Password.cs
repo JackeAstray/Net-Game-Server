@@ -97,6 +97,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"更改密码异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbChangePasswordRes, "更改密码失败，服务器内部错误");
             }
             });
         }
@@ -155,6 +156,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"邮箱重置密码异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbResetPasswordByEmailRes, "邮箱重置密码失败，服务器内部错误");
             }
             });
         }

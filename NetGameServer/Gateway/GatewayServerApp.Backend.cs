@@ -77,7 +77,7 @@ namespace Gateway
 
                     int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
                     int payloadLength = data.Length - 4;
-                    Shared.Log.Debug("Gateway <- Login 收到回包 MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} Remote:{Remote}", msgId, data.Length, payloadLength, session.RemoteEndPoint);
+                    Shared.Log.Debug("Gateway <- Login 收到回包 MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} Remote:{Remote}", msgId, data.Length, payloadLength, session.RemoteEndPoint!);
                     byte[] payload = data.Slice(4).ToArray();
 
                     if (!Shared.RouteMetadata.TryExtractClientSessionId(payload, out long clientSessionId, out var cleanPayload))
@@ -131,7 +131,7 @@ namespace Gateway
                     }
 
                     byte[] clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, cleanPayload, out int totalLength);
-                    Shared.Log.Debug("Gateway -> Client 转发 Login 回包 MsgId:{MsgId} ClientSessionId:{ClientSessionId} TargetRemote:{TargetRemote} PacketLength:{PacketLength}", msgId, clientSessionId, clientSession.RemoteEndPoint, totalLength);
+                    Shared.Log.Debug("Gateway -> Client 转发 Login 回包 MsgId:{MsgId} ClientSessionId:{ClientSessionId} TargetRemote:{TargetRemote} PacketLength:{PacketLength}", msgId, clientSessionId, clientSession.RemoteEndPoint!, totalLength);
                     Network.PacketSender.Send(clientSession, clientPacket, totalLength);
 
                     // 断线重连（对标 KBE 断线恢复）：登录成功且该用户存在挂起重连记录 →
@@ -171,7 +171,7 @@ namespace Gateway
 
                 int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
                 int payloadLength = data.Length - 4;
-                Shared.Log.Debug("Gateway <- Game 收到回包 MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} Remote:{Remote}", msgId, data.Length, payloadLength, session.RemoteEndPoint);
+                Shared.Log.Debug("Gateway <- Game 收到回包 MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} Remote:{Remote}", msgId, data.Length, payloadLength, session.RemoteEndPoint!);
                 byte[] payload = data.Slice(4).ToArray();
 
                 bool broadcast = Shared.RouteMetadata.TryExtractBroadcast(payload, out bool broadcastFlag, out var payloadAfterBroadcast) && broadcastFlag;
@@ -209,7 +209,7 @@ namespace Gateway
                 }
 
                 var clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, cleanPayload, out int responseLength);
-                Shared.Log.Debug("Gateway -> Client 转发 Game 回包 MsgId:{MsgId} TargetSessionId:{TargetSessionId} TargetRemote:{TargetRemote} PacketLength:{PacketLength}", msgId, targetSessionId, clientSession.RemoteEndPoint, responseLength);
+                Shared.Log.Debug("Gateway -> Client 转发 Game 回包 MsgId:{MsgId} TargetSessionId:{TargetSessionId} TargetRemote:{TargetRemote} PacketLength:{PacketLength}", msgId, targetSessionId, clientSession.RemoteEndPoint!, responseLength);
                 Network.PacketSender.Send(clientSession, clientPacket, responseLength);
             };
             _ = gameClient.ConnectAsync();
@@ -237,7 +237,7 @@ namespace Gateway
 
                 int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
                 int payloadLength = data.Length - 4;
-                Shared.Log.Debug("Gateway <- Center 收到回包 MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} Remote:{Remote}", msgId, data.Length, payloadLength, session.RemoteEndPoint);
+                Shared.Log.Debug("Gateway <- Center 收到回包 MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} Remote:{Remote}", msgId, data.Length, payloadLength, session.RemoteEndPoint!);
                 byte[] payload = data.Slice(4).ToArray();
 
                 // 实体迁移（91005）：Center 通知切换玩家 Battle 节点绑定（对标 KBE cellappmgr 实体搬迁后的路由更新）。
@@ -310,7 +310,7 @@ namespace Gateway
                 }
 
                 var clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, cleanPayload, out int responseLength);
-                Shared.Log.Debug("Gateway -> Client 转发 Center 回包 MsgId:{MsgId} TargetSessionId:{TargetSessionId} TargetRemote:{TargetRemote} PacketLength:{PacketLength}", msgId, targetSessionId, clientSession.RemoteEndPoint, responseLength);
+                Shared.Log.Debug("Gateway -> Client 转发 Center 回包 MsgId:{MsgId} TargetSessionId:{TargetSessionId} TargetRemote:{TargetRemote} PacketLength:{PacketLength}", msgId, targetSessionId, clientSession.RemoteEndPoint!, responseLength);
                 Network.PacketSender.Send(clientSession, clientPacket, responseLength);
             };
             _ = centerClient.ConnectAsync();
@@ -387,7 +387,7 @@ namespace Gateway
 
             int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
             int payloadLength = data.Length - 4;
-            Shared.Log.Debug("Gateway <- Battle 收到回包 MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} Remote:{Remote}", msgId, data.Length, payloadLength, session.RemoteEndPoint);
+            Shared.Log.Debug("Gateway <- Battle 收到回包 MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} Remote:{Remote}", msgId, data.Length, payloadLength, session.RemoteEndPoint!);
             byte[] payload = data.Slice(4).ToArray();
 
             bool broadcast = Shared.RouteMetadata.TryExtractBroadcast(payload, out bool broadcastFlag, out var payloadAfterBroadcast) && broadcastFlag;
@@ -422,7 +422,7 @@ namespace Gateway
             }
 
             var clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, cleanPayload, out int responseLength);
-            Shared.Log.Debug("Gateway -> Client 转发 Battle 回包 MsgId:{MsgId} TargetSessionId:{TargetSessionId} TargetRemote:{TargetRemote} PacketLength:{PacketLength}", msgId, targetSessionId, clientSession.RemoteEndPoint, responseLength);
+            Shared.Log.Debug("Gateway -> Client 转发 Battle 回包 MsgId:{MsgId} TargetSessionId:{TargetSessionId} TargetRemote:{TargetRemote} PacketLength:{PacketLength}", msgId, targetSessionId, clientSession.RemoteEndPoint!, responseLength);
             Network.PacketSender.Send(clientSession, clientPacket, responseLength);
         }
 

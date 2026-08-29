@@ -27,7 +27,10 @@ public sealed class NonceService
         {
             return false;
         }
-        DateTime n = now ?? DateTime.UtcNow;
+        // C5 修复：统一规范化为 UTC 再取 ToBinary/Ticks。
+        // DateTime.ToBinary() 编码了 Kind，Local/Unspecified 与 UTC 的二进制值不可直接比较，
+        // 之前若调用方注入非 UTC 的 now 会导致过期判断失效。
+        DateTime n = (now ?? DateTime.UtcNow).ToUniversalTime();
         long expiresAt = n.Add(ttl).ToBinary();
         // TryAdd 失败说明 nonce 已被登记过 → 重放攻击
         if (!nonces.TryAdd(nonce, expiresAt))
@@ -44,7 +47,7 @@ public sealed class NonceService
     /// </summary>
     public int Cleanup(DateTime? now = null)
     {
-        DateTime n = now ?? DateTime.UtcNow;
+        DateTime n = (now ?? DateTime.UtcNow).ToUniversalTime();
         long cutoff = n.ToBinary();
         int removed = 0;
         foreach (var kv in nonces)

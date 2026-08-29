@@ -23,19 +23,19 @@ namespace Shared.Data.Chat
 
         public int SenderId { get; set; }
 
-        public string SenderUniqueId { get; set; }
+        public string SenderUniqueId { get; set; } = string.Empty;
 
-        public string SenderName { get; set; }
+        public string SenderName { get; set; } = string.Empty;
 
         public int? ReceiverId { get; set; }
 
-        public string ReceiverUniqueId { get; set; }
+        public string ReceiverUniqueId { get; set; } = string.Empty;
 
         public ChatChannel Channel { get; set; }
 
-        public string RoomId { get; set; }
+        public string RoomId { get; set; } = string.Empty;
 
-        public string Content { get; set; }
+        public string Content { get; set; } = string.Empty;
 
         public DateTime SendTime { get; set; }
     }

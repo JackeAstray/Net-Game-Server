@@ -98,6 +98,8 @@ public sealed class Entity
     /// <summary>
     /// 写入属性并标记脏（若值有变化且属性 SyncToClient）。
     /// 属性未在 Def 中声明时记录警告并忽略（防拼写错误）。
+    /// V15 修复：values 写入与脏标记放入同一把锁（dirty 同时充当 values 写互斥），
+    /// 消除"dirty 加锁而 values 裸写"的不一致；单线程 tick 下无锁竞争开销。
     /// </summary>
     public void Set<T>(string name, T value)
     {
@@ -107,26 +109,27 @@ public sealed class Entity
             return;
         }
 
-        if (values.TryGetValue(name, out var old) && Equals(old, value))
+        lock (dirty)
         {
-            return; // 值未变化，不标记脏
-        }
+            if (values.TryGetValue(name, out var old) && Equals(old, value))
+            {
+                return; // 值未变化，不标记脏
+            }
 
-        values[name] = value;
-        if (prop.SyncToClient)
-        {
-            lock (dirty)
+            values[name] = value;
+            if (prop.SyncToClient)
             {
                 dirty.Add(name);
             }
-        }
 
-        // 属性变更事件（脚本层 OnPropertyChanged 回调，对标 KBE onPropertyChange）
-        PropertyChanged?.Invoke(name, old, value);
+            // 属性变更事件（脚本层 OnPropertyChanged 回调，对标 KBE onPropertyChange）
+            PropertyChanged?.Invoke(name, old, value);
+        }
     }
 
     /// <summary>
     /// 写入属性但不标记脏（用于全量快照初始化、服务端权威回写等不应再次广播的场景）。
+    /// V15 修复：与 Set 使用同一把 values 写互斥锁，保证与 CopyValues/TakeDirty 的一致性。
     /// </summary>
     public void SetSilent<T>(string name, T value)
     {
@@ -134,7 +137,10 @@ public sealed class Entity
         {
             return;
         }
-        values[name] = value;
+        lock (dirty)
+        {
+            values[name] = value;
+        }
     }
 
     /// <summary>
@@ -188,19 +194,36 @@ public sealed class Entity
     }
 
     /// <summary>
-    /// 浅拷贝全部属性为独立字典（备份服务用，对标迭代 8 三-10 修正）：
-    /// 主循环线程调用（实体单线程访问安全），把序列化要读的数据脱离活实体，
-    /// 后台队列线程再对快照做 UTF8 编码/写盘，既不阻塞主循环，也不与 tick 线程竞争。
-    /// 值类型/字符串为不可变引用，List&lt;int&gt; 深拷贝一份避免后台读与 tick 写竞争。
+    /// 拷贝全部属性为独立字典（备份服务用，对标迭代 8 三-10 修正）：
+    /// 在 values 写互斥锁下做快照，把序列化要读的数据脱离活实体，
+    /// 后台队列线程再对快照做 UTF8 编码/写盘，既不阻塞主循环，也不与写线程竞争。
+    /// V15 修复：对可变引用属性（List/数组）做深拷贝，防止后台读与 tick 写竞争同一实例。
     /// </summary>
     public Dictionary<string, object?> CopyValues()
     {
-        var copy = new Dictionary<string, object?>(values.Count, StringComparer.Ordinal);
-        foreach (var (key, value) in values)
+        lock (dirty)
         {
-            copy[key] = value is List<int> list ? new List<int>(list) : value;
+            var copy = new Dictionary<string, object?>(values.Count, StringComparer.Ordinal);
+            foreach (var (key, value) in values)
+            {
+                copy[key] = DeepCopyForBackup(value);
+            }
+            return copy;
         }
-        return copy;
+    }
+
+    /// <summary>备份快照深拷贝：仅深拷贝可变容器（List/数组），其余不可变值直接引用。</summary>
+    private static object? DeepCopyForBackup(object? value)
+    {
+        return value switch
+        {
+            List<int> list => new List<int>(list),
+            List<string> stringList => new List<string>(stringList),
+            int[] intArray => (int[])intArray.Clone(),
+            string[] stringArray => (string[])stringArray.Clone(),
+            float[] floatArray => (float[])floatArray.Clone(),
+            _ => value
+        };
     }
 
     private static object? DefaultValue(EntityPropertyType type) => type switch

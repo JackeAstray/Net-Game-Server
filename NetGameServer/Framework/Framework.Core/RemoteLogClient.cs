@@ -13,6 +13,7 @@ namespace Framework.Core;
 public sealed class RemoteLogClient : IDisposable
 {
     private const int MaxBatchSize = 64;
+    private const int MaxPendingLogs = 4096;
     private static readonly TimeSpan FlushInterval = TimeSpan.FromMilliseconds(500);
 
     private readonly string nodeId;
@@ -22,6 +23,7 @@ public sealed class RemoteLogClient : IDisposable
     private readonly CancellationTokenSource cts = new();
     private Task? flushTask;
     private bool started;
+    private int droppedLogs;
 
     /// <param name="nodeId">节点标识（如 "Battle-127.0.0.1:31307"）</param>
     /// <param name="loggerHost">Logger 进程地址</param>
@@ -59,6 +61,18 @@ public sealed class RemoteLogClient : IDisposable
         nodeBytes.CopyTo(packet, offset);
         offset += nodeBytes.Length;
         payload.CopyTo(packet, offset);
+
+        // V19 修复：上报队列有界——Logger 不可达/积压时丢弃超额日志并低频率告警，防无界内存增长。
+        // UDP 日志聚合为尽力而为语义，丢弃不影响业务。
+        if (pending.Count >= MaxPendingLogs)
+        {
+            int dropped = Interlocked.Increment(ref droppedLogs);
+            if (dropped == 1 || (dropped & 1023) == 0)
+            {
+                Serilog.Log.Warning($"远程日志上报队列已满，丢弃日志（累计已丢 {dropped} 条）");
+            }
+            return;
+        }
         pending.Enqueue(packet);
     }
 

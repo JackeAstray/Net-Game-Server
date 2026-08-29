@@ -118,7 +118,7 @@ namespace Center
                     }
                 }
 
-                Log.Debug("Center <- Node 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint, msgId, data.Length, payloadLength);
+                Log.Debug("Center <- Node 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint!, msgId, data.Length, payloadLength);
                 byte[] payload = data.Slice(4).ToArray();
 
                 long originalSessionId = 0;
@@ -249,10 +249,10 @@ namespace Center
 
             _ = Task.Run(async () =>
             {
-                TimeSpan timeout = TimeSpan.FromSeconds(30);
+                TimeSpan timeout = TimeSpan.FromSeconds(Shared.NodeHeartbeatDefaults.CenterProbeTimeoutSeconds);
                 while (true)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(10));
+                    await Task.Delay(TimeSpan.FromSeconds(Shared.NodeHeartbeatDefaults.HeartbeatIntervalSeconds));
                     // 周期保存注册表快照（节点注册/心跳变化后持久化）
                     Center.Handlers.NodeManager.Instance.SaveSnapshotToFile(snapshotFile);
                     int removedCount = Center.Handlers.NodeManager.Instance.RemoveInactiveNodes(timeout);

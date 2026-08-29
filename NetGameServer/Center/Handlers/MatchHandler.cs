@@ -29,6 +29,11 @@ namespace Center.Handlers
 
         // 简易匹配池：按 CategoryId 把玩家的 SessionId 分组排队
         private readonly ConcurrentDictionary<string, ConcurrentQueue<long>> matchPools = new();
+        // 防重复入队：CategoryId -> 已排队玩家集合（修复重复匹配/自我匹配）
+        private readonly ConcurrentDictionary<string, ConcurrentDictionary<long, byte>> queuedPlayers = new();
+        // 排队时间戳：SessionId -> 入队时间（超时剔除断线遗留的死队列）
+        private readonly ConcurrentDictionary<long, DateTime> queuedAt = new();
+        private static readonly TimeSpan MatchQueueTimeout = TimeSpan.FromSeconds(60);
 
         // 用于等待真实的 Battle 节点返回创建房间结果
         private readonly ConcurrentDictionary<string, TaskCompletionSource<CenterCreateSceneResponse>> pendingSceneCreations = new();
@@ -53,6 +58,18 @@ namespace Center.Handlers
             bool isWorldMap = category.Equals("World", StringComparison.OrdinalIgnoreCase);
 
             var pool = matchPools.GetOrAdd(category, _ => new ConcurrentQueue<long>());
+            var queued = queuedPlayers.GetOrAdd(category, _ => new ConcurrentDictionary<long, byte>());
+
+            // 防重复入队：同一玩家在同一个分类只能排队一次（此前无条件 Enqueue，双击即重复匹配/自我匹配）。
+            if (!queued.TryAdd(clientSessionId, 0))
+            {
+                return new CenterMatchResponse
+                {
+                    Success = false,
+                    Message = "你已在匹配队列中，请勿重复匹配"
+                };
+            }
+            queuedAt[clientSessionId] = DateTime.UtcNow;
             pool.Enqueue(clientSessionId);
 
             Shared.Log.Info($"玩家 {clientSessionId} 开始匹配 {category}，当前队列人数: {pool.Count}");
@@ -69,14 +86,35 @@ namespace Center.Handlers
             var matchedPlayers = new List<long>();
             while (pool.TryDequeue(out var pid))
             {
+                // 跳过已失效排队者：不在 queued（重复/已移除）或排队超时（断线遗留），避免死会话被匹配。
+                if (!queued.ContainsKey(pid))
+                {
+                    continue;
+                }
+                if (queuedAt.TryGetValue(pid, out var enqueuedAt) && DateTime.UtcNow - enqueuedAt > MatchQueueTimeout)
+                {
+                    queued.TryRemove(pid, out _);
+                    queuedAt.TryRemove(pid, out _);
+                    continue;
+                }
                 matchedPlayers.Add(pid);
+            }
+
+            // 本轮匹配到的玩家从排队集合移除（若后续创建场景失败，RestoreMatchedPlayersToPool 会重新登记）。
+            foreach (var pid in matchedPlayers)
+            {
+                queued.TryRemove(pid, out _);
+                queuedAt.TryRemove(pid, out _);
             }
 
             void RestoreMatchedPlayersToPool()
             {
                 var restorePool = matchPools.GetOrAdd(category, _ => new ConcurrentQueue<long>());
+                var restoreQueued = queuedPlayers.GetOrAdd(category, _ => new ConcurrentDictionary<long, byte>());
                 foreach (var matchedPlayer in matchedPlayers)
                 {
+                    restoreQueued.TryAdd(matchedPlayer, 0);
+                    queuedAt[matchedPlayer] = DateTime.UtcNow;
                     restorePool.Enqueue(matchedPlayer);
                 }
             }

@@ -369,14 +369,12 @@ namespace Center.Handlers
 
             if (!room.MemberStates.TryGetValue(clientSessionId, out var memberState))
             {
-                memberState = new RoomMemberState
+                // 安全修复：非成员不允许通过 Ready 消息"后门加入"（此前会自动插入成员，绕过密码/人数上限校验）。
+                return Task.FromResult(new RoomReadyResponse
                 {
-                    ClientSessionId = clientSessionId,
-                    UserId = requesterUserId,
-                    UniqueId = requesterUid ?? string.Empty,
-                    DisplayName = !string.IsNullOrWhiteSpace(requesterNickname) ? requesterNickname : requesterUserId > 0 ? $"Player_{requesterUserId}" : $"Player_{clientSessionId}"
-                };
-                room.MemberStates[clientSessionId] = memberState;
+                    Success = false,
+                    Message = "当前不在该房间中，请先加入房间"
+                });
             }
 
             memberState.UserId = requesterUserId;
@@ -503,43 +501,43 @@ namespace Center.Handlers
             });
         }
 
-        public Task<RoomKickMemberResponse> HandleRoomKickMemberRequestAsync(int requesterUserId, RoomKickMemberRequest request, Network.ISession gatewaySession, Action<Network.ISession, long, int, RoomMemberListChangedNotification> sendMemberListToGatewayFunc, Action<Network.ISession, long, int, RoomKickedNotification> sendKickedToGatewayFunc, Action<Network.ISession, long, int, RoomOwnerChangedNotification> sendOwnerChangedToGatewayFunc)
+        public async Task<RoomKickMemberResponse> HandleRoomKickMemberRequestAsync(int requesterUserId, RoomKickMemberRequest request, Network.ISession gatewaySession, Action<Network.ISession, long, int, RoomMemberListChangedNotification> sendMemberListToGatewayFunc, Action<Network.ISession, long, int, RoomKickedNotification> sendKickedToGatewayFunc, Action<Network.ISession, long, int, RoomOwnerChangedNotification> sendOwnerChangedToGatewayFunc)
         {
             if (string.IsNullOrWhiteSpace(request.RoomId) || !rooms.TryGetValue(request.RoomId.Trim(), out var room))
             {
-                return Task.FromResult(new RoomKickMemberResponse
+                return new RoomKickMemberResponse
                 {
                     Success = false,
                     Message = "房间不存在或已关闭"
-                });
+                };
             }
 
             if (room.Info.OwnerUserId <= 0 || room.Info.OwnerUserId != requesterUserId)
             {
-                return Task.FromResult(new RoomKickMemberResponse
+                return new RoomKickMemberResponse
                 {
                     Success = false,
                     Message = "只有当前房主可以踢人"
-                });
+                };
             }
 
             if (request.TargetUserId == requesterUserId)
             {
-                return Task.FromResult(new RoomKickMemberResponse
+                return new RoomKickMemberResponse
                 {
                     Success = false,
                     Message = "不能踢出自己"
-                });
+                };
             }
 
             var targetPair = room.MemberStates.FirstOrDefault(pair => pair.Value.UserId == request.TargetUserId);
             if (targetPair.Key <= 0)
             {
-                return Task.FromResult(new RoomKickMemberResponse
+                return new RoomKickMemberResponse
                 {
                     Success = false,
                     Message = "目标成员不存在"
-                });
+                };
             }
 
             var kickedMember = targetPair.Value;
@@ -549,6 +547,15 @@ namespace Center.Handlers
             if (room.MemberStates.Count == 0)
             {
                 room.Info.RoomStatus = RoomStatuses.Closed;
+                // 安全修复：踢出最后一名成员后空房必须真正销毁场景并从注册表移除
+                // （此前只置 Closed，导致 Battle 场景常驻 + 房间永久泄漏在列表中）。
+                var destroyResult = await DestroySceneAsync(room.Info.BattleNodeId, room.Info.RoomId);
+                if (destroyResult == null || !destroyResult.Success)
+                {
+                    Shared.Log.Warning($"踢出最后成员后空房关闭失败 RoomId:{room.Info.RoomId} Message:{destroyResult?.Message}");
+                }
+                rooms.TryRemove(room.Info.RoomId, out _);
+                Shared.Log.Info($"踢出最后一名成员导致空房关闭 RoomId:{room.Info.RoomId}");
             }
             else if (room.Info.OwnerUserId == request.TargetUserId)
             {
@@ -569,12 +576,12 @@ namespace Center.Handlers
                 BroadcastRoomMemberListChanged(gatewaySession, room, sendMemberListToGatewayFunc, "房间成员列表已更新");
             }
 
-            return Task.FromResult(new RoomKickMemberResponse
+            return new RoomKickMemberResponse
             {
                 Success = true,
                 Message = $"已将 {kickedMember.DisplayName} 移出房间",
                 Room = roomSnapshot
-            });
+            };
         }
     }
 }

@@ -71,6 +71,16 @@ public sealed class ScriptHost : IDisposable
         return this;
     }
 
+    /// <summary>
+    /// 注销实体管理器（场景销毁时调用，防 entityManagers 只增不减的无界泄漏）。
+    /// 注销后该管理器中的实体不再收到全局数据变更/热更新通知；幂等。
+    /// </summary>
+    public ScriptHost UnregisterEntityManager(EntityManagerObj manager)
+    {
+        entityManagers.TryRemove(manager, out _);
+        return this;
+    }
+
     /// <summary>获取指定类型已加载脚本的版本号（KBE-Gap-Review S4）。未加载返回 0。</summary>
     public int GetScriptVersion(string entityType)
         => _scriptVersions.TryGetValue(entityType, out var v) ? v : 0;

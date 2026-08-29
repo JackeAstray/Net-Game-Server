@@ -123,6 +123,9 @@ namespace Battle.Handlers
             catch (Exception ex)
             {
                 Shared.Log.Error($"Battle 加入场景失败 ClientSessionId:{clientSessionId} RoomId:{request?.RoomId} Exception:{ex}");
+                // A1 修复：加入失败时回滚玩家-场景绑定（此前 BindPlayerToScene 在实体创建之前执行，
+                // 后续任何一步抛异常都会留下"已绑定但无实体"的死绑定，泄漏进 sceneToPlayers 反索引）。
+                sceneManager.UnbindPlayer(clientSessionId);
                 return Task.FromResult(new BattleJoinResponse
                 {
                     Success = false,

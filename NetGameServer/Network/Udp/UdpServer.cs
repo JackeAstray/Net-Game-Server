@@ -41,17 +41,19 @@ public class UdpServer : INetworkServer
     }
 
     /// <summary>
-    /// 循环接收来自 UDP 客户端的数据报，按远程端点维护逻辑会话，组装长度前缀分包并触发会话连接、数据接收及会话断开事件。
+    /// 循环接收来自 UDP 客户端的数据报，按远程端点维护逻辑会话，解析每个数据报内的完整帧并触发会话连接、数据接收及会话断开事件。
     /// </summary>
-    /// <remarks>为每个远程端点维护 UdpSession 和 LengthPrefixedPacketReader；定期（每 30 秒）清理超过 5 分钟未活动的会话。遇到
-    /// ObjectDisposedException 退出循环，其它异常记录后继续；服务器停止时触发所有存活会话的断开事件。</remarks>
+    /// <remarks>为每个远程端点维护 UdpSession；定期（每 30 秒）清理超过 5 分钟未活动的会话。遇到
+    /// ObjectDisposedException 退出循环，其它异常记录后继续；服务器停止时触发所有存活会话的断开事件。
+    /// V14 修复：UDP 是数据报协议（不可靠、可能乱序），不再跨数据报拼接分包——每个数据报独立成帧解析，
+    /// 尾部不完整的半帧直接丢弃（可靠分片请走 KCP 上层协议）。旧实现为每端点持有一个跨数据报的
+    /// LengthPrefixedPacketReader，一旦丢包/乱序就会把该端点永久卡死在半帧状态。</remarks>
     /// <returns>表示接收循环结束时完成的任务。</returns>
     private async Task ReceiveLoopAsync()
     {
         // UDP中我们往往需要通过远程地址来标识某一个会话，这里简单使用字典存储当前存在的逻辑会话。
         // 在正式复杂的实现中，应该带上心跳检测等过期清理机制。
         var sessions = new Dictionary<IPEndPoint, UdpSession>();
-        var packetReaders = new Dictionary<IPEndPoint, LengthPrefixedPacketReader>();
         TimeSpan sessionTimeout = TimeSpan.FromMinutes(5);
         DateTime nextCleanupAt = DateTime.UtcNow.AddSeconds(30);
 
@@ -78,19 +80,19 @@ public class UdpServer : INetworkServer
 
                     session = new UdpSession(udpClient, result.RemoteEndPoint);
                     sessions[result.RemoteEndPoint] = session;
-                    packetReaders[result.RemoteEndPoint] = new LengthPrefixedPacketReader();
                     Shared.Log.Info($"[UdpServer] 新会话建立 SessionId:{session.SessionId} Remote:{result.RemoteEndPoint}");
                     OnSessionConnected?.Invoke(session);
                 }
 
                 Shared.Log.Debug($"[UdpServer] 接收数据报 SessionId:{session.SessionId} Remote:{result.RemoteEndPoint} DatagramLength:{result.Buffer.Length}");
 
-                var packetReader = packetReaders[result.RemoteEndPoint];
-                packetReader.Append(result.Buffer);
                 try
                 {
+                    // V14 修复：每数据报独立成帧解析（可含多个完整帧），尾部不完整帧丢弃。
+                    var datagramReader = new LengthPrefixedPacketReader();
+                    datagramReader.Append(result.Buffer);
                     int packetCount = 0;
-                    while (packetReader.TryReadPacket(out var packet))
+                    while (datagramReader.TryReadPacket(out var packet))
                     {
                         packetCount++;
                         Shared.Log.Debug($"[UdpServer] 完整分包 SessionId:{session.SessionId} Remote:{result.RemoteEndPoint} PacketLength:{packet.Length}");
@@ -107,11 +109,9 @@ public class UdpServer : INetworkServer
                 }
                 catch (InvalidDataException ex)
                 {
-                    // 帧毒化防护（P1）：坏长度前缀（≤0 或 >64KB）会让 TryReadPacket 抛异常并把毒字节留在缓冲区；
-                    // 若不处理，该端点后续所有数据报都会再次抛异常且 LastActivityTime 仍被刷新 → 会话永久卡死且永不超时。
-                    // 重置解析器丢弃毒字节，合法客户端下一个数据报即可恢复。
-                    Shared.Log.Warning($"[UdpServer] 数据报帧解析失败，重置端点解析器 Remote:{result.RemoteEndPoint} Exception:{ex.Message}");
-                    packetReaders[result.RemoteEndPoint] = new LengthPrefixedPacketReader();
+                    // 帧毒化防护（P1）：坏长度前缀（≤0 或 >64KB）会让 TryReadPacket 抛异常。
+                    // V14 修复：只丢弃本数据报，端点状态不受影响（不再存在跨数据报解析器，无需重置）。
+                    Shared.Log.Warning($"[UdpServer] 数据报帧解析失败，丢弃该数据报 Remote:{result.RemoteEndPoint} Exception:{ex.Message}");
                 }
 
                 if (DateTime.UtcNow >= nextCleanupAt)
@@ -125,7 +125,6 @@ public class UdpServer : INetworkServer
                         }
 
                         sessions.Remove(pair.Key);
-                        packetReaders.Remove(pair.Key);
                         Shared.Log.Warning($"[UdpServer] 会话超时断开 SessionId:{pair.Value.SessionId} Remote:{pair.Value.RemoteEndPoint} TimeoutSeconds:{sessionTimeout.TotalSeconds}");
                         OnSessionDisconnected?.Invoke(pair.Value, "UDP session timeout.");
                     }

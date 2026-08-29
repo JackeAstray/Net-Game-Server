@@ -16,6 +16,7 @@ public sealed class LeaderElection : IDisposable
     private Task? heartbeatTask;
     private volatile bool isLeader;
     private readonly object electionGate = new();
+    private readonly List<Task> backgroundTasks = new(); // 受 electionGate 保护（V20：追踪全部心跳/抢占任务，Dispose 时统一回收）
     private bool disposed;
 
     /// <summary>当前实例是否为 Leader。</summary>
@@ -44,6 +45,7 @@ public sealed class LeaderElection : IDisposable
             isLeader = true;
             WriteLeaderMarker();
             heartbeatTask = Task.Run(HeartbeatLoopAsync);
+            backgroundTasks.Add(heartbeatTask);
             Log.Info($"Leader 选举: {nodeId} 成为 Leader (锁: {lockFilePath})");
         }
         catch (IOException)
@@ -51,6 +53,7 @@ public sealed class LeaderElection : IDisposable
             isLeader = false;
             Log.Info($"Leader 选举: {nodeId} 处于 Standby（锁被占用: {lockFilePath}）");
             heartbeatTask = Task.Run(StandbyLoopAsync);
+            backgroundTasks.Add(heartbeatTask);
         }
     }
 
@@ -73,7 +76,12 @@ public sealed class LeaderElection : IDisposable
             try
             {
                 await Task.Delay(HeartbeatIntervalMs, cts.Token);
-                if (isLeader && lockStream != null)
+                if (!isLeader)
+                {
+                    // V20 修复：已让出/被替换的心跳自行退出，避免多个心跳任务长期并存
+                    break;
+                }
+                if (lockStream != null)
                 {
                     WriteLeaderMarker();
                 }
@@ -111,7 +119,9 @@ public sealed class LeaderElection : IDisposable
                     WriteLeaderMarker();
                     Log.Info($"Leader 选举: {nodeId} 接管成为 Leader（原 Leader 已下线）");
                     LeadershipChanged?.Invoke(true);
-                    _ = Task.Run(HeartbeatLoopAsync);
+                    // V20 修复：追踪接管后启动的心跳任务（Dispose 时统一回收）
+                    var takeoverHeartbeat = Task.Run(HeartbeatLoopAsync);
+                    backgroundTasks.Add(takeoverHeartbeat);
                 }
             }
             catch (IOException)
@@ -151,5 +161,19 @@ public sealed class LeaderElection : IDisposable
         disposed = true;
         cts.Cancel();
         StepDown();
+        // V20 修复：短暂等待后台心跳/抢占任务退出（最多 2s），避免遗留任务持有 FileStream
+        Task[] tasks;
+        lock (electionGate)
+        {
+            tasks = backgroundTasks.ToArray();
+        }
+        try
+        {
+            Task.WaitAll(tasks, TimeSpan.FromSeconds(2));
+        }
+        catch (AggregateException)
+        {
+            // 任务取消导致的异常忽略
+        }
     }
 }

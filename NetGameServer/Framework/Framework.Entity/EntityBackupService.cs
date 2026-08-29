@@ -20,7 +20,7 @@ public sealed class EntityBackupService : IDisposable
 
     private readonly List<EntityManager> managers = new();
     private readonly OrderedTaskQueue taskQueue;
-    private readonly string backupFilePath;
+    private readonly string? backupFilePath;
     private readonly int periodInTicks;
     private long tick;
     private float backupRemainder;
@@ -66,6 +66,23 @@ public sealed class EntityBackupService : IDisposable
             if (!managers.Contains(manager))
             {
                 managers.Add(manager);
+            }
+        }
+        return this;
+    }
+
+    /// <summary>
+    /// 注销实体管理器（场景销毁时调用，防 managers 只增不减导致备份文件无限增长）。
+    /// 移除后重置实体总数缓存，下一轮 Tick 会重新计算实体集合。
+    /// </summary>
+    public EntityBackupService RemoveManager(EntityManager manager)
+    {
+        lock (managers)
+        {
+            if (managers.Remove(manager))
+            {
+                cachedTotal = -1;
+                allEntities.Clear();
             }
         }
         return this;
@@ -161,10 +178,11 @@ public sealed class EntityBackupService : IDisposable
     private static byte[] SerializeSnapshot(List<BackupEntitySnapshot> snapshots)
     {
         using var ms = new MemoryStream(256);
+        // CA2014 修复：stackalloc 提到循环外——循环内 stackalloc 会随迭代逐次压栈，量大时可能栈溢出。
+        Span<byte> header = stackalloc byte[HeaderSize];
         foreach (var snapshot in snapshots)
         {
             byte[] props = PropertyCodec.SerializeAllValues(snapshot.Props, snapshot.Def);
-            Span<byte> header = stackalloc byte[HeaderSize];
             BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(0, 4), BackupMagic);
             BinaryPrimitives.WriteInt64LittleEndian(header.Slice(4, 8), snapshot.EntityId);
             BinaryPrimitives.WriteInt32LittleEndian(header.Slice(12, 4), props.Length);

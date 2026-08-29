@@ -11,6 +11,8 @@ namespace Machine;
 /// 进程崩溃按指数退避重启（与 Supervisor 一致策略）；启动时按依赖 + TCP 探针等待前置节点就绪。
 /// 状态输出机器可读标记（START/RESTART/EXIT_OK/PROBE_OK/SUMMARY）便于 MachineVerify 断言。
 /// 用法：Machine --config machine.json [--test-duration 秒]（测试模式到时自动停机汇总）。
+/// 注意（T2）：Machine 与旧版 Supervisor 互斥——同一批 game 进程只能由二者之一托管，
+/// 禁止同时运行；--emit-supervisor-config 仅用于显式切换到老 Supervisor 路径时生成其配置。
 /// </summary>
 public static class Program
 {
@@ -115,6 +117,7 @@ public static class Program
         public DateTime? LastStartedAtUtc;
         public DateTime? LastExitedAtUtc;
         public int? LastExitCode;
+        public List<long> RestartTimestampsUtc = new(); // T2：分钟级重启限流时间戳（UTC Ticks）
         // 启动后是否完成过就绪探针（仅当 spec 含 probe 时有意义）
         public bool ProbeOk;
         // 是否对外可见"已就绪"（probe 通过或无需 probe + 进程已 START 过）
@@ -413,6 +416,19 @@ public static class Program
 
         // 崩溃：指数退避重启
         managed.RestartCount++;
+
+        // T2 修复：分钟级重启限流——1 分钟内重启次数达到上限则放弃自动重启（防崩溃-重启循环打满 CPU/日志）。
+        int maxRestartsPerMinute = topology.MaxRestartsPerMinute > 0 ? topology.MaxRestartsPerMinute : 10;
+        long nowUtcTicks = DateTime.UtcNow.Ticks;
+        managed.RestartTimestampsUtc.RemoveAll(t => nowUtcTicks - t > TimeSpan.FromMinutes(1).Ticks);
+        if (managed.RestartTimestampsUtc.Count >= maxRestartsPerMinute)
+        {
+            managed.Stopping = true;
+            Console.WriteLine($"[Machine] {managed.Spec.InstanceId} 1 分钟内重启次数超限（≥{maxRestartsPerMinute}），放弃自动重启");
+            return;
+        }
+        managed.RestartTimestampsUtc.Add(nowUtcTicks);
+
         int baseDelay = managed.Spec.Template.RestartDelayMs ?? topology.RestartDelayMs;
         int delay = Math.Min(baseDelay * (1 << Math.Min(managed.RestartCount, 5)), 30000);
         Console.WriteLine($"RESTART {managed.Spec.InstanceId} #{managed.RestartCount} code={exitCode} delay={delay}ms");

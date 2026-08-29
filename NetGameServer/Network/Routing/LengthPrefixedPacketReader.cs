@@ -12,9 +12,13 @@ public sealed class LengthPrefixedPacketReader
     /// </summary>
     public const int DefaultMaxPacketLength = 64 * 1024;
 
+    /// <summary>惰性压缩阈值：已消费前缀达到该字节数且不小于剩余数据时，才一次性搬到缓冲开头（摊薄 O(n²)）。</summary>
+    private const int CompactThreshold = 16 * 1024;
+
     private readonly int maxPacketLength;
     private byte[] buffer;
-    private int bufferedCount;
+    private int bufferedCount;   // 缓冲内有效字节总数（含已消费前缀）
+    private int startOffset;     // 第一个未消费字节的下标
 
     public LengthPrefixedPacketReader(int initialCapacity = 8192, int maxPacketLength = DefaultMaxPacketLength)
     {
@@ -43,9 +47,13 @@ public sealed class LengthPrefixedPacketReader
     }
 
     /// <summary>
-    /// 尝试从内部缓冲区读取下一个以 4 字节小端整型为长度前缀的包；成功时将有效负载作为 ReadOnlyMemory<byte> 返回并从缓冲区移除。
+    /// 尝试从内部缓冲区读取下一个以 4 字节小端整型为长度前缀的包；成功时将有效负载作为 ReadOnlyMemory<byte> 返回。
     /// </summary>
-    /// <remarks>长度前缀为 4 字节小端整型。方法为非阻塞且可以被反复调用以逐个提取包。</remarks>
+    /// <remarks>
+    /// P2 修复：采用"已消费偏移 + 惰性压缩"取代原先每个包都做一次 Buffer.BlockCopy 前移——
+    /// 原先一次 TCP 段携带 N 个小包时共搬运 O(N²) 字节；现仅当已消费前缀足够大且不小于剩余数据时
+    /// 才做一次整段搬移，摊薄为摊还 O(1)/包。
+    /// </remarks>
     /// <param name="packet">输出参数；成功时包含包的有效负载（已复制到新的字节数组），失败时为 default(ReadOnlyMemory<byte>)。</param>
     /// <returns>成功读取并移除一个完整包时返回 true；缓冲区数据不足以构成完整包时返回 false。</returns>
     /// <exception cref="InvalidDataException">当长度前缀小于等于 0 或被视为无效的长度值时抛出。</exception>
@@ -53,12 +61,20 @@ public sealed class LengthPrefixedPacketReader
     {
         packet = default;
 
-        if (bufferedCount < 4)
+        int available = bufferedCount - startOffset;
+        if (available < 4)
         {
+            // 头不完整：将剩余的少量字节搬到缓冲开头（也涵盖全部已消费的空缓冲场景）
+            if (startOffset > 0)
+            {
+                Buffer.BlockCopy(buffer, startOffset, buffer, 0, available);
+                bufferedCount = available;
+                startOffset = 0;
+            }
             return false;
         }
 
-        int packetLength = BinaryPrimitives.ReadInt32LittleEndian(buffer.AsSpan(0, 4));
+        int packetLength = BinaryPrimitives.ReadInt32LittleEndian(buffer.AsSpan(startOffset, 4));
         if (packetLength <= 0)
         {
             throw new InvalidDataException($"Invalid packet length: {packetLength}");
@@ -70,32 +86,35 @@ public sealed class LengthPrefixedPacketReader
                 $"Packet length {packetLength} 超过最大允许 {maxPacketLength} 字节，已拒绝（疑似 DoS 攻击）");
         }
 
-        if (bufferedCount < 4 + packetLength)
+        int total = 4 + packetLength;
+        if (available < total)
         {
             return false;
         }
 
         byte[] payload = new byte[packetLength];
-        Buffer.BlockCopy(buffer, 4, payload, 0, packetLength);
+        Buffer.BlockCopy(buffer, startOffset + 4, payload, 0, packetLength);
+        startOffset += total;
 
-        int remaining = bufferedCount - 4 - packetLength;
-        if (remaining > 0)
+        // 惰性压缩：仅当已消费前缀较大且不小于剩余数据时整段搬移
+        if (startOffset >= CompactThreshold && startOffset >= bufferedCount - startOffset)
         {
-            Buffer.BlockCopy(buffer, 4 + packetLength, buffer, 0, remaining);
+            int remaining = bufferedCount - startOffset;
+            Buffer.BlockCopy(buffer, startOffset, buffer, 0, remaining);
+            bufferedCount = remaining;
+            startOffset = 0;
         }
 
-        bufferedCount = remaining;
         packet = payload;
         return true;
     }
 
     /// <summary>
-    /// 确保内部缓冲区的长度至少为指定的最小容量；若当前容量不足，则按 2 的倍数增长直到满足要求。
+    /// 确保内部缓冲区的长度至少可容纳 requiredEnd（相对缓冲开头的绝对下标）；若当前容量不足，则按 2 的倍数增长。
     /// </summary>
-    /// <remarks>扩容通过 Array.Resize 完成，保留现有元素。增长策略按 2 的倍数扩展，可能会超出所需容量以减少频繁重分配。</remarks>
-    /// <param name="required">所需的最小容量（小于等于当前容量时不做任何操作）。</param>
-    private void EnsureCapacity(int required)
+    private void EnsureCapacity(int requiredEnd)
     {
+        int required = requiredEnd + startOffset;
         if (required <= buffer.Length)
         {
             return;

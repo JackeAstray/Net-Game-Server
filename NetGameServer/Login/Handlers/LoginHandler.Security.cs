@@ -25,7 +25,7 @@ namespace Login.Handlers
         /// <param name="msgId">用于标识请求/响应类型的消息 ID。</param>
         /// <param name="requestData">要发送到 DB 的请求对象（将被序列化）。</param>
         /// <returns>反序列化后的响应对象，或在超时/异常时返回 null。</returns>
-        private async Task<T> CallDbAsync<T>(int msgId, object requestData) where T : class
+        private async Task<T?> CallDbAsync<T>(int msgId, object requestData) where T : class
         {
             var tcs = new TaskCompletionSource<byte[]>();
             byte[] data = Shared.Json.SerializeToUtf8Bytes(requestData);
@@ -99,6 +99,11 @@ namespace Login.Handlers
         {
             remaining = TimeSpan.Zero;
             string key = BuildActionKey(action, identity);
+            // V13 修复：偶发清理失效的失败尝试跟踪（防按账号/IP 永久增长）
+            if (actionAttemptTrackers.Count >= 1024 && (actionAttemptTrackers.Count & 255) == 0)
+            {
+                SweepExpiredAttemptTrackers();
+            }
             if (!actionAttemptTrackers.TryGetValue(key, out var tracker))
             {
                 return false;
@@ -119,6 +124,19 @@ namespace Login.Handlers
             return false;
         }
 
+        /// <summary>移除已失效的失败尝试跟踪项（V13 兜底）：既不在锁定中、且最近一次失败已超过 ThrottleLockDuration 的条目。</summary>
+        private static void SweepExpiredAttemptTrackers()
+        {
+            DateTime cutoff = DateTime.UtcNow.Add(-ThrottleLockDuration);
+            foreach (var kv in actionAttemptTrackers)
+            {
+                if (kv.Value.LockedUntilUtc <= cutoff && kv.Value.LastFailedAtUtc <= cutoff)
+                {
+                    actionAttemptTrackers.TryRemove(kv.Key, out _);
+                }
+            }
+        }
+
         /// <summary>
         /// 记录指定操作与身份的失败尝试，递增失败计数并在达到阈值时按 UTC 将该项锁定一段时间。
         /// </summary>
@@ -133,7 +151,7 @@ namespace Login.Handlers
             string key = BuildActionKey(action, identity);
             actionAttemptTrackers.AddOrUpdate(
                 key,
-                _ => new ActionAttemptTracker { FailedCount = 1, LockedUntilUtc = DateTime.MinValue },
+                _ => new ActionAttemptTracker { FailedCount = 1, LockedUntilUtc = DateTime.MinValue, LastFailedAtUtc = now },
                 (_, existing) =>
                 {
                     if (existing.LockedUntilUtc > now)
@@ -148,14 +166,16 @@ namespace Login.Handlers
                         return new ActionAttemptTracker
                         {
                             FailedCount = 0,
-                            LockedUntilUtc = now.Add(ThrottleLockDuration)
+                            LockedUntilUtc = now.Add(ThrottleLockDuration),
+                            LastFailedAtUtc = now
                         };
                     }
 
                     return new ActionAttemptTracker
                     {
                         FailedCount = failedCount,
-                        LockedUntilUtc = DateTime.MinValue
+                        LockedUntilUtc = DateTime.MinValue,
+                        LastFailedAtUtc = now
                     };
                 });
         }
@@ -193,6 +213,8 @@ namespace Login.Handlers
         {
             public int FailedCount { get; set; }
             public DateTime LockedUntilUtc { get; set; }
+            /// <summary>最近一次失败时刻（V13：失效条目清理依据）。</summary>
+            public DateTime LastFailedAtUtc { get; set; }
         }
     }
 }

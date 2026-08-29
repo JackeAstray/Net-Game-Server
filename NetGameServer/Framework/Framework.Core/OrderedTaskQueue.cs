@@ -136,32 +136,53 @@ public sealed class OrderedTaskQueue
         }
     }
 
+    /// <summary>
+    /// 工作线程主循环（V18 修复：线程异常后自动重启，防止并发能力因一次异常永久降级）。
+    /// 通道被正常 Complete 时退出；其余异常记录日志后延时重启。
+    /// </summary>
     private async Task WorkerLoop()
     {
-        try
+        while (true)
         {
-            await foreach (var state in dispatchChannel.Reader.ReadAllAsync())
+            try
             {
-                // 串行清空该 key 当前排队的全部任务（FIFO），队列空时交还 Running=false
-                while (true)
+                await DrainDispatchLoop();
+                return; // 通道结束：正常退出
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, $"[{name}] 工作线程异常，重启中");
+                try
                 {
-                    WorkItem? item;
-                    lock (state.Gate)
-                    {
-                        if (state.Queue.Count == 0)
-                        {
-                            state.Running = false;
-                            break;
-                        }
-                        item = state.Queue.Dequeue();
-                    }
-                    await RunItem(state, item);
+                    await Task.Delay(100);
+                }
+                catch
+                {
+                    return;
                 }
             }
         }
-        catch (Exception ex)
+    }
+
+    private async Task DrainDispatchLoop()
+    {
+        await foreach (var state in dispatchChannel.Reader.ReadAllAsync())
         {
-            Log.Error(ex, $"[{name}] 工作线程异常退出");
+            // 串行清空该 key 当前排队的全部任务（FIFO），队列空时交还 Running=false
+            while (true)
+            {
+                WorkItem? item;
+                lock (state.Gate)
+                {
+                    if (state.Queue.Count == 0)
+                    {
+                        state.Running = false;
+                        break;
+                    }
+                    item = state.Queue.Dequeue();
+                }
+                await RunItem(state, item);
+            }
         }
     }
 

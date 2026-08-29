@@ -249,6 +249,11 @@ public class PipelineTcpSession : ISession, IDisposable
 {
     private static long _sessionCounter = 0;
 
+    // R1 修复：同步 Socket.Send 非线程安全——并发 Send 会把两个包的字节交错写入同一 socket，
+    // 破坏对端 [Len][Data] 帧同步。加发送互斥锁保证整帧原子写出。
+    // 说明：本类为演示型服务端（当前无节点引用）；生产节点统一用异步写入的 Network.Tcp.TcpSession。
+    private readonly object sendGate = new();
+
     public Socket Socket { get; }
 
     public long SessionId { get; }
@@ -289,7 +294,11 @@ public class PipelineTcpSession : ISession, IDisposable
                 BinaryPrimitives.WriteInt32LittleEndian(sendBuffer.AsSpan(0, 4), data.Length);
                 data.CopyTo(sendBuffer.AsMemory(4));
 
-                Socket.Send(sendBuffer, 0, totalLength, SocketFlags.None);
+                lock (sendGate)
+                {
+                    if (!Socket.Connected) return;
+                    Socket.Send(sendBuffer, 0, totalLength, SocketFlags.None);
+                }
             }
             finally
             {

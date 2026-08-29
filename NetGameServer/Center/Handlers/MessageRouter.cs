@@ -654,7 +654,7 @@ namespace Center.Handlers
         /// <param name="response">要序列化为 UTF-8 并发送的响应对象。</param>
         private static void SendToGateway<T>(Network.ISession gatewaySession, long clientSessionId, int msgId, T response)
         {
-            byte[] responsePayload = Shared.Json.SerializeToUtf8Bytes(response);
+            byte[] responsePayload = Shared.Json.SerializeToUtf8Bytes(response!);
             byte[] routedPayload = Shared.RouteMetadata.AttachClientSessionId(responsePayload, clientSessionId);
             byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
 

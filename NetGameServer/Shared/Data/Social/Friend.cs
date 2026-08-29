@@ -15,7 +15,7 @@ namespace Shared.Data.Social
 
         public int FriendUserId { get; set; }
 
-        public string Remark { get; set; } // 好友备注
+        public string Remark { get; set; } = string.Empty; // 好友备注
 
         public DateTime AddTime { get; set; }
     }

@@ -18,6 +18,9 @@ namespace Login.Handlers
     {
         private readonly TcpClientWrapper dbClient;
         private readonly Framework.Core.Security.TokenService tokenService;
+        // 防重放状态：跨请求共享的单调 SessionSeq（D6 修复）。此前 token 只签发不验证、防重放从未生效；
+        // 现在签发走 IssueNextSeq（同用户新登录 seq 单调递增），验证走 TryAcceptSeq（旧 token 重放被拒）。
+        private readonly Framework.Core.Security.SessionGuard.AntiReplayState tokenAntiReplay = new();
 
         private static long sequenceId = 0;
         private const int MaxFailedAttempts = 5;
@@ -47,14 +50,17 @@ namespace Login.Handlers
 
         /// <summary>
         /// 生成登录 Token（HMAC-SHA256 签名，含用户身份、SessionSeq（防重放）、过期时间，无状态可验证）。
-        /// D6：登录发放 seq=1；续签/重连由调用方传入递增 seq。
+        /// D6 修复：seq 由共享 AntiReplayState.IssueNextSeq 单调递增，同用户新登录不互相覆盖、
+        /// 旧 Token 无法重放（此前固定 seq:1 导致第二个 Token 一定被防重放拒绝或可被重放）。
         /// </summary>
-        public string IssueToken(int userId, string uid) => tokenService.Issue(userId, uid, seq: 1);
+        public string IssueToken(int userId, string uid) => tokenService.Issue(userId, uid, tokenAntiReplay.IssueNextSeq(userId));
 
         /// <summary>
         /// 验证 Token。成功返回 (userId, uid, seq, expires)；失败或重放旧 seq 返回 null。
+        /// D6 修复：接入共享 AntiReplayState，旧 Token/重放 seq 会被 TryAcceptSeq 拒绝。
         /// </summary>
-        public (int UserId, string Uid, long Seq, long Expires)? VerifyToken(string? token) => tokenService.Verify(token);
+        public (int UserId, string Uid, long Seq, long Expires)? VerifyToken(string? token)
+            => tokenService.Verify(token, tokenAntiReplay);
 
         /// <summary>
         /// 异步处理登录请求：向 DB 服务发送验证请求并返回登录响应。

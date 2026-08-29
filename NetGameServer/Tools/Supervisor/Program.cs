@@ -8,6 +8,8 @@ namespace Supervisor;
 /// - 正常退出（code == 0）不重启（视为主动停机）
 /// - 输出带机器可读标记（START/RESTART/EXIT_OK/SUMMARY），便于验证套件断言
 /// 用法：Supervisor --config supervisor.json [--test-duration 秒]（测试模式：到时自动停机关闭子进程）
+/// 注意（T2）：Supervisor 为旧版看护，与 Machine 互斥——同一批 game 进程只能由二者之一托管，
+/// 禁止同时运行；请优先使用 Tools/Machine（topology 拓扑 + 依赖 + replicas + 探针就绪）。
 /// </summary>
 public static class Program
 {
@@ -37,6 +39,7 @@ public static class Program
         public int RestartCount;
         public volatile bool Stopping;
         public string LogFile = string.Empty;
+        public List<long> RestartTimestampsUtc = new(); // T2：分钟级重启限流时间戳（UTC Ticks）
     }
 
     public static async Task<int> Main(string[] args)
@@ -135,7 +138,7 @@ public static class Program
         {
             psi.RedirectStandardOutput = true;
             psi.RedirectStandardError = true;
-            managed.LogFile = Path.Combine(config.LogDirectory, $"{managed.Config.Name}.log");
+            managed.LogFile = Path.Combine(config.LogDirectory!, $"{managed.Config.Name}.log");
         }
 
         try
@@ -191,6 +194,19 @@ public static class Program
 
         // 崩溃：指数退避重启（基础延迟 * 2^min(重启次数,5)，上限 30s）
         managed.RestartCount++;
+
+        // T2 修复：分钟级重启限流——1 分钟内重启次数达到上限则放弃自动重启（防崩溃-重启循环打满 CPU/日志）。
+        int maxRestartsPerMinute = config.MaxRestartsPerMinute > 0 ? config.MaxRestartsPerMinute : 10;
+        long nowUtcTicks = DateTime.UtcNow.Ticks;
+        managed.RestartTimestampsUtc.RemoveAll(t => nowUtcTicks - t > TimeSpan.FromMinutes(1).Ticks);
+        if (managed.RestartTimestampsUtc.Count >= maxRestartsPerMinute)
+        {
+            managed.Stopping = true;
+            Console.WriteLine($"[Supervisor] {managed.Config.Name} 1 分钟内重启次数超限（≥{maxRestartsPerMinute}），放弃自动重启");
+            return;
+        }
+        managed.RestartTimestampsUtc.Add(nowUtcTicks);
+
         int baseDelay = managed.Config.RestartDelayMs ?? config.RestartDelayMs;
         int delay = Math.Min(baseDelay * (1 << Math.Min(managed.RestartCount, 5)), 30000);
         Console.WriteLine($"RESTART {managed.Config.Name} #{managed.RestartCount} code={exitCode} delay={delay}ms");

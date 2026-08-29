@@ -2,8 +2,6 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
-using System.Security.Cryptography;
-using System.Text;
 using System.Threading.Tasks;
 using Shared.Messages;
 using Shared.Messages.Center;
@@ -231,7 +229,7 @@ namespace Center.Handlers
             roomEntry = null!;
             errorResponse = null;
 
-            if (string.IsNullOrWhiteSpace(roomId) || !rooms.TryGetValue(roomId.Trim(), out roomEntry))
+            if (string.IsNullOrWhiteSpace(roomId) || !rooms.TryGetValue(roomId.Trim(), out RoomRegistryEntry? found))
             {
                 errorResponse = new CenterUpdateRoomSettingsResponse
                 {
@@ -240,6 +238,7 @@ namespace Center.Handlers
                 };
                 return false;
             }
+            roomEntry = found!;
 
             // 安全修复（P1）：仅已实名房主可修改设置/开赛；Owner=0（匹配房）或未绑定请求者一律拒绝，
             // 防止任意玩家绕过房主校验接管/锁死房间。
@@ -393,9 +392,8 @@ namespace Center.Handlers
                 return string.Empty;
             }
 
-            byte[] bytes = Encoding.UTF8.GetBytes(password.Trim());
-            byte[] hash = SHA256.HashData(bytes);
-            return Convert.ToBase64String(hash);
+            // 安全修复：房间密码改用加盐 PBKDF2（统一委托 PasswordHasher），替代此前的无盐 SHA-256。
+            return Framework.Core.Security.PasswordHasher.HashPassword(password.Trim());
         }
 
         private static bool IsPasswordValid(string storedHash, string password)
@@ -405,7 +403,7 @@ namespace Center.Handlers
                 return true;
             }
 
-            return string.Equals(storedHash, ComputePasswordHash(password), StringComparison.Ordinal);
+            return Framework.Core.Security.PasswordHasher.VerifyPassword(password, storedHash);
         }
     }
 }

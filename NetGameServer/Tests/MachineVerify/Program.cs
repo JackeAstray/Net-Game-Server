@@ -23,7 +23,6 @@ internal static class Program
         Directory.CreateDirectory(dir);
         string logDir = Path.Combine(dir, "logs");
         string configPath = Path.Combine(dir, "machine.json");
-        string probePort = "38000"; // dummy 端口，crashy/ok 不真监听
 
         File.WriteAllText(configPath, $$"""
         {

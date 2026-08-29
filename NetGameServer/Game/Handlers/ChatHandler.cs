@@ -23,6 +23,24 @@ namespace Game.Handlers
         }
 
         /// <summary>
+        /// 会话断开时清理聊天频率限制状态（V5/V13 修复：防 lastChatAt 无界增长）。
+        /// </summary>
+        public static void RemoveSession(long clientSessionId) => lastChatAt.TryRemove(clientSessionId, out _);
+
+        /// <summary>清理超过 16 个最小间隔（约 16s）未活动的限频记录（V13 兜底）。</summary>
+        private static void SweepStaleLastChatAt()
+        {
+            long cutoff = Environment.TickCount64 - MinChatIntervalMs * 16;
+            foreach (var kv in lastChatAt)
+            {
+                if (kv.Value < cutoff)
+                {
+                    lastChatAt.TryRemove(kv.Key, out _);
+                }
+            }
+        }
+
+        /// <summary>
         /// 注册消息处理器，将ChatMessageReq消息绑定到HandleSendChatRequestRaw方法
         /// </summary>
         /// <param name="router"></param>
@@ -101,6 +119,15 @@ namespace Game.Handlers
                 return;
             }
 
+            // V16 修复：Game 节点只有世界/好友频道有可用的投递目标（房间/匹配成员关系在 Center/Battle）。
+            // 此前 Team 频道静默丢弃（却回"成功"），Room/Match 频道落入 else 分支被当作全员广播（隐私泄露）。
+            // 现在对这些频道显式拒绝，绝不回退成世界广播。
+            if (request.Channel != ChatChannel.World && request.Channel != ChatChannel.Friend)
+            {
+                SendChatError(session, "该频道暂不支持，请使用世界或好友频道。");
+                return;
+            }
+
             if (string.IsNullOrWhiteSpace(request.Content))
             {
                 SendChatError(session, "消息内容不能为空。");
@@ -113,6 +140,11 @@ namespace Game.Handlers
             }
 
             long nowTick = Environment.TickCount64;
+            // V13 修复：偶发清理超期限频记录（断开时已主动删除，这里兜底防无界增长）
+            if (lastChatAt.Count >= 1024 && (lastChatAt.Count & 255) == 0)
+            {
+                SweepStaleLastChatAt();
+            }
             if (lastChatAt.TryGetValue(session.SessionId, out long lastTick) && nowTick - lastTick < MinChatIntervalMs)
             {
                 SendChatError(session, "发送消息过于频繁，请稍后再试。");
@@ -180,14 +212,14 @@ namespace Game.Handlers
             {
                 Message = new ChatMessage
                 {
-                    Id = new Random().Next(),
+                    Id = Random.Shared.Next(),
                     SenderId = actualSenderId,
                     SenderUniqueId = actualSenderUid,
                     SenderName = senderName,
                     ReceiverId = targetUserId > 0 ? targetUserId : request.ReceiverId,
                     ReceiverUniqueId = targetUid,
                     Channel = request.Channel,
-                    Content = request.Content,
+                    Content = request.Content ?? string.Empty,
                     SendTime = DateTime.UtcNow
                 }
             };
@@ -197,12 +229,12 @@ namespace Game.Handlers
             {
                 Log.Debug("聊天消息 SenderId:{SenderId} SenderUid:{SenderUid} SenderName:{SenderName} ReceiverId:{ReceiverId} ReceiverUid:{ReceiverUid} Channel:{Channel} Content:{Content}",
                     actualSenderId,
-                    actualSenderUid,
-                    senderName,
-                    notification.Message.ReceiverId,
-                    notification.Message.ReceiverUniqueId,
+                    actualSenderUid ?? string.Empty,
+                    senderName ?? string.Empty,
+                    notification.Message.ReceiverId ?? 0,
+                    notification.Message.ReceiverUniqueId ?? string.Empty,
                     request.Channel,
-                    request.Content);
+                    request.Content ?? string.Empty);
             }
 
             var response = new SendChatResponse { Success = true, Message = "消息处理成功。" };

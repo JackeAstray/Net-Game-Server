@@ -375,9 +375,9 @@ if (!handled || (int?)result != 55 || callEntity.Get<int>("Hp") != 55) return 1;
 // 参数 round-trip（多种类型）
 byte[] argsBytes = Framework.Entity.ArgCodec.Serialize(new object?[] { 1, "hello", 3.14f, true, new Framework.Entity.Float3(1, 2, 3), null, 99L });
 object?[] decodedArgs = Framework.Entity.ArgCodec.Deserialize(argsBytes);
-Console.WriteLine($"EntityCall 参数编解码: count={decodedArgs.Length} [{(int)decodedArgs[0]},{(string)decodedArgs[1]},{(float)decodedArgs[2]},{ (bool)decodedArgs[3]},{(Framework.Entity.Float3)decodedArgs[4]},null,{(long)decodedArgs[6]}]");
-if (decodedArgs.Length != 7 || (int)decodedArgs[0] != 1 || (string)decodedArgs[1] != "hello"
-    || (float)decodedArgs[2] != 3.14f || !(bool)decodedArgs[3] || decodedArgs[5] != null || (long)decodedArgs[6] != 99L) return 1;
+Console.WriteLine($"EntityCall 参数编解码: count={decodedArgs.Length} [{(int)decodedArgs[0]!},{(string)decodedArgs[1]!},{(float)decodedArgs[2]!},{ (bool)decodedArgs[3]!},{(Framework.Entity.Float3)decodedArgs[4]!},null,{(long)decodedArgs[6]!}]");
+if (decodedArgs.Length != 7 || (int)decodedArgs[0]! != 1 || (string)decodedArgs[1]! != "hello"
+    || (float)decodedArgs[2]! != 3.14f || !(bool)decodedArgs[3]! || decodedArgs[5] != null || (long)decodedArgs[6]! != 99L) return 1;
 
 // ===== 11b. EntityCall 回执/超时（D3：callId + 超时表 + 回执关联） =====
 // 模拟跨进程异步调用：发送方 EntityCall.Remote → 截获消息 → 接收方 ExecuteRemoteCall → 回执经 EntityCallHub 关联完成

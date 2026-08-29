@@ -335,8 +335,8 @@ namespace Login.Handlers
             {
                 UserId = userId,
                 Account = account,
-                OldPassword = request.OldPassword,
-                NewPassword = request.NewPassword
+                OldPassword = request.OldPassword ?? string.Empty,
+                NewPassword = request.NewPassword ?? string.Empty
             };
 
             var verifyResp = await CallDbAsync<Shared.Messages.Db.ChangePasswordVerifyResponse>(MessageIds.DbChangePasswordReq, verifyReq);
@@ -404,7 +404,7 @@ namespace Login.Handlers
         /// <remarks>在 DB 响应为空或用户不存在时会记录错误或警告日志；返回的 Email 在未知时为空字符串。</remarks>
         /// <param name="account">要查询的用户账号。</param>
         /// <returns>找到用户时返回包含账号和邮箱的 Shared.Data.User；未找到或 DB 无响应时返回 null。</returns>
-        private async Task<Shared.Data.User> GetUserByAccountAsync(string account)
+        private async Task<Shared.Data.User?> GetUserByAccountAsync(string account)
         {
             var queryReq = new Shared.Messages.Db.AccountQueryRequest
             {
@@ -519,7 +519,7 @@ namespace Login.Handlers
         /// <summary>找回密码待确认记录。</summary>
         private sealed class PendingPasswordReset
         {
-            public byte[] CodeHash;
+            public byte[] CodeHash = Array.Empty<byte>();
             public DateTime ExpiresAtUtc;
         }
 

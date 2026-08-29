@@ -120,6 +120,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"添加好友异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbAddFriendRes, "添加好友失败，服务器内部错误");
             }
             });
         }
@@ -190,6 +191,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"删除好友异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbRemoveFriendRes, "删除好友失败，服务器内部错误");
             }
             });
         }
@@ -256,6 +258,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"设置好友备注异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbSetFriendRemarkRes, "设置好友备注失败，服务器内部错误");
             }
             });
         }
@@ -309,6 +312,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"获取好友列表异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbGetFriendsRes, "获取好友列表失败，服务器内部错误");
             }
             });
         }

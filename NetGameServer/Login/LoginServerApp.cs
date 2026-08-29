@@ -207,7 +207,7 @@ namespace Login
                     }
                 }
 
-                Shared.Log.Debug("Login <- Gateway 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint, msgId, data.Length, payloadLength);
+                Shared.Log.Debug("Login <- Gateway 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint!, msgId, data.Length, payloadLength);
                 byte[] payload = data.Slice(4).ToArray();
 
                 if (!Shared.RouteMetadata.TryExtractClientSessionId(payload, out long clientSessionId, out var cleanPayload))
@@ -389,7 +389,7 @@ namespace Login
 
                 int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
                 int payloadLength = data.Length - 4;
-                Shared.Log.Debug("Login <- DB 收到消息 MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} Remote:{Remote}", msgId, data.Length, payloadLength, session.RemoteEndPoint);
+                Shared.Log.Debug("Login <- DB 收到消息 MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} Remote:{Remote}", msgId, data.Length, payloadLength, session.RemoteEndPoint!);
                 byte[] payload = data.Slice(4).ToArray();
 
                 if (Shared.RouteMetadata.TryExtractRequestId(payload, out long requestId, out var cleanPayload)
@@ -464,7 +464,7 @@ namespace Login
                     {
                         while (!cancellationToken.IsCancellationRequested)
                         {
-                            await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
+                            await Task.Delay(TimeSpan.FromSeconds(Shared.NodeHeartbeatDefaults.HeartbeatIntervalSeconds), cancellationToken);
                             SendNodeStatus(centerClient, nodeId, activeGatewaySessions.Count);
                         }
                     }
@@ -488,7 +488,7 @@ namespace Login
                 }
 
                 int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
-                Shared.Log.Debug("Login <- Center 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint, msgId, data.Length, data.Length - 4);
+                Shared.Log.Debug("Login <- Center 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint!, msgId, data.Length, data.Length - 4);
             };
             _ = centerClient.ConnectAsync();
         }
@@ -590,6 +590,18 @@ namespace Login
             string? certificatePassword = ConfigHelper.GetConfig<string>("ApiHttpsCertificatePassword");
             bool httpsEnabled = !string.IsNullOrWhiteSpace(certificatePath) && File.Exists(certificatePath);
 
+            // 安全修复：生产环境强制 HTTPS——明文 HTTP 会泄露登录口令。
+            // 本地开发（默认）保持 HTTP 可用；ASPNETCORE_ENVIRONMENT=Production 或配置 ForceApiHttps=true 时无证书直接拒绝启动。
+            bool isProduction = string.Equals(
+                    Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"), "Production", StringComparison.OrdinalIgnoreCase)
+                || Shared.ConfigHelper.GetConfig<bool>("ForceApiHttps");
+            if (isProduction && !httpsEnabled)
+            {
+                Shared.Log.Error("生产环境必须配置 API HTTPS 证书（ApiHttpsCertificatePath / ApiHttpsCertificatePassword），拒绝以明文 HTTP 启动 Login API。");
+                throw new InvalidOperationException(
+                    "生产环境拒绝以明文 HTTP 启动 Login API。请配置 ApiHttpsCertificatePath 与 ApiHttpsCertificatePassword（或移除 ForceApiHttps）。");
+            }
+
             // 配置 Kestrel 显式监听指定端口，避免被 IISExpress 或其他默认配置干扰
             builder.WebHost.ConfigureKestrel(options =>
             {
@@ -604,9 +616,9 @@ namespace Login
 
                     Shared.Log.Info($"ASP.NET API 已启用 HTTPS 监听，端口 {httpsPort}，证书: {certificatePath}");
                 }
-                else
+                else if (!isProduction)
                 {
-                    Shared.Log.Warning("未配置有效的 API HTTPS 证书，Login API 仅启用 HTTP 监听。");
+                    Shared.Log.Warning("未配置有效的 API HTTPS 证书，Login API 仅启用 HTTP 监听（仅限开发环境，生产环境必须启用 HTTPS）。");
                 }
             });
 

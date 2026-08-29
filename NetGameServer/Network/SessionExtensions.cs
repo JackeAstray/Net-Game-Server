@@ -1,4 +1,4 @@
-﻿using Network.Routing;
+using Network.Routing;
 using Newtonsoft.Json;
 using System;
 using System.Buffers;
@@ -20,7 +20,7 @@ namespace Network
         /// <param name="message">要序列化为 UTF‑8 JSON 并随包发送的消息对象。</param>
         public static void SendJsonMessage<T>(this ISession session, int msgId, T message)
         {
-            byte[] payload = Shared.Json.SerializeToUtf8Bytes(message);
+            byte[] payload = Shared.Json.SerializeToUtf8Bytes(message!);
 
             // BuildPacket 保证了外包装结构: 长度(4) + MsgId(4) + payload
             byte[] buffer = PacketBuilder.BuildPacket(msgId, payload, out int totalLength);

@@ -155,4 +155,13 @@ public sealed class FrameSyncManager
     {
         tickEngine.OnTick -= OnTick;
     }
+
+    /// <summary>
+    /// 场景销毁时清理该场景的输入队列与帧号（防字典无界增长 + 防过期输入被新场景回放）。
+    /// </summary>
+    public void RemoveScene(string sceneId)
+    {
+        inputQueues.TryRemove(sceneId, out _);
+        sceneFrames.TryRemove(sceneId, out _);
+    }
 }

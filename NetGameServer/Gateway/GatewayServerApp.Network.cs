@@ -118,7 +118,7 @@ namespace Gateway
                     {
                         int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
                         int payloadLength = data.Length - 4;
-                        Shared.Log.Debug("Gateway 接收到客户端数据 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint, msgId, data.Length, payloadLength);
+                        Shared.Log.Debug("Gateway 接收到客户端数据 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint!, msgId, data.Length, payloadLength);
 
                         // 安全修复（P0）：先剥离客户端可能注入的 __* 路由元数据（JSON 内嵌 / 伪造二进制尾部块），
                         // 再由网关附加受信任的元数据，防止未登录客户端伪造 __userId/__uid/__nickname 冒充他人。
@@ -162,13 +162,13 @@ namespace Gateway
                             switch (targetServer)
                             {
                                 case "Login":
-                                    loginSender.SendOrBuffer(outbound);
+                                    loginSender?.SendOrBuffer(outbound);
                                     break;
                                 case "Game":
-                                    gameSender.SendOrBuffer(outbound);
+                                    gameSender?.SendOrBuffer(outbound);
                                     break;
                                 case "Center":
-                                    centerSender.SendOrBuffer(outbound);
+                                    centerSender?.SendOrBuffer(outbound);
                                     break;
                                 case "Battle":
                                     SendToBattle(outbound, session.SessionId);
@@ -183,17 +183,17 @@ namespace Gateway
                         if (msgId >= 10000 && msgId < 20000)
                         {
                             Shared.Log.Debug("Gateway 路由客户端消息 -> Login MsgId:{MsgId} ClientSessionId:{ClientSessionId} BoundUserId:{BoundUserId} OutboundLength:{OutboundLength}", msgId, session.SessionId, boundUserId, outbound.Length);
-                            loginSender.SendOrBuffer(outbound);
+                            loginSender?.SendOrBuffer(outbound);
                         }
                         else if ((msgId >= 20000 && msgId < 30000) || (msgId >= 50000 && msgId < 70000))
                         {
                             Shared.Log.Debug("Gateway 路由客户端消息 -> Game MsgId:{MsgId} ClientSessionId:{ClientSessionId} BoundUserId:{BoundUserId} OutboundLength:{OutboundLength}", msgId, session.SessionId, boundUserId, outbound.Length);
-                            gameSender.SendOrBuffer(outbound);
+                            gameSender?.SendOrBuffer(outbound);
                         }
                         else if (msgId >= 30000 && msgId < 40000)
                         {
                             Shared.Log.Debug("Gateway 路由客户端消息 -> Center MsgId:{MsgId} ClientSessionId:{ClientSessionId} BoundUserId:{BoundUserId} OutboundLength:{OutboundLength}", msgId, session.SessionId, boundUserId, outbound.Length);
-                            centerSender.SendOrBuffer(outbound);
+                            centerSender?.SendOrBuffer(outbound);
                         }
                         else if (msgId >= 40000 && msgId < 50000)
                         {

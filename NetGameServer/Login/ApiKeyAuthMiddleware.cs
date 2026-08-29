@@ -28,10 +28,13 @@ public sealed class ApiKeyAuthMiddleware
     {
         var path = context.Request.Path.Value ?? string.Empty;
 
-        // 排除路径
+        // 排除路径：精确匹配（或该路径的子路径）。避免前缀匹配把 /api/account/loginX 这类路径一并放行。
         foreach (var allowed in options.AllowAnonymousPaths)
         {
-            if (path.StartsWith(allowed, StringComparison.OrdinalIgnoreCase))
+            if (path.Equals(allowed, StringComparison.OrdinalIgnoreCase) ||
+                (path.Length > allowed.Length &&
+                 path.StartsWith(allowed, StringComparison.OrdinalIgnoreCase) &&
+                 path[allowed.Length] == '/'))
             {
                 return next(context);
             }

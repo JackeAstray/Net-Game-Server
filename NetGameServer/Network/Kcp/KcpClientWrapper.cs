@@ -89,7 +89,7 @@ public class KcpClientWrapper : INetworkClient
                 {
                     kcp?.Input(result.Buffer);
                     var now = DateTimeOffset.UtcNow;
-                    kcp?.Update(ref now);
+                    kcp?.Update(in now);
 
                     while (kcp != null && kcp.TryRecv(recvWriter) > 0)
                     {
@@ -121,7 +121,7 @@ public class KcpClientWrapper : INetworkClient
                     if (kcp != null)
                     {
                         var now = DateTimeOffset.UtcNow;
-                        kcp.Update(ref now);
+                        kcp.Update(in now);
                     }
                 }
             }
@@ -140,7 +140,7 @@ public class KcpClientWrapper : INetworkClient
             {
                 kcp.Send(data.Span, null);
                 var now = DateTimeOffset.UtcNow;
-                kcp.Update(ref now);
+                kcp.Update(in now);
             }
         }
         catch (Exception ex)

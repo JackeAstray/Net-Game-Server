@@ -18,6 +18,9 @@ namespace Battle.Handlers
         /// <summary>场景创建事件（宿主用于生成场景级玩法实体、注册脚本实体管理器等）。</summary>
         public event Action<BattleScene>? SceneCreated;
 
+        /// <summary>场景销毁事件（宿主用于注销脚本实体管理器/备份管理器、清理帧同步字典、通知脚本 OnDestroy 取消定时器）。</summary>
+        public event Action<BattleScene>? SceneDestroyed;
+
         /// <summary>
         /// 玩家会话 Id 到所在场景 Id 的映射。
         /// 用于快速根据玩家路由到其所在场景进行消息处理。
@@ -140,13 +143,14 @@ namespace Battle.Handlers
 
         /// <summary>
         /// 从管理集合中移除指定 SceneId 的场景。
-        /// 移除成功时会记录日志，注意调用者需负责场景内资源的清理（若有必要）。
+        /// 移除成功时触发 <see cref="SceneDestroyed"/> 事件并记录日志（宿主负责场景内资源的清理）。
         /// </summary>
         /// <param name="sceneId">要移除的场景 Id。</param>
         public void RemoveScene(string sceneId)
         {
             if (scenes.TryRemove(sceneId, out var removedScene))
             {
+                SceneDestroyed?.Invoke(removedScene);
                 Shared.Log.Info($" 场景已移除并清理干净: {sceneId}");
             }
         }

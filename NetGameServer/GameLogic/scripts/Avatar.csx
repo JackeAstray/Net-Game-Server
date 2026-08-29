@@ -6,6 +6,9 @@
 // 客户端通过 ScriptAction(40006) 消息调用 TakeDamage（args=[伤害]）。
 // 所有逻辑只写在这一个 .csx 里，框架零改动，保存即热更新。
 //
+// A1 修复：脚本宿主按类型只实例化一次（ScriptHost.scripts[typeName]），
+// 因此所有"每实体状态"（定时器句柄等）一律按 entity.EntityId 键控存储，
+// 严禁使用实例字段保存每实体状态（会造成跨玩家串号：A 离开取消 B 的回血等）。
 // KBE-Gap-Review 落地：
 //   S1 结构化日志：Log.Info/Warn（基类 Log 属性）
 //   S2 定时器回血：AddTimer(1000) 代替 tick % 20 轮询
@@ -13,6 +16,7 @@
 //   S4 热更新钩子：OnReload(oldState) 恢复 timer 句柄；ScriptVersion bump
 
 using System;
+using System.Collections.Concurrent;
 using Framework.Entity;
 using Framework.Scripting;
 using Framework.Tick;
@@ -22,9 +26,8 @@ public class AvatarScript : EntityScriptBase
     public override string EntityType => "Player";
     public override int ScriptVersion => 2;
 
-    // 内部状态字段——热更新会重置。OnReload 钩子用来显式恢复（KBE-Gap-Review S4）。
-    private int damageTaken;
-    private TimerHandle? healTimer;
+    // 每实体状态——按 EntityId 键控（A1 修复：不得用实例字段保存每实体状态）。
+    private readonly ConcurrentDictionary<long, TimerHandle> healTimers = new();
 
     public override void OnCreate(Entity entity)
     {
@@ -33,7 +36,7 @@ public class AvatarScript : EntityScriptBase
         entity.Set("Score", 0);
 
         // KBE-Gap-Review S2：定时器回血代替 tick%N 轮询
-        healTimer = AddTimer(entity, 1000, () => TickHeal(entity), repeat: true);
+        healTimers[entity.EntityId] = AddTimer(entity, 1000, () => TickHeal(entity), repeat: true);
 
         Log.Info("Avatar", "Avatar {EntityId} 创建，Hp={Hp}", entity.EntityId, entity.Get<int>("Hp"));
     }
@@ -60,7 +63,6 @@ public class AvatarScript : EntityScriptBase
             if (raw is int m) multiplier = m;
             // KBE-Gap-Review S3：边界钳制，Hp 不允许 < 0
             int newHp = MathClampAdd(entity, "Hp", -dmg * multiplier, 0, int.MaxValue);
-            damageTaken += dmg * multiplier;
             Log.Info("Avatar", "Avatar {EntityId} 受到 {Dmg}x{MP} 伤害，Hp={Hp}", entity.EntityId, dmg, multiplier, newHp);
         }
         else
@@ -71,22 +73,24 @@ public class AvatarScript : EntityScriptBase
 
     public override void OnDestroy(Entity entity)
     {
-        // 释放定时器，避免 OnDestroy 后回调触发空引用
-        healTimer?.Cancel();
-        healTimer = null;
+        // 仅取消并移除该实体的定时器，不影响其它玩家（A1 修复）
+        if (healTimers.TryRemove(entity.EntityId, out var timer))
+        {
+            timer.Cancel();
+        }
     }
 
     public override void OnReload(Entity entity, object? oldState)
     {
         // KBE-Gap-Review S4：热更新显式状态迁移
-        // state 由宿主在重新加载前通过 SetReloadState 注入；这里从 entity 自身恢复
-        // 安全修复（P1）：先取消旧实例的定时器句柄，避免热更新后 repeat 定时器叠加导致回血速率随热更次数线性放大
-        healTimer?.Cancel();
-        healTimer = null;
-        damageTaken = entity.Get<int>("Score"); // 复用 Score 字段作为累计受伤
-        // 重新挂载定时器（旧实例的句柄已无效）
-        healTimer = AddTimer(entity, 1000, () => TickHeal(entity), repeat: true);
-        Log.Info("Avatar", "Avatar {EntityId} 脚本热更新完成，damagedTaken={Taken}", entity.EntityId, damageTaken);
+        // 安全修复（P1）+ A1：只取消并重挂该实体的定时器，避免热更新后 repeat 定时器叠加
+        // 且不串扰其它玩家的定时器。
+        if (healTimers.TryRemove(entity.EntityId, out var oldTimer))
+        {
+            oldTimer.Cancel();
+        }
+        healTimers[entity.EntityId] = AddTimer(entity, 1000, () => TickHeal(entity), repeat: true);
+        Log.Info("Avatar", "Avatar {EntityId} 脚本热更新完成", entity.EntityId);
     }
 }
 

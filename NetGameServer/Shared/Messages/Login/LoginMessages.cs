@@ -12,8 +12,8 @@ namespace Shared.Messages.Login
     /// </remarks>
     public class LoginRequest
     {
-        public string Account { get; set; }
-        public string Password { get; set; }
+        public string Account { get; set; } = string.Empty;
+        public string Password { get; set; } = string.Empty;
     }
 
     /// <summary>
@@ -26,12 +26,12 @@ namespace Shared.Messages.Login
     public class LoginResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
         public int UserId { get; set; }
-        public string Token { get; set; }
-        public string UniqueId { get; set; }
-        public string Nickname { get; set; }
-        public string Email { get; set; }
+        public string Token { get; set; } = string.Empty;
+        public string UniqueId { get; set; } = string.Empty;
+        public string Nickname { get; set; } = string.Empty;
+        public string Email { get; set; } = string.Empty;
         public DateTime LastLoginTime { get; set; }
         public int LoginCount { get; set; }
         public bool IsAdmin { get; set; }
@@ -47,9 +47,9 @@ namespace Shared.Messages.Login
     /// </remarks>
     public class RegisterRequest
     {
-        public string Account { get; set; }
-        public string Password { get; set; }
-        public string Nickname { get; set; }
+        public string Account { get; set; } = string.Empty;
+        public string Password { get; set; } = string.Empty;
+        public string Nickname { get; set; } = string.Empty;
     }
 
     /// <summary>
@@ -62,7 +62,7 @@ namespace Shared.Messages.Login
     public class RegisterResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
     }
 
     /// <summary>
@@ -79,7 +79,7 @@ namespace Shared.Messages.Login
     public class LogoutResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
     }
 
     /// <summary>
@@ -92,9 +92,9 @@ namespace Shared.Messages.Login
     /// </remarks>
     public class ChangePasswordRequest
     {
-        public string Account { get; set; }
-        public string OldPassword { get; set; }
-        public string NewPassword { get; set; }
+        public string Account { get; set; } = string.Empty;
+        public string OldPassword { get; set; } = string.Empty;
+        public string NewPassword { get; set; } = string.Empty;
     }
 
     /// <summary>
@@ -107,7 +107,7 @@ namespace Shared.Messages.Login
     public class ChangePasswordResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
     }
 
     /// <summary>
@@ -121,7 +121,7 @@ namespace Shared.Messages.Login
     public class ChangeNicknameRequest
     {
         public int UserId { get; set; }
-        public string NewNickname { get; set; }
+        public string NewNickname { get; set; } = string.Empty;
     }
 
     /// <summary>
@@ -134,7 +134,7 @@ namespace Shared.Messages.Login
     public class ChangeNicknameResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
     }
 
     /// <summary>
@@ -145,8 +145,8 @@ namespace Shared.Messages.Login
     /// </remarks>
     public class FindPasswordRequest
     {
-        public string Account { get; set; }
-        public string Email { get; set; }
+        public string Account { get; set; } = string.Empty;
+        public string Email { get; set; } = string.Empty;
     }
 
     /// <summary>
@@ -155,7 +155,7 @@ namespace Shared.Messages.Login
     public class FindPasswordResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
     }
 
     /// <summary>
@@ -163,10 +163,10 @@ namespace Shared.Messages.Login
     /// </summary>
     public class ResetPasswordWithCodeRequest
     {
-        public string Account { get; set; }
-        public string Email { get; set; }
-        public string Code { get; set; }
-        public string NewPassword { get; set; }
+        public string Account { get; set; } = string.Empty;
+        public string Email { get; set; } = string.Empty;
+        public string Code { get; set; } = string.Empty;
+        public string NewPassword { get; set; } = string.Empty;
     }
 
     /// <summary>
@@ -175,7 +175,7 @@ namespace Shared.Messages.Login
     public class ResetPasswordWithCodeResponse
     {
         public bool Success { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
     }
 
     /// <summary>
@@ -183,7 +183,7 @@ namespace Shared.Messages.Login
     /// </summary>
     public class KickedOffMessage
     {
-        public string Reason { get; set; }
+        public string Reason { get; set; } = string.Empty;
         public DateTime Time { get; set; }
     }
 
@@ -192,7 +192,7 @@ namespace Shared.Messages.Login
     /// </summary>
     public class AccountQueryRequest
     {
-        public string Account { get; set; }
+        public string Account { get; set; } = string.Empty;
     }
 
     /// <summary>
@@ -204,7 +204,7 @@ namespace Shared.Messages.Login
         public bool IsOnline { get; set; }
         public bool IsLocked { get; set; }
         public bool IsAdmin { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
     }
 
     /// <summary>

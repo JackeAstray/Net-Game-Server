@@ -211,7 +211,7 @@ internal static class Program
             var dict = (IDictionary)Activator.CreateInstance(targetType)!;
             foreach (DictionaryEntry e in (IDictionary)sourceValue)
             {
-                dict[CopyValue(args[0], e.Key)] = CopyValue(args[1], e.Value);
+                dict[CopyValue(args[0], e.Key)!] = CopyValue(args[1], e.Value);
             }
             return dict;
         }

@@ -100,6 +100,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"添加黑名单异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbAddBlacklistRes, "添加黑名单失败，服务器内部错误");
             }
             });
         }
@@ -169,6 +170,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"移除黑名单异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbRemoveBlacklistRes, "移除黑名单失败，服务器内部错误");
             }
             });
         }
@@ -226,6 +228,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"获取黑名单异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbGetBlacklistRes, "获取黑名单失败，服务器内部错误");
             }
             });
         }
@@ -282,6 +285,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"按UniqueId解析用户异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbResolveUserByUniqueIdRes, "用户解析失败，服务器内部错误");
             }
         }
 
@@ -337,6 +341,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"按UserId解析用户异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbResolveUserByUserIdRes, "用户解析失败，服务器内部错误");
             }
         }
 
@@ -453,6 +458,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"创建好友申请异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbCreateFriendApplyRes, "好友申请失败，服务器内部错误");
             }
             });
         }
@@ -516,6 +522,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"获取好友申请列表异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbGetFriendApplyListRes, "好友申请列表失败，服务器内部错误");
             }
             });
         }
@@ -643,6 +650,7 @@ namespace DB.Handlers
             catch (Exception ex)
             {
                 Log.Error($"处理好友申请异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbHandleFriendApplyRes, "好友申请处理失败，服务器内部错误");
             }
             });
         }

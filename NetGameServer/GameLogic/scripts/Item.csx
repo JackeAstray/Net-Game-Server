@@ -5,9 +5,12 @@
 // - 掉落：定时器周期"自动掉落"（模拟怪物掉宝），与 Npc 掉落经验形成对照
 // - 全局数据：ItemTotalPicked / ItemHealedTotal / ItemAutoDrops 供统计/任务类脚本消费
 //
+// A1 修复：脚本宿主按类型只实例化一次，所有"每实体状态"按 entity.EntityId 键控存储。
+//
 // KBE-Gap-Review 落地：S1 结构化日志 + S2 定时器 + S3 边界 + S4 热更新钩子
 
 using System;
+using System.Collections.Concurrent;
 using Framework.Entity;
 using Framework.Scripting;
 using Framework.Tick;
@@ -21,8 +24,8 @@ public class ItemScript : EntityScriptBase
     private const int AutoDropIntervalMs = 1500; // 1.5s 自动掉落 1 个
     private const int MaxStack = 99;             // 背包上限（KBE-Gap-Review S3）
 
-    private int pickedTotal;
-    private TimerHandle? autoDropTimer;
+    // 每实体自动掉落定时器（A1 修复：按 EntityId 键控）
+    private readonly ConcurrentDictionary<long, TimerHandle> autoDropTimers = new();
 
     public override void OnCreate(Entity entity)
     {
@@ -30,7 +33,7 @@ public class ItemScript : EntityScriptBase
         entity.Set("Count", 0);
 
         // KBE-Gap-Review S2：定时器掉落代替 tick%N 轮询
-        autoDropTimer = AddTimer(entity, AutoDropIntervalMs, () => TickAutoDrop(entity), repeat: true);
+        autoDropTimers[entity.EntityId] = AddTimer(entity, AutoDropIntervalMs, () => TickAutoDrop(entity), repeat: true);
 
         Log.Info("Item", "Item {EntityId} 创建，ItemId=1 背包空", entity.EntityId);
     }
@@ -67,7 +70,6 @@ public class ItemScript : EntityScriptBase
             }
             entity.Set("ItemId", itemId);
             int newCount = MathClampAdd(entity, "Count", itemCount, 0, MaxStack);
-            pickedTotal += itemCount;
             var pickedRaw = ScriptHost.Current?.GetGlobal("ItemTotalPicked");
             int picked = pickedRaw is int p ? p : 0;
             ScriptHost.Current?.SetGlobal("ItemTotalPicked", picked + itemCount);
@@ -97,18 +99,21 @@ public class ItemScript : EntityScriptBase
 
     public override void OnDestroy(Entity entity)
     {
-        autoDropTimer?.Cancel();
-        autoDropTimer = null;
+        // 仅取消并移除该实体的定时器（A1 修复）
+        if (autoDropTimers.TryRemove(entity.EntityId, out var timer))
+        {
+            timer.Cancel();
+        }
     }
 
     public override void OnReload(Entity entity, object? oldState)
     {
-        // KBE-Gap-Review S4：热更新后恢复状态 + 重新挂定时器
-        // 安全修复（P1）：先取消旧实例的定时器句柄，避免热更新后 repeat 定时器叠加导致掉落速率随热更次数线性放大
-        autoDropTimer?.Cancel();
-        autoDropTimer = null;
-        pickedTotal = entity.Get<int>("Count");
-        autoDropTimer = AddTimer(entity, AutoDropIntervalMs, () => TickAutoDrop(entity), repeat: true);
+        // KBE-Gap-Review S4 + A1：先取消旧实例该实体的定时器，再重挂
+        if (autoDropTimers.TryRemove(entity.EntityId, out var oldTimer))
+        {
+            oldTimer.Cancel();
+        }
+        autoDropTimers[entity.EntityId] = AddTimer(entity, AutoDropIntervalMs, () => TickAutoDrop(entity), repeat: true);
         Log.Info("Item", "Item {EntityId} 脚本热更新完成", entity.EntityId);
     }
 }

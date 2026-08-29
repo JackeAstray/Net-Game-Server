@@ -110,6 +110,15 @@ public sealed class InternalAuthFilter
     /// <summary>当前连接是否已通过认证</summary>
     public bool IsAuthenticated { get; private set; }
 
+    /// <summary>
+    /// 防重放缓存：nodeId|timestamp -> 接受时刻（Ticks）。
+    /// 同一握手包（nodeId + timestamp 完全一致）只能在时间窗内被接受一次（跨连接亦然），
+    /// 防止攻击者截获合法握手后重放以冒充节点。条目按 TTL 定期清理，避免无界增长。
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> AcceptedHandshakes = new();
+    private static readonly TimeSpan ReplayCacheTtl = TimeSpan.FromSeconds(MaxClockSkewSeconds * 2);
+    private static long lastReplaySweepTicks;
+
     public InternalAuthFilter(string sharedSecret, string nodeId)
     {
         key = Encoding.UTF8.GetBytes(sharedSecret);
@@ -173,8 +182,39 @@ public sealed class InternalAuthFilter
             return false;
         }
 
+        // 防重放：同一握手（nodeId + timestamp）只能被接受一次（跨连接亦然）。
+        if (!AcceptedHandshakes.TryAdd($"{remoteNodeId}|{timestamp}", DateTime.UtcNow.Ticks))
+        {
+            Framework.Core.Log.Warning($"内部认证握手重放被拒绝 NodeId:{remoteNodeId}");
+            return false;
+        }
+        MaybeSweepReplayCache();
+
         IsAuthenticated = true;
         return true;
+    }
+
+    private static void MaybeSweepReplayCache()
+    {
+        long now = DateTime.UtcNow.Ticks;
+        long last = System.Threading.Volatile.Read(ref lastReplaySweepTicks);
+        if (now - last < ReplayCacheTtl.Ticks)
+        {
+            return;
+        }
+        if (System.Threading.Interlocked.CompareExchange(ref lastReplaySweepTicks, now, last) != last)
+        {
+            return;
+        }
+
+        long cutoff = now - ReplayCacheTtl.Ticks;
+        foreach (var kv in AcceptedHandshakes)
+        {
+            if (kv.Value < cutoff)
+            {
+                AcceptedHandshakes.TryRemove(kv.Key, out _);
+            }
+        }
     }
 
     /// <summary>负载是否是认证握手。</summary>
