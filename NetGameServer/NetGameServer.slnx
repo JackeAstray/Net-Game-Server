@@ -7,9 +7,9 @@
   <Project Path="Login/Login.csproj" />
   <Project Path="Network/Network.csproj" />
   <Project Path="Shared/Shared.csproj" />
-  <Project Path="Protogen/Protogen.csproj" />
   <Project Path="Framework/Framework.Core/Framework.Core.csproj" />
   <Project Path="Framework/Framework.Protocol/Framework.Protocol.csproj" />
+  <Project Path="Framework/Framework.Protocol.Generator/Framework.Protocol.Generator.csproj" />
   <Project Path="Framework/Framework.Entity/Framework.Entity.csproj" />
   <Project Path="Framework/Framework.Tick/Framework.Tick.csproj" />
   <Project Path="Framework/Framework.Scripting/Framework.Scripting.csproj" />

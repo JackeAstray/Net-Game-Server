@@ -1,13 +1,14 @@
 using System.Text;
 using Newtonsoft.Json;
-using Protogen;
 
 namespace ClientGen;
 
 /// <summary>
 /// 客户端协议脚本生成器。
-/// 用法：ClientGen &lt;defs目录&gt; &lt;输出目录&gt;
-/// 从 Protocol/defs/*.def 生成客户端可见消息，输出：
+/// 用法：ClientGen &lt;defs目录(兼容保留，不再解析)&gt; &lt;输出目录&gt;
+/// 协议声明唯一来源是 Framework.Protocol.Generated.ProtocolManifest.Json
+/// （由 Framework.Protocol.Generator 源生成器从 [GameMessage]/[GameStruct] 编译期产出），
+/// 这里筛选客户端可见消息后输出：
 ///   protocol.json       —— 协议清单（客户端可见消息 + 结构体）
 ///   Unity/              —— C# 脚本（MemoryPackCodec / Messages / MessageIds / NetClient / Demo）
 ///   UE/                 —— C++ 脚本（MemoryPack.h / Messages.h / NetClient / Demo / README）
@@ -19,7 +20,7 @@ public static class Program
     {
         if (args.Length < 2)
         {
-            Console.Error.WriteLine("用法: ClientGen <defs目录> <输出目录>");
+            Console.Error.WriteLine("用法: ClientGen <defs目录(兼容保留)> <输出目录>");
             return 1;
         }
 
@@ -32,12 +33,9 @@ public static class Program
             return 1;
         }
 
-        var all = new List<ProtocolModel>();
-        foreach (var file in Directory.GetFiles(defsDir, "*.def").OrderBy(f => f))
-        {
-            Console.WriteLine($"解析 {Path.GetFileName(file)} ...");
-            all.Add(ProtocolParser.Parse(file));
-        }
+        // 协议来源：源生成器产出的 ProtocolManifest.Json（.def 解析管线已删除，defs 目录参数仅兼容保留）
+        var all = ClientModel.ParseManifest(Framework.Protocol.Generated.ProtocolManifest.Json);
+        Console.WriteLine($"协议清单: 消息 {all[0].Messages.Count} 条 / 结构体 {all[0].Structs.Count} 个");
 
         // 客户端可见协议（排除 internal / Db）
         var client = ClientModel.Filter(all);

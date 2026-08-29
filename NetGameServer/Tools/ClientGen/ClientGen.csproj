@@ -10,8 +10,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- 复用 Protogen 的 .def 解析器（ProtocolParser / ProtocolModel） -->
-    <ProjectReference Include="..\..\Protogen\Protogen.csproj" />
+    <!-- 读取源生成器产出的 ProtocolManifest.Json（协议声明唯一来源，[GameMessage]/[GameStruct]） -->
+    <ProjectReference Include="..\..\Framework\Framework.Protocol\Framework.Protocol.csproj" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
   </ItemGroup>
 

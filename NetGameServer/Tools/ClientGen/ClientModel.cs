@@ -1,5 +1,3 @@
-using Protogen;
-
 namespace ClientGen;
 
 /// <summary>
@@ -46,6 +44,42 @@ public static class ClientModel
             result.Add(model);
         }
         return result;
+    }
+
+    /// <summary>
+    /// 从源生成器产出的 ProtocolManifest.Json 解析为协议模型（迁移到 [GameMessage] 的消息，如 Login 链路）。
+    /// 与 def 解析产物合并后统一走 Filter，客户端可见性判定规则一致。
+    /// </summary>
+    public static List<ProtocolModel> ParseManifest(string json)
+    {
+        var root = Newtonsoft.Json.Linq.JObject.Parse(json);
+        var none = new Newtonsoft.Json.Linq.JArray();
+        var model = new ProtocolModel { Name = "SourceGen", Version = "1" };
+
+        foreach (var m in (Newtonsoft.Json.Linq.JArray?)root["messages"] ?? none)
+        {
+            var msg = new MessageModel
+            {
+                Id = (int)m["id"]!,
+                Name = (string)m["name"]!,
+                Target = (string)m["target"]!,
+                Reply = (string?)m["reply"],
+                Internal = (bool?)m["internal"] ?? false
+            };
+            foreach (var f in (Newtonsoft.Json.Linq.JArray?)m["fields"] ?? none)
+                msg.Fields.Add(new FieldModel { Name = (string)f["name"]!, Type = (string)f["type"]!, Optional = (bool?)f["optional"] ?? false });
+            model.Messages.Add(msg);
+        }
+
+        foreach (var s in (Newtonsoft.Json.Linq.JArray?)root["structs"] ?? none)
+        {
+            var st = new StructModel { Name = (string)s["name"]! };
+            foreach (var f in (Newtonsoft.Json.Linq.JArray?)s["fields"] ?? none)
+                st.Fields.Add(new FieldModel { Name = (string)f["name"]!, Type = (string)f["type"]! });
+            model.Structs.Add(st);
+        }
+
+        return new List<ProtocolModel> { model };
     }
 
     /// <summary>def 类型表达式是否为结构体引用。</summary>

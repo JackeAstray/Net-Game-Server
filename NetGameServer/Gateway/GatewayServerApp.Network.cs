@@ -146,7 +146,7 @@ namespace Gateway
                         byte[] outbound = wrapperMsg.AsSpan(0, routedLength).ToArray();
                         System.Buffers.ArrayPool<byte>.Shared.Return(wrapperMsg);
 
-                        // 配置化路由：优先查 Protogen 生成的路由表（Protocol/defs/*.def 为唯一事实来源），
+                        // 配置化路由：查源生成器产出的路由表（[GameMessage] 声明为唯一事实来源），
                         // 未定义的消息回退到旧区间路由（过渡期兼容）。
                         string? targetServer = Framework.Protocol.Generated.RouterTable.GetTargetServer(msgId);
                         if (targetServer != null)

@@ -1,7 +1,8 @@
 namespace Framework.Protocol;
 
 /// <summary>
-/// 游戏消息基接口。所有由 Protogen 生成的消息类都实现此接口。
+/// 游戏消息基接口。所有 [GameMessage] 声明的消息类都实现此接口
+/// （管线由 Framework.Protocol.Generator 源生成器补齐）。
 /// </summary>
 public interface IGameMessage
 {

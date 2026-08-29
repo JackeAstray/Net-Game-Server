@@ -17,15 +17,11 @@
     <ProjectReference Include="..\Framework.Core\Framework.Core.csproj" />
   </ItemGroup>
 
-  <!-- 协议定义文件：变更时触发重新生成 -->
+  <!-- 方案 A 源生成器：读取 [GameMessage]/[GameStruct]，编译期产出 MessageIds/RouterTable/IGameMessage 管线/ProtocolManifest -->
   <ItemGroup>
-    <ProtocolDefs Include="..\..\Protocol\defs\*.def" />
+    <ProjectReference Include="..\Framework.Protocol.Generator\Framework.Protocol.Generator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
   </ItemGroup>
-
-  <!-- 构建前自动运行 Protogen（若 Protogen 已构建） -->
-  <Target Name="GenerateProtocolCode" BeforeTargets="BeforeCompile" Inputs="@(ProtocolDefs)"
-          Outputs="$(MSBuildThisFileDirectory)Generated\MessageIds.g.cs" Condition="Exists('..\..\Protogen\Protogen.csproj')">
-    <Exec Command="dotnet run --project &quot;$(MSBuildThisFileDirectory)..\..\Protogen\Protogen.csproj&quot; -- &quot;$(MSBuildThisFileDirectory)..\..\Protocol\defs&quot; &quot;$(MSBuildThisFileDirectory)Generated&quot;" />
-  </Target>
 
 </Project>

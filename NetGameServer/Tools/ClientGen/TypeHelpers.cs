@@ -1,5 +1,3 @@
-using Protogen;
-
 namespace ClientGen;
 
 /// <summary>def 字段类型分类（供 Unity C# 与 UE C++ 生成器共用）。</summary>
