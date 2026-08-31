@@ -15,6 +15,13 @@ public sealed class EntityPersistenceService
     private readonly string storageDir;
     private readonly Func<long, Entity>? entityFactory; // 按 ID 重建空实体骨架（恢复用）
 
+    // 实体类型名白名单（防路径穿越：类型名只允许字母/数字/下划线）
+    private static readonly System.Text.RegularExpressions.Regex EntityTypePattern =
+        new("^[A-Za-z0-9_]+$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    // 每实体写锁：同一实体的并发 SaveEntityAsync/SaveEntity 串行化，避免 FileMode.Create 冲突
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<long, object> saveLocks = new();
+
     /// <param name="storageDir">持久化目录</param>
     /// <param name="entityFactory">按实体 ID 创建空实体骨架的回调（恢复时用；null 则无法加载单实体）</param>
     public EntityPersistenceService(string storageDir, Func<long, Entity>? entityFactory = null)
@@ -24,25 +31,82 @@ public sealed class EntityPersistenceService
         Directory.CreateDirectory(storageDir);
     }
 
+    /// <summary>校验实体类型名并返回规范化后的名称（防路径穿越）。</summary>
+    private static string ValidateEntityType(string entityType)
+    {
+        if (string.IsNullOrWhiteSpace(entityType) || !EntityTypePattern.IsMatch(entityType))
+        {
+            throw new ArgumentException($"非法实体类型名（仅允许字母/数字/下划线）: {entityType ?? "<null>"}");
+        }
+        return entityType;
+    }
+
+    /// <summary>确保解析后的完整路径仍位于 storageDir 之下（纵深防御）。</summary>
+    private string ResolveSafePath(string entityType, long entityId)
+    {
+        string dir = Path.Combine(storageDir, ValidateEntityType(entityType));
+        string full = Path.GetFullPath(Path.Combine(dir, $"{entityId}.bin"));
+        string root = Path.GetFullPath(storageDir).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"实体路径越界: {full}");
+        }
+        return full;
+    }
+
     /// <summary>实体文件路径。</summary>
-    private string GetEntityPath(Entity entity) =>
-        Path.Combine(storageDir, entity.TypeName, $"{entity.EntityId}.bin");
+    private string GetEntityPath(Entity entity) => ResolveSafePath(entity.TypeName, entity.EntityId);
+
+    /// <summary>
+    /// 原子写盘：先写同目录临时文件再 rename 覆盖，进程崩溃/写一半时不会留下半截损坏文件。
+    /// </summary>
+    private static void WriteAtomic(string path, byte[] data)
+    {
+        string tmp = path + ".tmp";
+        File.WriteAllBytes(tmp, data);
+        File.Move(tmp, path, overwrite: true);
+    }
 
     /// <summary>
     /// 保存单个实体全部属性（对标 KBE 实体落库）。
+    /// 原子写 + 每实体串行化，可安全并发调用。
     /// </summary>
     public void SaveEntity(Entity entity)
     {
-        byte[] props = PropertyCodec.SerializeAll(entity);
-        string path = GetEntityPath(entity);
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllBytes(path, props);
+        lock (GetSaveLock(entity.EntityId))
+        {
+            byte[] props = PropertyCodec.SerializeAll(entity);
+            string path = GetEntityPath(entity);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            WriteAtomic(path, props);
+        }
     }
 
     /// <summary>
     /// 异步保存单个实体（不阻塞调用线程）。
+    /// 先在调用线程快照（脱离活实体），再于后台按实体串行化写盘；
+    /// 避免在非 tick 线程直接读活实体造成与 tick 写的数据竞争。
     /// </summary>
-    public Task SaveEntityAsync(Entity entity) => Task.Run(() => SaveEntity(entity));
+    public Task SaveEntityAsync(Entity entity)
+    {
+        // P3 修复：快照必须在"调用线程"完成（注释声称如此，原实现却放在 Task.Run 后台线程里，
+        // 后台线程直接读活实体，与 tick 线程写实体存在数据竞争）。锁只串行化写盘，不保护实体读取。
+        var snapshot = entity.CopyValues();
+        var def = entity.Def;
+        long entityId = entity.EntityId;
+        return Task.Run(() =>
+        {
+            lock (GetSaveLock(entityId))
+            {
+                byte[] props = PropertyCodec.SerializeAllValues(snapshot, def);
+                string path = GetEntityPath(entity);
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                WriteAtomic(path, props);
+            }
+        });
+    }
+
+    private object GetSaveLock(long entityId) => saveLocks.GetOrAdd(entityId, static _ => new object());
 
     /// <summary>
     /// 加载单个实体属性到已重建的实体骨架。返回 true 表示加载成功。
@@ -70,7 +134,7 @@ public sealed class EntityPersistenceService
         }
         var entity = entityFactory(entityId);
         // 类型名可能不一致，直接按传入类型加载
-        string path = Path.Combine(storageDir, entityType, $"{entityId}.bin");
+        string path = ResolveSafePath(entityType, entityId);
         if (!File.Exists(path))
         {
             return null;
@@ -83,7 +147,7 @@ public sealed class EntityPersistenceService
     /// <summary>删除单个实体持久化数据。</summary>
     public void DeleteEntity(string entityType, long entityId)
     {
-        string path = Path.Combine(storageDir, entityType, $"{entityId}.bin");
+        string path = ResolveSafePath(entityType, entityId);
         if (File.Exists(path))
         {
             File.Delete(path);
@@ -106,7 +170,7 @@ public sealed class EntityPersistenceService
     public List<Entity> RestoreAll(string entityType)
     {
         var result = new List<Entity>();
-        string dir = Path.Combine(storageDir, entityType);
+        string dir = Path.Combine(storageDir, ValidateEntityType(entityType));
         if (!Directory.Exists(dir))
         {
             return result;
@@ -132,7 +196,7 @@ public sealed class EntityPersistenceService
     /// <summary>统计某类型的持久化实体数。</summary>
     public int Count(string entityType)
     {
-        string dir = Path.Combine(storageDir, entityType);
+        string dir = Path.Combine(storageDir, ValidateEntityType(entityType));
         return Directory.Exists(dir) ? Directory.GetFiles(dir, "*.bin").Length : 0;
     }
 }

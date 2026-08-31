@@ -40,13 +40,18 @@ namespace DB.Handlers
 
                 // P2 修复：原实现全表拉取 UniqueId 到内存找最大序号；改为单条 SQL 聚合。
                 // 注：UID 为定宽 9 位数字串（100000000+序号），字符串字典序 == 数值序，取 MAX 字符串即数值最大。
+                // P2 修复（空表）：Users 表为空或全无 UniqueId 时，MaxAsync 会抛 "Sequence contains no elements"，
+                // 产生异常日志噪音并回错包；先 Any 判定，空表返回 MaxUid=0（正是正确的初始序号，调用方默认值一致）。
                 long maxSequence = 0;
-                string? maxUniqueId = await dbContext.Users
-                    .Where(u => !string.IsNullOrWhiteSpace(u.UniqueId))
-                    .MaxAsync(u => u.UniqueId);
-                if (maxUniqueId != null && long.TryParse(maxUniqueId, out long maxUid))
+                if (await dbContext.Users.AnyAsync(u => !string.IsNullOrWhiteSpace(u.UniqueId)))
                 {
-                    maxSequence = maxUid % 100000000L;
+                    string? maxUniqueId = await dbContext.Users
+                        .Where(u => !string.IsNullOrWhiteSpace(u.UniqueId))
+                        .MaxAsync(u => u.UniqueId);
+                    if (maxUniqueId != null && long.TryParse(maxUniqueId, out long maxUid))
+                    {
+                        maxSequence = maxUid % 100000000L;
+                    }
                 }
 
                 // 构造响应消息格式
@@ -268,6 +273,7 @@ namespace DB.Handlers
                 if (user != null)
                 {
                     response.Exists = true;
+                    response.UserId = user.Id;
                     response.IsOnline = user.IsLoggedIn;
                     response.IsLocked = user.IsLocked;
                     response.IsAdmin = user.IsAdmin;

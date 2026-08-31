@@ -43,7 +43,7 @@
                 └──┬────────┬──┘
                    │        │
        ┌──────┐ ┌──▼────┐ ┌▼─────┐
-       │Login │ │Battle │ │ DB   │  31309
+       │Login │ │Battle │ │ DB   │  31305
        │31302 │ │场景   │ │强类型│
        └──────┘ └───────┘ └──────┘
 ```
@@ -93,19 +93,35 @@ cd Net-Game-Server
 dotnet build NetGameServer.slnx
 ```
 
-### 2. 节点启动顺序
+### 2. 配置集群共享密钥（必做）
+
+所有节点之间通过 **TCP + HMAC 握手**（`CenterNodeSharedSecret`）认证，必须共用同一份密钥（≥16 字符），否则任何节点都拒绝启动或拒绝互联：
+
+- **一键启动**：`NetGameServer/Publish/StartServers.bat` 首次运行会自动生成随机密钥并保存到 `Publish/.cluster_secret`，随后为全部子节点注入环境变量，无需手动配置。
+- **手动 / `dotnet run`**：先设置环境变量再启动节点：
+  ```bash
+  # PowerShell
+  $env:CenterNodeSharedSecret = "<32位以上强随机串>"
+  # CMD
+  set CenterNodeSharedSecret=<32位以上强随机串>
+  ```
+  也可写入各节点 `appsettings.json`（`Security:CenterNodeSharedSecret`）。
+- 使用 `Tools/Machine` 拉起时，可在 `machine.json` 顶层配置 `"sharedSecret": "..."`，或让 Machine 进程继承上面的环境变量。
+- 密钥缺失 / 过短 / 为占位符时，节点启动会立即报错并提示配置方法（不会静默使用默认密钥）。
+
+### 3. 节点启动顺序
 
 | 顺序 | 节点 | 默认端口 | 说明 |
 |---|---|---|---|
-| 1 | DB | 31309 | 数据层 |
+| 1 | DB | 31305 | 数据层 |
 | 2 | Center | 31306 | 控制平面 |
 | 3 | Login | 31302 | 账号 / Token 签发 |
 | 4 | Game / Battle | 31304 / 31307~n | 业务层，Battle 可多实例 |
 | 5 | Gateway | 31300 | 接受外部流量，最后启动 |
 
-可直接到各节点目录执行 `dotnet run`，或通过 `Tools/Supervisor` / `Tools/Machine` 统一拉起与看护。
+可直接到各节点目录执行 `dotnet run`（先按第 2 步配置共享密钥），或通过 `Tools/Supervisor` / `Tools/Machine` 统一拉起与看护。
 
-### 3. 验证
+### 4. 验证
 
 构建完成后跑六套验证套件确认全链路：
 
@@ -124,7 +140,7 @@ dotnet run --project Tests/MachineVerify    -c Release   # Machine 拓扑 + 依�
 
 - **客户端 ↔ Gateway**：`[MsgId(4)][Payload]`，外层长度帧
 - **Gateway ↔ 后端**：`[ClientSessionId(8)][MsgId(4)][Payload]`
-- **后端 ↔ DB**：`[MsgId(4)][RequestId(8)][Payload]`
+- **后端 ↔ DB**：`[MsgId(4)][Payload(尾部附 __requestId 路由元数据)]`，请求-响应经 `__requestId` 关联
 - 内部消息（90999 / 91001~91006）走 `internal="true"`，Gateway 拒绝伪造
 
 完整约束与禁止项见 [Protocol.md](NetGameServer/Docs/Protocol.md)。

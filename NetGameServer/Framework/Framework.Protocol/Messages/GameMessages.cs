@@ -1,4 +1,4 @@
-using Framework.Protocol;
+﻿using Framework.Protocol;
 using MemoryPack;
 
 namespace Framework.Protocol.Generated;

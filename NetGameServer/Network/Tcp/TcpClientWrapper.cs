@@ -22,6 +22,9 @@ public class TcpClientWrapper : INetworkClient
     public event DataReceivedHandler? OnDataReceived;
     public event SessionDisconnectedHandler? OnDisconnected;
 
+    /// <summary>当前是否处于已连接状态（存在会话且底层 TCP 未断开）。断线重连期间为 false。</summary>
+    public bool IsConnected => session != null && session.IsConnected;
+
     public TcpClientWrapper(string host, int port)
     {
         this.host = host;

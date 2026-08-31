@@ -35,6 +35,11 @@ namespace Center.Handlers
         private readonly ConcurrentDictionary<long, DateTime> queuedAt = new();
         private static readonly TimeSpan MatchQueueTimeout = TimeSpan.FromSeconds(60);
 
+        // P1 修复：按匹配分类的互斥锁，串行化"入队→人数判定→出队"，防止多网关并发重复建房/二次匹配。
+        private readonly ConcurrentDictionary<string, object> categoryLocks = new();
+
+        private object GetCategoryLock(string category) => categoryLocks.GetOrAdd(category, _ => new object());
+
         // 用于等待真实的 Battle 节点返回创建房间结果
         private readonly ConcurrentDictionary<string, TaskCompletionSource<CenterCreateSceneResponse>> pendingSceneCreations = new();
         private readonly ConcurrentDictionary<string, TaskCompletionSource<CenterDestroySceneResponse>> pendingSceneDestroys = new();
@@ -60,62 +65,72 @@ namespace Center.Handlers
             var pool = matchPools.GetOrAdd(category, _ => new ConcurrentQueue<long>());
             var queued = queuedPlayers.GetOrAdd(category, _ => new ConcurrentDictionary<long, byte>());
 
-            // 防重复入队：同一玩家在同一个分类只能排队一次（此前无条件 Enqueue，双击即重复匹配/自我匹配）。
-            if (!queued.TryAdd(clientSessionId, 0))
-            {
-                return new CenterMatchResponse
-                {
-                    Success = false,
-                    Message = "你已在匹配队列中，请勿重复匹配"
-                };
-            }
-            queuedAt[clientSessionId] = DateTime.UtcNow;
-            pool.Enqueue(clientSessionId);
-
-            Shared.Log.Info($"玩家 {clientSessionId} 开始匹配 {category}，当前队列人数: {pool.Count}");
-
-            if (!isWorldMap && pool.Count < 2)
-            {
-                return new CenterMatchResponse
-                {
-                    Success = false,
-                    Message = "正在排队中，等待其他玩家加入..."
-                };
-            }
-
+            // P1 修复（并发）：入队→人数判定→出队必须原子。原实现中 pool.Count>=2 判定与随后的
+            // 全部 Dequeue 非原子，多网关并发请求会同时通过判定并各自出队，导致重复建房/玩家被二次匹配。
+            // 这里按分类加锁串行化整个匹配段（await 之前的同步段；建房 await 在锁外）。
             var matchedPlayers = new List<long>();
-            while (pool.TryDequeue(out var pid))
+            lock (GetCategoryLock(category))
             {
-                // 跳过已失效排队者：不在 queued（重复/已移除）或排队超时（断线遗留），避免死会话被匹配。
-                if (!queued.ContainsKey(pid))
+                // 防重复入队：同一玩家在同一个分类只能排队一次（此前无条件 Enqueue，双击即重复匹配/自我匹配）。
+                if (!queued.TryAdd(clientSessionId, 0))
                 {
-                    continue;
+                    return new CenterMatchResponse
+                    {
+                        Success = false,
+                        Message = "你已在匹配队列中，请勿重复匹配"
+                    };
                 }
-                if (queuedAt.TryGetValue(pid, out var enqueuedAt) && DateTime.UtcNow - enqueuedAt > MatchQueueTimeout)
+                queuedAt[clientSessionId] = DateTime.UtcNow;
+                pool.Enqueue(clientSessionId);
+
+                Shared.Log.Info($"玩家 {clientSessionId} 开始匹配 {category}，当前队列人数: {pool.Count}");
+
+                if (!isWorldMap && pool.Count < 2)
+                {
+                    return new CenterMatchResponse
+                    {
+                        Success = false,
+                        Message = "正在排队中，等待其他玩家加入..."
+                    };
+                }
+
+                while (pool.TryDequeue(out var pid))
+                {
+                    // 跳过已失效排队者：不在 queued（重复/已移除）或排队超时（断线遗留），避免死会话被匹配。
+                    if (!queued.ContainsKey(pid))
+                    {
+                        continue;
+                    }
+                    if (queuedAt.TryGetValue(pid, out var enqueuedAt) && DateTime.UtcNow - enqueuedAt > MatchQueueTimeout)
+                    {
+                        queued.TryRemove(pid, out _);
+                        queuedAt.TryRemove(pid, out _);
+                        continue;
+                    }
+                    matchedPlayers.Add(pid);
+                }
+
+                // 本轮匹配到的玩家从排队集合移除（若后续创建场景失败，RestoreMatchedPlayersToPool 会重新登记）。
+                foreach (var pid in matchedPlayers)
                 {
                     queued.TryRemove(pid, out _);
                     queuedAt.TryRemove(pid, out _);
-                    continue;
                 }
-                matchedPlayers.Add(pid);
-            }
-
-            // 本轮匹配到的玩家从排队集合移除（若后续创建场景失败，RestoreMatchedPlayersToPool 会重新登记）。
-            foreach (var pid in matchedPlayers)
-            {
-                queued.TryRemove(pid, out _);
-                queuedAt.TryRemove(pid, out _);
             }
 
             void RestoreMatchedPlayersToPool()
             {
-                var restorePool = matchPools.GetOrAdd(category, _ => new ConcurrentQueue<long>());
-                var restoreQueued = queuedPlayers.GetOrAdd(category, _ => new ConcurrentDictionary<long, byte>());
-                foreach (var matchedPlayer in matchedPlayers)
+                // 恢复也需与匹配段互斥，避免与并发匹配出队交错（P1 修复）。
+                lock (GetCategoryLock(category))
                 {
-                    restoreQueued.TryAdd(matchedPlayer, 0);
-                    queuedAt[matchedPlayer] = DateTime.UtcNow;
-                    restorePool.Enqueue(matchedPlayer);
+                    var restorePool = matchPools.GetOrAdd(category, _ => new ConcurrentQueue<long>());
+                    var restoreQueued = queuedPlayers.GetOrAdd(category, _ => new ConcurrentDictionary<long, byte>());
+                    foreach (var matchedPlayer in matchedPlayers)
+                    {
+                        restoreQueued.TryAdd(matchedPlayer, 0);
+                        queuedAt[matchedPlayer] = DateTime.UtcNow;
+                        restorePool.Enqueue(matchedPlayer);
+                    }
                 }
             }
 
@@ -131,63 +146,120 @@ namespace Center.Handlers
                 };
             }
 
-            string roomId = isWorldMap ? "World_" + Guid.NewGuid().ToString("N") : "Room_" + Guid.NewGuid().ToString("N");
-            string roomName = isWorldMap ? "大世界" : $"高级 {category} 对战房间";
-            int maxPlayers = isWorldMap ? 100 : Math.Max(2, matchedPlayers.Count);
+            // P3 修复：大世界（World）应为共享常驻世界。原实现每收到一个匹配请求就新建 World_<guid> 房间，
+            // 玩家各自进入独立世界互不可见，且 World 房间数随请求无界增长。改为优先复用已注册、未满员的 World 房间。
+            RoomRegistryEntry? reusableWorld = null;
+            string roomId;
+            string roomName;
+            int maxPlayers;
+            string sceneId = string.Empty;
 
-            var sceneResult = await CreateSceneAsync(assignedBattleNode, new CenterCreateSceneRequest
+            if (isWorldMap)
             {
-                RoomId = roomId,
-                SceneType = category,
-                IsPrivate = false,
-                RoomName = roomName,
-                MaxPlayers = maxPlayers
-            });
+                reusableWorld = rooms.Values.FirstOrDefault(r =>
+                    r.Info.SceneType.Equals("World", StringComparison.OrdinalIgnoreCase)
+                    && !r.Info.IsPrivate
+                    && r.Info.RoomStatus != RoomStatuses.Closed
+                    && r.Info.CurrentPlayers < r.Info.MaxPlayers);
 
-            if (sceneResult == null || !sceneResult.Success)
-            {
-                RestoreMatchedPlayersToPool();
-                var failedResponse = new CenterMatchResponse
+                if (reusableWorld != null)
                 {
-                    Success = false,
-                    Message = "Battle 节点创建房间失败或超时"
-                };
-                Shared.Log.Warning($"匹配创建场景失败或超时 RoomId:{roomId} Category:{category} ClientSessionId:{clientSessionId}");
-
-                foreach (var pid in matchedPlayers)
-                {
-                    if (pid != clientSessionId)
-                    {
-                        sendToGatewayFunc(gatewaySession, pid, MessageIds.CenterMatchRes, failedResponse);
-                    }
+                    roomId = reusableWorld.Info.RoomId;
+                    roomName = reusableWorld.Info.RoomName;
+                    maxPlayers = reusableWorld.Info.MaxPlayers;
+                    sceneId = reusableWorld.Info.SceneId;
+                    assignedBattleNode = reusableWorld.Info.BattleNodeId;
                 }
-
-                return failedResponse;
+                else
+                {
+                    roomId = "World_" + Guid.NewGuid().ToString("N");
+                    roomName = "大世界";
+                    maxPlayers = 100;
+                }
+            }
+            else
+            {
+                roomId = "Room_" + Guid.NewGuid().ToString("N");
+                roomName = $"高级 {category} 对战房间";
+                maxPlayers = Math.Max(2, matchedPlayers.Count);
             }
 
-            RegisterRoom(new RoomInfo
+            if (reusableWorld == null)
             {
-                RoomId = roomId,
-                RoomName = roomName,
-                SceneId = sceneResult.SceneId,
-                SceneType = category,
-                BattleNodeId = assignedBattleNode,
-                OwnerUserId = 0,
-                IsPrivate = false,
-                HasPassword = false,
-                MaxPlayers = maxPlayers,
-                CurrentPlayers = matchedPlayers.Count,
-                RoomStatus = RoomStatuses.Waiting,
-                CustomRules = new Dictionary<string, string>(),
-                CreatedAtUtc = DateTime.UtcNow
-            }, string.Empty, matchedPlayers);
+                var sceneResult = await CreateSceneAsync(assignedBattleNode, new CenterCreateSceneRequest
+                {
+                    RoomId = roomId,
+                    SceneType = category,
+                    IsPrivate = false,
+                    RoomName = roomName,
+                    MaxPlayers = maxPlayers
+                });
+
+                if (sceneResult == null || !sceneResult.Success)
+                {
+                    RestoreMatchedPlayersToPool();
+                    var failedResponse = new CenterMatchResponse
+                    {
+                        Success = false,
+                        Message = "Battle 节点创建房间失败或超时"
+                    };
+                    Shared.Log.Warning($"匹配创建场景失败或超时 RoomId:{roomId} Category:{category} ClientSessionId:{clientSessionId}");
+
+                    foreach (var pid in matchedPlayers)
+                    {
+                        if (pid != clientSessionId)
+                        {
+                            sendToGatewayFunc(gatewaySession, pid, MessageIds.CenterMatchRes, failedResponse);
+                        }
+                    }
+
+                    return failedResponse;
+                }
+
+                sceneId = sceneResult.SceneId;
+
+                RegisterRoom(new RoomInfo
+                {
+                    RoomId = roomId,
+                    RoomName = roomName,
+                    SceneId = sceneId,
+                    SceneType = category,
+                    BattleNodeId = assignedBattleNode,
+                    OwnerUserId = 0,
+                    IsPrivate = false,
+                    HasPassword = false,
+                    MaxPlayers = maxPlayers,
+                    CurrentPlayers = matchedPlayers.Count,
+                    RoomStatus = RoomStatuses.Waiting,
+                    CustomRules = new Dictionary<string, string>(),
+                    CreatedAtUtc = DateTime.UtcNow
+                }, string.Empty, matchedPlayers);
+            }
+            else
+            {
+                // 复用既有大世界房间：把本批匹配到的玩家并入现有成员表（不重置已有状态、不重复建房）。
+                foreach (var pid in matchedPlayers)
+                {
+                    reusableWorld.MemberStates.TryAdd(pid, new RoomMemberState
+                    {
+                        ClientSessionId = pid,
+                        UserId = 0,
+                        IsReady = true,
+                        DisplayName = $"Player_{pid}",
+                        UniqueId = string.Empty
+                    });
+                }
+                reusableWorld.Info.CurrentPlayers = reusableWorld.MemberStates.Count;
+                reusableWorld.Info.Members = BuildRoomMembers(reusableWorld);
+                Shared.Log.Info($"大世界房间复用，并入 {matchedPlayers.Count} 名玩家 RoomId:{roomId} 当前人数:{reusableWorld.Info.CurrentPlayers}");
+            }
 
             var successResponse = new CenterMatchResponse
             {
                 Success = true,
                 RoomId = roomId,
                 BattleNodeId = assignedBattleNode,
-                SceneId = sceneResult.SceneId,
+                SceneId = sceneId,
                 SceneType = category,
                 Message = $"Match successful. Welcome to {roomName}"
             };

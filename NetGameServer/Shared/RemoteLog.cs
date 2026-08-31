@@ -25,7 +25,7 @@ public static class RemoteLog
             return; // 未配置日志聚合，跳过（本地日志照常）
         }
 
-        client = new RemoteLogClient(nodeId, host, port);
+        client = new RemoteLogClient(nodeId, host, port, ConfigHelper.GetConfig<string>("LoggerAuthSecret"));
         client.Start();
     }
 }

@@ -61,8 +61,13 @@ public class AvatarScript : EntityScriptBase
             int multiplier = 1;
             var raw = ScriptHost.Current?.GetGlobal("DamageMultiplier");
             if (raw is int m) multiplier = m;
+            // P2 修复：长整型计算防止 -dmg*multiplier 溢出回绕（恶意 dmg/multiplier 可导致 Hp 异常跳变
+            // 或负伤害变治疗）；同时把增量钳制回 int 安全区间再交给 MathClampAdd。
+            long delta = -((long)dmg) * multiplier;
+            if (delta < int.MinValue) delta = int.MinValue;
+            else if (delta > int.MaxValue) delta = int.MaxValue;
             // KBE-Gap-Review S3：边界钳制，Hp 不允许 < 0
-            int newHp = MathClampAdd(entity, "Hp", -dmg * multiplier, 0, int.MaxValue);
+            int newHp = MathClampAdd(entity, "Hp", (int)delta, 0, int.MaxValue);
             Log.Info("Avatar", "Avatar {EntityId} 受到 {Dmg}x{MP} 伤害，Hp={Hp}", entity.EntityId, dmg, multiplier, newHp);
         }
         else

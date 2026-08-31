@@ -38,8 +38,11 @@ namespace Shared
                 // CenterNodeSharedSecret 等凭据与配置可由环境变量覆盖，部署无需把明文密钥写入 appsettings.json。
                 // 置于 JSON 之后、内存覆盖之前：环境变量优先于配置文件，但仍低于 Machine/NodeLaunchArgs 的运行时覆盖。
                 .AddEnvironmentVariables()
-                // 内存源放最后，优先级最高，Machine / NodeLaunchArgs 写入的覆盖生效
-                .AddInMemoryCollection(_runtimeOverrides);
+                // 内存源放最后，优先级最高，Machine / NodeLaunchArgs 写入的覆盖生效。
+                // 修复（P1）：原 AddInMemoryCollection 在 Build() 时把字典快照，之后 SetRuntimeOverride 写入
+                // + Reload() 均不生效（已实测复现）——改用自定义 LiveMemoryConfigurationSource，Load() 时
+                // 实时从共享字典重建，使 CLI/Machine 参数注入真正生效。
+                .Add(new LiveMemoryConfigurationSource { Data = _runtimeOverrides });
 
             Configuration = builder.Build();
 
@@ -79,12 +82,15 @@ namespace Shared
 
         /// <summary>
         /// 从全局 Configuration 中获取指定配置节并将其绑定为类型 T 的实例。
-        /// 结果按节 Key 缓存；节变更（reload）时缓存自动清空。
+        /// 结果按 (Key, T) 缓存，避免同 key 不同类型读取互相强转崩溃（P2-13 修复）；
+        /// 节变更（reload）时缓存自动清空。
         /// 若该 Key 已注册 IConfigValidator，校验失败抛 ConfigValidationException。
         /// </summary>
         public static T? GetConfig<T>(string key)
         {
-            if (_sectionCache.TryGetValue(key, out var cached))
+            // 复合缓存键：同名键不同读取类型（如 int/long）各自独立缓存，杜绝跨类型强转 InvalidCastException
+            string cacheKey = key + "\u0001" + typeof(T).FullName;
+            if (_sectionCache.TryGetValue(cacheKey, out var cached))
             {
                 return (T?)cached;
             }
@@ -93,7 +99,7 @@ namespace Shared
             {
                 validator.Validate(key, value);
             }
-            _sectionCache[key] = value;
+            _sectionCache[cacheKey] = value;
             return value;
         }
 
@@ -115,8 +121,14 @@ namespace Shared
         public static void RegisterValidator(string key, IConfigValidator validator)
         {
             _validators[key] = validator;
-            // 注册后立即使缓存失效，强制下一次 GetConfig 走校验
-            _sectionCache.TryRemove(key, out _);
+            // 注册后立即清除该 key 的全部缓存（含各读取类型），强制下一次 GetConfig 走校验
+            foreach (var cacheKey in _sectionCache.Keys)
+            {
+                if (cacheKey.StartsWith(key + "\u0001", StringComparison.Ordinal))
+                {
+                    _sectionCache.TryRemove(cacheKey, out _);
+                }
+            }
         }
 
         /// <summary>注册热重载回调（KBE-Gap-Review D9：业务层可感知配置变更）。</summary>
@@ -130,6 +142,31 @@ namespace Shared
         {
             _sectionCache.Clear();
             _stringCache.Clear();
+        }
+    }
+
+    /// <summary>
+    /// 实时内存配置源（修复 SetRuntimeOverride 覆盖失效）：
+    /// 标准 AddInMemoryCollection 在 Build() 时把传入字典快照，后续写入 + Reload() 均读不到新值（已实测）。
+    /// 本实现让 provider 持有共享字典引用，Load()（含每次 Configuration.Reload()）时重建 Data，
+    /// 使 SetRuntimeOverride 写入的运行时覆盖在下次读取/Reload 后生效。
+    /// </summary>
+    internal sealed class LiveMemoryConfigurationSource : IConfigurationSource
+    {
+        public required IDictionary<string, string?> Data { get; init; }
+        public IConfigurationProvider Build(IConfigurationBuilder builder) => new LiveMemoryConfigurationProvider(Data);
+    }
+
+    internal sealed class LiveMemoryConfigurationProvider : ConfigurationProvider
+    {
+        private readonly IDictionary<string, string?> _source;
+
+        public LiveMemoryConfigurationProvider(IDictionary<string, string?> source) => _source = source;
+
+        public override void Load()
+        {
+            Data = new Dictionary<string, string?>(_source, StringComparer.OrdinalIgnoreCase);
+            OnReload();
         }
     }
 

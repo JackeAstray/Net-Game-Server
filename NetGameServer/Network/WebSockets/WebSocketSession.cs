@@ -1,4 +1,4 @@
-using System.Buffers.Binary;
+﻿using System.Buffers.Binary;
 using System.Net;
 using System.Net.WebSockets;
 
@@ -10,6 +10,11 @@ public class WebSocketSession : ISession
 
     // 串行化发送：同一 WebSocket 实例并发 SendAsync 会抛 InvalidOperationException 导致连接被拆
     private readonly SemaphoreSlim sendLock = new(1, 1);
+
+    // P3 修复：有界发送积压计数。慢消费者时不再无界堆积 fire-and-forget 任务，
+    // 超过上限即丢弃新包并告警（保护服务器内存/线程）。
+    private const int MaxQueuedSends = 4096;
+    private int pendingSends;
 
     public WebSocketSession(WebSocket webSocket, EndPoint? remoteEndPoint)
     {
@@ -33,6 +38,14 @@ public class WebSocketSession : ISession
         if (!IsConnected)
         {
             Shared.Log.Warning($"[WebSocketSession] 发送失败，连接未建立 SessionId:{SessionId} Remote:{RemoteEndPoint} DataLength:{data.Length}");
+            return;
+        }
+
+        // 有界积压：慢消费者/断网时丢弃新包并告警，防止 fire-and-forget 发送任务无界堆积
+        if (Interlocked.Increment(ref pendingSends) > MaxQueuedSends)
+        {
+            Interlocked.Decrement(ref pendingSends);
+            Shared.Log.Warning($"[WebSocketSession] 发送积压超过上限 {MaxQueuedSends}，丢弃数据包（慢消费者）SessionId:{SessionId} Remote:{RemoteEndPoint}");
             return;
         }
 
@@ -66,6 +79,7 @@ public class WebSocketSession : ISession
         }
         finally
         {
+            Interlocked.Decrement(ref pendingSends);
             sendLock.Release();
         }
     }

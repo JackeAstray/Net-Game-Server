@@ -1,4 +1,4 @@
-namespace Shared
+﻿namespace Shared
 {
     /// <summary>
     /// 日志门面（业务层入口）——统一转发到 Framework.Core.Log 单一配置源。

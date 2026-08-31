@@ -229,11 +229,14 @@ namespace Game.Handlers
         /// <param name="response">要序列化并发送的响应对象。</param>
         private static void SendResponseBySessionId<T>(global::Network.ISession gameSession, long sessionId, int msgId, T response)
         {
+            // P2 修复（跨网关投递）：目标会话可能位于另一网关，优先解析其所在网关会话；
+            // 解析不到（同网关或目标已离线）时回退到请求来源网关。
+            global::Network.ISession sendSession = GameServerApp.ResolveGatewayForClient(sessionId) ?? gameSession;
             byte[] payload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(response!), sessionId);
             byte[] packet = PacketBuilder.BuildPacket(msgId, payload, out int packetLength);
             try
             {
-                gameSession.Send(packet.AsSpan(0, packetLength).ToArray());
+                sendSession.Send(packet.AsSpan(0, packetLength).ToArray());
             }
             finally
             {

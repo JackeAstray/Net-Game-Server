@@ -1,4 +1,4 @@
-using System.Buffers.Binary;
+﻿using System.Buffers.Binary;
 using Framework.Core;
 
 namespace Framework.Entity;
@@ -26,9 +26,10 @@ public sealed class EntityBackupService : IDisposable
     private float backupRemainder;
     private int cursor;
 
-    // 全量实体列表缓存：仅当实体总数变化时重建（避免每 tick 全量 List 分配）
+    // 全量实体列表缓存：仅当实体集合发生变更（数量变化或增删抵消但集合内容变化）时重建，
+    // 避免每 tick 全量 List 分配；变更检测用 数量 + 各管理器版本号 的指纹（EntityManager.Version）。
     private readonly List<Entity> allEntities = new();
-    private int cachedTotal = -1;
+    private long cachedFingerprint = -1;
 
     /// <summary>最近一次备份的实体数（统计用）。</summary>
     public long LastBackedUpCount { get; private set; }
@@ -81,7 +82,7 @@ public sealed class EntityBackupService : IDisposable
         {
             if (managers.Remove(manager))
             {
-                cachedTotal = -1;
+                cachedFingerprint = -1;
                 allEntities.Clear();
             }
         }
@@ -97,13 +98,18 @@ public sealed class EntityBackupService : IDisposable
     {
         tick++;
 
-        // 全量列表缓存：仅当实体总数变化时重建，避免每 tick O(总实体数) 分配
+        // 全量列表缓存：仅当实体集合变更时重建（数量 + 各管理器版本指纹）。
+        // 用版本号（而非仅总数）检测，覆盖"增删抵消但集合内容变化"的陈旧缓存场景：
+        // 否则新实体永远不会被备份，崩溃恢复会丢数据。
         int total = 0;
+        long fingerprint = 0;
         foreach (var manager in managers)
         {
             total += manager.Count;
+            fingerprint += manager.Version;
         }
-        if (total != cachedTotal)
+        fingerprint += total;
+        if (fingerprint != cachedFingerprint)
         {
             allEntities.Clear();
             foreach (var manager in managers)
@@ -113,10 +119,9 @@ public sealed class EntityBackupService : IDisposable
                     allEntities.Add(entity);
                 }
             }
-            cachedTotal = total;
+            cachedFingerprint = fingerprint;
             cursor = 0; // 实体集合变化后从头重新轮转
         }
-
         if (allEntities.Count == 0)
         {
             return;
@@ -163,6 +168,13 @@ public sealed class EntityBackupService : IDisposable
             {
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 byte[] snapshot = SerializeSnapshot(snapshots);
+                // 备份文件达到阈值后压缩：仅保留每个实体的最新快照，避免单文件无限增长
+                // （恢复语义不变——同一实体的后续块覆盖先前块，保留最新块等价于全量回放结果）。
+                if (File.Exists(backupFilePath)
+                    && new FileInfo(backupFilePath).Length > MaxBackupFileBytes)
+                {
+                    CompactBackupFile(backupFilePath);
+                }
                 File.AppendAllBytes(backupFilePath, snapshot);
                 sw.Stop();
                 LastBackupElapsedMs = sw.ElapsedMilliseconds;
@@ -172,6 +184,61 @@ public sealed class EntityBackupService : IDisposable
                 Log.Error(ex, "实体备份落盘失败");
             }
         });
+    }
+
+    /// <summary>备份文件大小上限（超过则压缩为每实体最新快照）。</summary>
+    private const long MaxBackupFileBytes = 8L * 1024 * 1024;
+
+    /// <summary>
+    /// 把备份文件压缩为"每个实体仅保留最新快照"，并原子替换原文件。
+    /// 在 OrderedTaskQueue 的 "backup-file" 键内执行，保证与追加写串行。
+    /// </summary>
+    private static void CompactBackupFile(string path)
+    {
+        var lastByEntity = new Dictionary<long, byte[]>();
+        byte[] data = File.ReadAllBytes(path);
+        int offset = 0;
+        while (offset + HeaderSize <= data.Length)
+        {
+            uint magic = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset, 4));
+            if (magic != BackupMagic)
+            {
+                break;
+            }
+            long entityId = BinaryPrimitives.ReadInt64LittleEndian(data.AsSpan(offset + 4, 8));
+            int propsLength = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(offset + 12, 4));
+            offset += HeaderSize;
+            if (propsLength < 0 || offset + propsLength > data.Length)
+            {
+                Log.Warn($"实体备份块长度非法，压缩终止于 offset={offset} propsLength={propsLength}");
+                break;
+            }
+            lastByEntity[entityId] = data.AsSpan(offset, propsLength).ToArray();
+            offset += propsLength;
+        }
+
+        if (lastByEntity.Count == 0)
+        {
+            // 无可恢复块：直接清空（防御旧文件被截断）
+            File.WriteAllBytes(path, Array.Empty<byte>());
+            return;
+        }
+
+        using var ms = new MemoryStream(lastByEntity.Count * 128);
+        Span<byte> header = stackalloc byte[HeaderSize];
+        foreach (var (entityId, props) in lastByEntity)
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(0, 4), BackupMagic);
+            BinaryPrimitives.WriteInt64LittleEndian(header.Slice(4, 8), entityId);
+            BinaryPrimitives.WriteInt32LittleEndian(header.Slice(12, 4), props.Length);
+            ms.Write(header);
+            ms.Write(props);
+        }
+        // 原子替换，避免压缩中断损坏原文件
+        string tmp = path + ".compact";
+        File.WriteAllBytes(tmp, ms.ToArray());
+        File.Move(tmp, path, overwrite: true);
+        Log.Info($"实体备份文件已压缩: {path} 保留实体数: {lastByEntity.Count}");
     }
 
     /// <summary>把一批已脱离的备份快照序列化为备份块（PropertyCodec 全量属性 + 长度前缀）。</summary>
@@ -244,6 +311,9 @@ public sealed class EntityBackupService : IDisposable
 
     public void Dispose()
     {
+        // 生命周期修复：停止并回收 OrderedTaskQueue worker，避免后台线程泄漏；
+        // 同时清空空闲 key 状态（原实现仅 SweepIdle，worker 线程仍常驻）。
+        taskQueue.Stop(waitForDrain: true, timeout: TimeSpan.FromSeconds(5));
         taskQueue.SweepIdle(TimeSpan.Zero);
     }
 }

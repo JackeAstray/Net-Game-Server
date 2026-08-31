@@ -69,6 +69,8 @@ namespace Bots
             private readonly int botId;
             private readonly BotStats stats = new();
             private readonly object writeLock = new();
+            /// <summary>共享的服务端最近一次发送时间（接收循环写入 / 发送循环读取，P3 修复：收发不再各持一套）。</summary>
+            private long lastServerSendMs;
 
             public long Sent => Interlocked.Read(ref stats.Sent);
             public long Received => Interlocked.Read(ref stats.Received);
@@ -128,7 +130,6 @@ namespace Bots
                 var stopwatch = Stopwatch.StartNew();
                 long nextSyncAtMs = 0;
                 long nextTimeSyncAtMs = 0;
-                long lastServerSendMs = 0;
 
                 while (!token.IsCancellationRequested && stopwatch.Elapsed.TotalSeconds < opts.DurationSeconds)
                 {
@@ -145,7 +146,7 @@ namespace Bots
                     {
                         if (now >= nextTimeSyncAtMs)
                         {
-                            await SendTimeSyncAsync(stream, now, lastServerSendMs).ConfigureAwait(false);
+                            await SendTimeSyncAsync(stream, now, Volatile.Read(ref lastServerSendMs)).ConfigureAwait(false);
                             nextTimeSyncAtMs = now + 1000; // 1 Hz
                         }
                     }
@@ -200,7 +201,7 @@ namespace Bots
             private async Task ReceiveLoopAsync(NetworkStream stream, LengthPrefixedPacketReader reader,
                 byte[] buffer, CancellationToken token, long initialLastServerSendMs)
             {
-                long lastServerSendMs = initialLastServerSendMs;
+                Interlocked.Exchange(ref lastServerSendMs, initialLastServerSendMs);
                 try
                 {
                     while (!token.IsCancellationRequested)
@@ -222,19 +223,30 @@ namespace Bots
                                     if (sync.HasValue)
                                     {
                                         var (rtt, offset) = Battle.Handlers.TimeSyncManager.Estimate(
-                                            sync.Value.clientSendMs, now, lastServerSendMs,
+                                            sync.Value.clientSendMs, now, Volatile.Read(ref lastServerSendMs),
                                             sync.Value.serverRecvMs, sync.Value.serverSendMs);
                                         lock (stats)
                                         {
                                             stats.RttSamples.Add(rtt);
                                             stats.OffsetSamples.Add(offset);
                                         }
-                                        lastServerSendMs = sync.Value.serverSendMs;
+                                        Interlocked.Exchange(ref lastServerSendMs, sync.Value.serverSendMs);
                                     }
                                 }
-                                else if (msgId == 40002) // BattleJoinResult（简化：登录回包用 join result 占位）
+                                else if (msgId == Shared.Messages.MessageIds.LoginRes) // 10002 LoginResult
                                 {
-                                    Interlocked.Exchange(ref stats.LoginCompletedAtMs, Environment.TickCount64);
+                                    // P1 修复：机器人连真实 Gateway，登录回包是 10002（LoginResult，JSON 体）。
+                                    // 原实现只认 40002（BattleJoinResult）且机器人从不发 BattleJoin(40001)，
+                                    // 导致登录判定永不成立、压测数据全空。
+                                    var loginRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Login.LoginResponse>(packet.Span.Slice(4));
+                                    if (loginRes?.Success == true)
+                                    {
+                                        Interlocked.Exchange(ref stats.LoginCompletedAtMs, Environment.TickCount64);
+                                    }
+                                    else
+                                    {
+                                        Interlocked.Increment(ref stats.Errors);
+                                    }
                                 }
                             }
                         }

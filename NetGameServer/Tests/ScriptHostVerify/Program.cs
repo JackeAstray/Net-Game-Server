@@ -1,4 +1,4 @@
-using Framework.Scripting;
+﻿using Framework.Scripting;
 using Framework.Tick;
 using EntityObj = Framework.Entity.Entity;
 

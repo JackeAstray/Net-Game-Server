@@ -88,6 +88,8 @@ namespace Game.Handlers
             public bool IsInviteSenderResolve { get; set; }
             public bool IsFriendApplyCreate { get; set; }
             public bool IsFriendApplyHandle { get; set; }
+            /// <summary>登录时的社交缓存预热请求（回包写入缓存后触发好友上线通知/离线邀请补发）。</summary>
+            public bool IsLoginWarmup { get; set; }
             public string InviteRoomId { get; set; } = string.Empty;
             public string InviteSceneType { get; set; } = string.Empty;
             public string InviteRoomName { get; set; } = string.Empty;
@@ -171,6 +173,14 @@ namespace Game.Handlers
             if (dbClient == null)
             {
                 Shared.Log.Error($"Game 向 DB 发送请求失败：DB 连接为空 MsgId:{dbMsgId} SessionId:{clientSessionId}");
+                return false;
+            }
+
+            // P2 修复：DB 断线/重连期间快速失败，而不是把请求发进已断开会话等 30s 超时
+            // （TcpSession.Send 对断开连接静默丢弃，导致客户端长时间挂起才收到超时失败）。
+            if (!dbClient.IsConnected)
+            {
+                Shared.Log.Warning($"Game 向 DB 发送请求失败：DB 连接断开 MsgId:{dbMsgId} SessionId:{clientSessionId}");
                 return false;
             }
 

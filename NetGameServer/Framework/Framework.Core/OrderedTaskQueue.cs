@@ -16,12 +16,14 @@ namespace Framework.Core;
 ///   消除每任务 Task.Run 的线程池调度开销与长队列持有的整条任务链引用；
 /// - 固定 worker 数避免高吞吐下线程池膨胀。
 /// </summary>
-public sealed class OrderedTaskQueue
+public sealed class OrderedTaskQueue : IDisposable
 {
     private readonly Channel<KeyState> dispatchChannel;
     private readonly ConcurrentDictionary<object, KeyState> keyStates = new();
     private readonly Task[] workers;
     private readonly string name;
+    private readonly object disposeGate = new();
+    private volatile bool disposed;
     private int pendingCount;
 
     /// <summary>提交任务后可选的回调（任务完成时触发）。</summary>
@@ -41,6 +43,9 @@ public sealed class OrderedTaskQueue
         public readonly Queue<WorkItem> Queue = new();
         public bool Running;
         public long LastActivityTicks = Environment.TickCount64;
+        /// <summary>P3 修复（ABA）：SweepIdle 摘除前置位，Enqueue 见置位则重新 GetOrAdd，
+        /// 防止并发入队进入"即将被移除"的旧 state，造成同 key 新旧 state 并发执行破坏保序。</summary>
+        public bool Removed;
     }
 
     public OrderedTaskQueue(string name = "OrderedTaskQueue", int maxConcurrency = 0)
@@ -85,33 +90,89 @@ public sealed class OrderedTaskQueue
 
     private Task EnqueueCore(object key, Func<Task> runner)
     {
+        // 生命周期修复：已停止的队列 fail-fast，避免静默丢任务/永久挂起
+        if (disposed)
+        {
+            throw new ObjectDisposedException(name, "OrderedTaskQueue 已停止，不再接受新任务");
+        }
+
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var work = new WorkItem { Key = key, Runner = runner, Completion = completion };
-        var state = keyStates.GetOrAdd(key, _ => new KeyState());
 
         Interlocked.Increment(ref pendingCount);
 
-        bool dispatch = false;
-        lock (state.Gate)
+        // P3 修复（ABA）：SweepIdle 可能并发摘除空闲 state。GetOrAdd 在锁外无法判断，
+        // 故在锁内检查 Removed 置位后重取，确保本任务落到当前字典内活跃的 state。
+        while (true)
         {
-            state.LastActivityTicks = Environment.TickCount64;
-            state.Queue.Enqueue(work);
-            if (!state.Running)
-            {
-                state.Running = true; // 空闲 → 忙碌：派发一个令牌让 worker 清空本 key 队列
-                dispatch = true;
-            }
-        }
+            var state = keyStates.GetOrAdd(key, _ => new KeyState());
 
-        if (dispatch)
-        {
-            dispatchChannel.Writer.TryWrite(state);
+            bool dispatch = false;
+            lock (state.Gate)
+            {
+                if (state.Removed)
+                {
+                    // 该 state 正被 SweepIdle 移除（或已移除），重新获取字典内活跃实例。
+                    continue;
+                }
+                state.LastActivityTicks = Environment.TickCount64;
+                state.Queue.Enqueue(work);
+                if (!state.Running)
+                {
+                    state.Running = true; // 空闲 → 忙碌：派发一个令牌让 worker 清空本 key 队列
+                    dispatch = true;
+                }
+            }
+
+            if (dispatch)
+            {
+                dispatchChannel.Writer.TryWrite(state);
+            }
+            break;
         }
         return completion.Task;
     }
 
     /// <summary>当前排队/执行中的任务数（调试用）。</summary>
     public int Count => Volatile.Read(ref pendingCount);
+
+    /// <summary>
+    /// 停止队列（生命周期修复）：完成派发通道 → worker 清空已排队任务后退出 → 等待 worker 回收。
+    /// 之后 Enqueue 会抛 ObjectDisposedException（fail-fast）。
+    /// 注意：不应与 Stop 并发提交新任务（关闭语义为"停止接收新工作"）。
+    /// </summary>
+    /// <param name="waitForDrain">是否等待已排队任务全部执行完毕（默认 true，耗尽后退出）。</param>
+    /// <param name="timeout">等待 worker 退出的超时（默认 5s；超时仅告警，不阻塞调用方）。</param>
+    public void Stop(bool waitForDrain = true, TimeSpan? timeout = null)
+    {
+        lock (disposeGate)
+        {
+            if (disposed)
+            {
+                return;
+            }
+            disposed = true;
+        }
+        dispatchChannel.Writer.TryComplete();
+        if (!waitForDrain)
+        {
+            return;
+        }
+        try
+        {
+            Task.WaitAll(workers, timeout ?? TimeSpan.FromSeconds(5));
+            Log.Info($"[{name}] 已停止，清理 worker 完成，待清理 key 状态: {keyStates.Count}");
+        }
+        catch (AggregateException ex)
+        {
+            Log.Warn($"[{name}] 停止时等待 worker 超时/异常（后台任务继续运行）: {ex.Message}");
+        }
+    }
+
+    public void Dispose()
+    {
+        Stop(waitForDrain: true);
+    }
 
     /// <summary>清理空闲 key（长时间无任务时释放队列与字典条目）。</summary>
     public void SweepIdle(TimeSpan idleThreshold)
@@ -131,6 +192,9 @@ public sealed class OrderedTaskQueue
                 {
                     continue;
                 }
+                // P3 修复（ABA）：先在锁内置位 Removed，再摘除。置位后并发 Enqueue 会重新
+                // GetOrAdd 到新 state，避免任务入队进"即将被移除"的旧 state。
+                state.Removed = true;
             }
             keyStates.TryRemove(new KeyValuePair<object, KeyState>(key, state));
         }

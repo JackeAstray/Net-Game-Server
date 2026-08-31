@@ -52,8 +52,11 @@ public static class PropertyCodec
     /// </param>
     public static byte[] SerializeAll(Entity entity, bool includeOwnClient)
     {
+        // P2-4 修复（纵深防御）：CellPrivate 无论 SyncToClient 是否误设为 true，一律不参与任何客户端广播
         var names = entity.Def.Properties.Values
-            .Where(p => p.SyncToClient && (includeOwnClient || p.SyncScope != EntitySyncScope.OwnClient))
+            .Where(p => p.SyncToClient
+                && p.SyncScope != EntitySyncScope.CellPrivate
+                && (includeOwnClient || p.SyncScope != EntitySyncScope.OwnClient))
             .Select(p => p.Name);
         return SerializeChanges(entity, names);
     }
@@ -67,6 +70,9 @@ public static class PropertyCodec
 
     /// <summary>属性名/字符串最大长度。</summary>
     public const int MaxStringLength = 1024;
+
+    /// <summary>Int32List 元素最大数量（P3：防止伪造 len 触发大 List 分配/超大包）。</summary>
+    public const int MaxInt32ListLength = 4096;
 
     /// <summary>
     /// 把增量字节应用到目标实体。
@@ -154,6 +160,12 @@ public static class PropertyCodec
                     {
                         int len = BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(offset, 2));
                         offset += 2;
+                        // P3 修复：拒绝声明超长字符串（MaxStringLength），跳过该值继续解析，防放大分配。
+                        if (len > MaxStringLength)
+                        {
+                            offset += len;
+                            break;
+                        }
                         if (offset + len <= data.Length)
                         {
                             Apply(target, name, Encoding.UTF8.GetString(data.Slice(offset, len)), applyDirty);
@@ -181,6 +193,12 @@ public static class PropertyCodec
                     {
                         int len = BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(offset, 2));
                         offset += 2;
+                        // P3 修复：拒绝声明超长列表（MaxInt32ListLength），跳过该值继续解析，防放大分配。
+                        if (len > MaxInt32ListLength)
+                        {
+                            offset += len * 4;
+                            break;
+                        }
                         var list = new List<int>(len);
                         int read = 0;
                         while (read < len && offset + 4 <= data.Length)
@@ -260,8 +278,9 @@ public static class PropertyCodec
             case EntityPropertyType.String:
             {
                 byte[] s = Encoding.UTF8.GetBytes(value as string ?? string.Empty);
-                // 长度字段为 ushort：字符串超长时截断字节写入，保证长度字段与内容一致，避免损坏流
-                int len = Math.Min(s.Length, ushort.MaxValue);
+                // P3 修复：执行 MaxStringLength 上限（此前长度字段 ushort 可放行到 64KB，而
+                // MaxStringLength 常量从未被使用）。写/读两侧对称，避免超大字符串的放大分配。
+                int len = Math.Min(s.Length, MaxStringLength);
                 BinaryPrimitives.WriteUInt16LittleEndian(scratch.Slice(0, 2), (ushort)len);
                 ms.Write(scratch.Slice(0, 2));
                 ms.Write(s, 0, len);
@@ -285,11 +304,13 @@ public static class PropertyCodec
             case EntityPropertyType.Int32List:
             {
                 var list = value as List<int> ?? new List<int>();
-                BinaryPrimitives.WriteUInt16LittleEndian(scratch.Slice(0, 2), (ushort)Math.Min(list.Count, ushort.MaxValue));
+                // P3 修复：限制元素数量，防止超大列表撑爆单包（与读侧 MaxInt32ListLength 对称）。
+                int len = Math.Min(list.Count, MaxInt32ListLength);
+                BinaryPrimitives.WriteUInt16LittleEndian(scratch.Slice(0, 2), (ushort)len);
                 ms.Write(scratch.Slice(0, 2));
-                foreach (var item in list.Take(ushort.MaxValue))
+                for (int idx = 0; idx < len; idx++)
                 {
-                    BinaryPrimitives.WriteInt32LittleEndian(scratch.Slice(0, 4), item);
+                    BinaryPrimitives.WriteInt32LittleEndian(scratch.Slice(0, 4), list[idx]);
                     ms.Write(scratch.Slice(0, 4));
                 }
                 break;

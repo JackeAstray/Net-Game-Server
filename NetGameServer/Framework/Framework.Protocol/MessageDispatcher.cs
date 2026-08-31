@@ -38,6 +38,13 @@ public sealed class MessageDispatcher
     private readonly ConcurrentDictionary<int, HandlerEntry> handlers = new();
     private int slowHandlerThresholdMs = 200;
 
+    /// <summary>
+    /// 单条消息 payload 最大字节数（P2 防护）：超限报文在反序列化前直接丢弃，
+    /// 防伪造的超长 payload / 恶意声明的超长集合长度触发巨量分配（OOM DoS）。
+    /// 默认 16MB，远高于正常游戏包；传输层帧长上限（默认 64KB）先行拦截大部分场景。
+    /// </summary>
+    public static int MaxMessagePayloadBytes { get; set; } = 16 * 1024 * 1024;
+
     /// <summary>慢消息处理告警阈值（毫秒，默认 200）。</summary>
     public int SlowHandlerThresholdMs
     {
@@ -70,6 +77,11 @@ public sealed class MessageDispatcher
                 ?? throw new InvalidOperationException($"消息 {typeof(TMessage).Name} 反序列化为 null");
         Func<ISessionContext, IGameMessage, Task> wrapped = (ctx, msg) => handler(ctx, (TMessage)msg);
 
+        // P3 修复：重复注册（同 MsgId 两个不同类型/二次注册）会静默覆盖，改为显式告警便于排查
+        if (handlers.TryGetValue(msgId, out var existing) && !ReferenceEquals(existing, null))
+        {
+            Framework.Core.Log.Warn($"MessageDispatcher 重复注册 MsgId:{msgId}（类型 {typeof(TMessage).Name}），将覆盖先前处理器。请检查协议定义。");
+        }
         handlers[msgId] = new HandlerEntry(deserializer, wrapped);
         return this;
     }
@@ -133,24 +145,33 @@ public sealed class MessageDispatcher
             return false;
         }
 
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            var sw = System.Diagnostics.Stopwatch.StartNew();
+            // P2 防护：反序列化前校验 payload 大小，超限直接丢弃（不进入 MemoryPack/JSON 分配路径）。
+            if (payload.Length > MaxMessagePayloadBytes)
+            {
+                Framework.Core.Log.Warn($"消息 payload 超过上限已丢弃 MsgId:{msgId} Length:{payload.Length} Max:{MaxMessagePayloadBytes}");
+                return true;
+            }
+
             IGameMessage msg = entry.Deserializer(payload);
             await entry.Handler(session, msg);
-            sw.Stop();
-
-            // 慢消息 Profile（对标 KBE 消息耗时统计）：超过阈值告警
-            if (sw.ElapsedMilliseconds > slowHandlerThresholdMs)
-            {
-                Framework.Core.Log.Warn($"慢消息处理 MsgId:{msgId} 耗时:{sw.ElapsedMilliseconds}ms 阈值:{slowHandlerThresholdMs}ms");
-            }
             return true;
         }
         catch (Exception ex)
         {
             Framework.Core.Log.Error(ex, $"MessageDispatcher 处理 MsgId={msgId} 异常");
             return true;
+        }
+        finally
+        {
+            sw.Stop();
+            // 慢消息 Profile（对标 KBE 消息耗时统计）：超过阈值告警（含异常路径，避免漏报）
+            if (sw.ElapsedMilliseconds > slowHandlerThresholdMs)
+            {
+                Framework.Core.Log.Warn($"慢消息处理 MsgId:{msgId} 耗时:{sw.ElapsedMilliseconds}ms 阈值:{slowHandlerThresholdMs}ms");
+            }
         }
     }
 }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Shared;
@@ -55,6 +55,9 @@ namespace Center
             // 内部连接认证：所有节点连接必须先通过认证握手（InternalAuth），密钥共享。
             // 安全修复：拒绝占位符密钥。
             string authSecret = Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret");
+            // 重启窗口修复：周期持久化防重放状态，重启不重置握手重放窗口
+            Framework.Core.Security.InternalAuthFilter.ConfigureReplayPersistence(
+                System.IO.Path.Combine(AppContext.BaseDirectory, "data", "replay_state.bin"));
             var nodeAuthFilters = new System.Collections.Concurrent.ConcurrentDictionary<long, Framework.Core.Security.InternalAuthFilter>();
 
             tcpServer.OnSessionConnected += session =>
@@ -262,6 +265,8 @@ namespace Center
                         {
                             Log.Warning($"Center 已清理超时节点数: {removedCount}，当前剩余节点数: {Center.Handlers.NodeManager.Instance.GetNodeCount()}");
                         }
+                        // P2 修复：清扫超时未回执的实体调用/迁移待回源路由（防 pending 表无界增长）
+                        Center.Handlers.CenterDispatcher.SweepPending(TimeSpan.FromSeconds(30));
                     }
                     catch (Exception ex)
                     {

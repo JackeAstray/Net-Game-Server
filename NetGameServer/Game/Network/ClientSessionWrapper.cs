@@ -1,4 +1,4 @@
-using Network;
+﻿using Network;
 using System.Net;
 
 namespace Game.Network

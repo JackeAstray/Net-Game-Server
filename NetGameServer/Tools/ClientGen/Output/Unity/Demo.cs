@@ -1,4 +1,4 @@
-// 客户端示例：连接 Gateway -> 登录 -> 收到 LoginResult
+﻿// 客户端示例：连接 Gateway -> 登录 -> 收到 LoginResult
 // Unity：把这段逻辑放进 MonoBehaviour，Update() 里调用 client.Poll(OnMessage) 即可。
 #nullable enable
 using System;

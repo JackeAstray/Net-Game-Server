@@ -1,4 +1,4 @@
-using Shared.Messages;
+﻿using Shared.Messages;
 using Shared.Messages.Chat;
 using Shared.Data.Chat;
 using Shared;

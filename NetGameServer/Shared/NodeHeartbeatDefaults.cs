@@ -1,4 +1,4 @@
-namespace Shared;
+﻿namespace Shared;
 
 /// <summary>
 /// 节点-中心心跳与重连的共享常量（D4 修复：统一此前散落在各节点的魔法数字 10s/30s，

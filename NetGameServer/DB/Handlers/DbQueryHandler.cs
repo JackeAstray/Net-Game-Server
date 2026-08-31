@@ -29,6 +29,15 @@ namespace DB.Handlers
 
         private static string UserKey(long userId) => "U:" + userId.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
+        /// <summary>
+        /// P2 修复：双向关系（好友/黑名单）写操作的规范化成对锁键（min|max，与方向无关）。
+        /// 原实现按请求方 UserKey 加锁，A→B 与 B→A 的并发操作落在不同 key 上互不互斥，
+        /// 会同时通过存在性检查并写入相同 (UserId,FriendUserId)/(BlockedUserId) 行（虽有唯一索引，
+        /// 但表现为一方 DbUpdateException + "服务器内部错误"而非干净的"已是好友"）。成对键让双向操作串行化。
+        /// </summary>
+        private static string PairKey(long a, long b) =>
+            "P:" + (a <= b ? $"{a}|{b}" : $"{b}|{a}");
+
         /// <summary>按用户/账号键串行执行一次 DB 读写（异常由队列内部捕获记录，不向上抛）。</summary>
         private static Task RunPerUser(object key, Func<Task> work) => perUserQueue.EnqueueAsync(key, work);
 

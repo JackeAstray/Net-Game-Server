@@ -147,10 +147,19 @@ public class TcpSession : ISession
             var stream = tcpClient.GetStream();
             await foreach (var packet in sendChannel.Reader.ReadAllAsync(writerCts.Token))
             {
-                await stream.WriteAsync(packet.Buffer.AsMemory(0, packet.Length), writerCts.Token);
-                if (packet.Pooled)
+                // P2 修复：WriteAsync 抛异常/被取消时必须归还当前"在途"的池化缓冲。
+                // 原实现 return 在 WriteAsync 之后，异常/取消时跳过归还（finally 只清通道内残留），
+                // 连接重置频繁时会造成池化缓冲泄漏（≤1 缓冲/会话，64KB 级）。
+                try
                 {
-                    System.Buffers.ArrayPool<byte>.Shared.Return(packet.Buffer);
+                    await stream.WriteAsync(packet.Buffer.AsMemory(0, packet.Length), writerCts.Token);
+                }
+                finally
+                {
+                    if (packet.Pooled)
+                    {
+                        System.Buffers.ArrayPool<byte>.Shared.Return(packet.Buffer);
+                    }
                 }
             }
         }

@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text;
 
 namespace Framework.Core.Security;
@@ -32,7 +32,9 @@ public static class SecretConfig
         {
             throw new InvalidOperationException(
                 $"未配置 {configKey}：服务间 HMAC 共享密钥必须显式提供，禁止硬编码默认值。" +
-                "请在 appsettings.json 或环境变量中设置。");
+                "请在 appsettings.json（Security:{configKey}）或环境变量 {configKey} 中设置（≥16 字符）。" +
+                "单机快速启动：运行 Publish/StartServers.bat 会自动生成并注入（详见 README 快速启动）；" +
+                "手动启动示例：set {configKey}=<32位以上强随机串>");
         }
         if (value.Length < minLength)
         {
@@ -111,13 +113,23 @@ public sealed class InternalAuthFilter
     public bool IsAuthenticated { get; private set; }
 
     /// <summary>
-    /// 防重放缓存：nodeId|timestamp -> 接受时刻（Ticks）。
-    /// 同一握手包（nodeId + timestamp 完全一致）只能在时间窗内被接受一次（跨连接亦然），
-    /// 防止攻击者截获合法握手后重放以冒充节点。条目按 TTL 定期清理，避免无界增长。
+    /// 防重放缓存：nodeId|nonce -> 接受时刻（Ticks）。
+    /// 握手携带每连接随机 nonce，防重放以 nonce 为粒度判定：
+    /// 同一 nonce 只能被接受一次（跨连接亦然），
+    /// 同时允许同一节点在相同秒内建立多条合法连接（快速重连/并行链路）。
+    /// 条目按 TTL 定期清理，避免无界增长。
     /// </summary>
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> AcceptedHandshakes = new();
     private static readonly TimeSpan ReplayCacheTtl = TimeSpan.FromSeconds(MaxClockSkewSeconds * 2);
     private static long lastReplaySweepTicks;
+
+    // ---- 防重放状态持久化（重启窗口修复）：----
+    // 进程重启会清空 AcceptedHandshakes，攻击者可重放此前抓取的握手（时间戳仍在 120s 窗口内）。
+    // 将已接受握手集合周期落盘、启动时恢复，使重启不重置重放窗口。集合受 ReplayCacheTtl 约束，文件有界。
+    private static string? replayStatePath;
+    private static readonly object replayPersistGate = new();
+    private static long lastReplayPersistTicks;
+    private static TimeSpan replayPersistInterval = TimeSpan.FromSeconds(30);
 
     public InternalAuthFilter(string sharedSecret, string nodeId)
     {
@@ -129,8 +141,10 @@ public sealed class InternalAuthFilter
     public byte[] BuildAuthPacket()
     {
         long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        string signature = ComputeSignature($"{nodeId}|{timestamp}");
-        string payload = $"{nodeId}|{timestamp}|{signature}";
+        // 每连接随机 nonce：使同一节点同秒内的多次连接不再互为"重放"
+        string nonce = Convert.ToBase64String(RandomNumberGenerator.GetBytes(16));
+        string signature = ComputeSignature($"{nodeId}|{timestamp}|{nonce}");
+        string payload = $"{nodeId}|{timestamp}|{nonce}|{signature}";
         byte[] payloadBytes = Encoding.UTF8.GetBytes(payload);
         byte[] packet = new byte[4 + payloadBytes.Length];
         System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(0, 4), AuthMsgId);
@@ -140,7 +154,7 @@ public sealed class InternalAuthFilter
 
     /// <summary>
     /// 验证收到的认证握手负载。成功则标记连接已认证。
-    /// 负载格式：nodeId|timestamp|signature
+    /// 负载格式：nodeId|timestamp|nonce|signature
     /// </summary>
     public bool TryAuthenticate(ReadOnlySpan<byte> payload)
     {
@@ -157,13 +171,18 @@ public sealed class InternalAuthFilter
         }
 
         var parts = text.Split('|');
-        if (parts.Length != 3)
+        if (parts.Length != 4)
         {
             return false;
         }
 
         string remoteNodeId = parts[0];
         if (!long.TryParse(parts[1], out long timestamp))
+        {
+            return false;
+        }
+        string nonce = parts[2];
+        if (string.IsNullOrWhiteSpace(nonce))
         {
             return false;
         }
@@ -174,24 +193,123 @@ public sealed class InternalAuthFilter
             return false; // 时间戳过期或提前
         }
 
-        string expected = ComputeSignature($"{remoteNodeId}|{timestamp}");
-        byte[] a = Encoding.UTF8.GetBytes(parts[2]);
+        string expected = ComputeSignature($"{remoteNodeId}|{timestamp}|{nonce}");
+        byte[] a = Encoding.UTF8.GetBytes(parts[3]);
         byte[] b = Encoding.UTF8.GetBytes(expected);
         if (a.Length != b.Length || !CryptographicOperations.FixedTimeEquals(a, b))
         {
             return false;
         }
 
-        // 防重放：同一握手（nodeId + timestamp）只能被接受一次（跨连接亦然）。
-        if (!AcceptedHandshakes.TryAdd($"{remoteNodeId}|{timestamp}", DateTime.UtcNow.Ticks))
+        // 防重放：同一握手（nodeId + nonce）只能被接受一次（跨连接亦然）。
+        if (!AcceptedHandshakes.TryAdd($"{remoteNodeId}|{nonce}", DateTime.UtcNow.Ticks))
         {
             Framework.Core.Log.Warning($"内部认证握手重放被拒绝 NodeId:{remoteNodeId}");
             return false;
         }
         MaybeSweepReplayCache();
+        MaybePersistReplayState();
 
         IsAuthenticated = true;
         return true;
+    }
+
+    /// <summary>
+    /// 启用防重放状态持久化（各节点启动时调用一次）。
+    /// 重启后恢复上一进程已接受的握手集合（仅恢复 TTL 内条目），
+    /// 使"重启即重置重放窗口"不再成立。
+    /// </summary>
+    /// <param name="filePath">持久化文件路径（应位于本节点数据目录，进程私有）。</param>
+    /// <param name="persistInterval">落盘间隔（默认 30s）。</param>
+    public static void ConfigureReplayPersistence(string filePath, TimeSpan? persistInterval = null)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+        {
+            return;
+        }
+        replayStatePath = filePath;
+        if (persistInterval.HasValue && persistInterval.Value > TimeSpan.Zero)
+        {
+            replayPersistInterval = persistInterval.Value;
+        }
+
+        try
+        {
+            string? dir = System.IO.Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrEmpty(dir))
+            {
+                System.IO.Directory.CreateDirectory(dir);
+            }
+            if (!System.IO.File.Exists(filePath))
+            {
+                return;
+            }
+
+            long cutoff = DateTime.UtcNow.Ticks - ReplayCacheTtl.Ticks;
+            int restored = 0;
+            foreach (var line in System.IO.File.ReadAllLines(filePath))
+            {
+                // 行格式：base64(nodeId|nonce)|ticks（用 base64 消除 key 内分隔符歧义）
+                int sep = line.LastIndexOf('|');
+                if (sep <= 0 || !long.TryParse(line.AsSpan(sep + 1), out long ticks) || ticks < cutoff)
+                {
+                    continue;
+                }
+                string key;
+                try
+                {
+                    key = Encoding.UTF8.GetString(Convert.FromBase64String(line.Substring(0, sep)));
+                }
+                catch
+                {
+                    continue;
+                }
+                if (AcceptedHandshakes.TryAdd(key, ticks))
+                {
+                    restored++;
+                }
+            }
+            Log.Info($"已从 {filePath} 恢复防重放状态 {restored} 条（TTL 内）");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"防重放状态恢复失败（不影响运行，仅重启后重放窗口略大）: {ex.Message}");
+        }
+    }
+
+    /// <summary>按间隔把已接受握手集合原子落盘（成功认证路径上调用，节流 30s）。</summary>
+    private static void MaybePersistReplayState()
+    {
+        string? path = replayStatePath;
+        if (path == null)
+        {
+            return;
+        }
+        long now = DateTime.UtcNow.Ticks;
+        if (now - System.Threading.Volatile.Read(ref lastReplayPersistTicks) < replayPersistInterval.Ticks)
+        {
+            return;
+        }
+        System.Threading.Interlocked.Exchange(ref lastReplayPersistTicks, now);
+
+        try
+        {
+            lock (replayPersistGate)
+            {
+                var sb = new StringBuilder();
+                foreach (var kv in AcceptedHandshakes)
+                {
+                    sb.Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(kv.Key))).Append('|').Append(kv.Value).Append('\n');
+                }
+                string tmp = path + ".tmp";
+                System.IO.File.WriteAllText(tmp, sb.ToString());
+                System.IO.File.Move(tmp, path, true); // 原子替换，避免读到半写状态
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"防重放状态持久化失败（不影响运行）: {ex.Message}");
+        }
     }
 
     private static void MaybeSweepReplayCache()

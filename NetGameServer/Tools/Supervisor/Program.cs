@@ -167,7 +167,8 @@ public static class Program
 
     private static void AppendLog(ManagedProcess managed, string? line)
     {
-        if (line == null) return;
+        // P3 修复：未配置 LogFile（LogDirectory 为空）时直接跳过，避免每条日志都走 File.AppendAllText("") 抛异常再被静默吞掉。
+        if (line == null || string.IsNullOrWhiteSpace(managed.LogFile)) return;
         try
         {
             File.AppendAllText(managed.LogFile, $"[{DateTime.Now:HH:mm:ss}] {line}{Environment.NewLine}");

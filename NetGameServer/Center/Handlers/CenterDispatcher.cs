@@ -1,4 +1,4 @@
-using Framework.Protocol;
+﻿using Framework.Protocol;
 using Framework.Protocol.Generated;
 using Shared.Messages.Center;
 using ISession = Network.ISession;
@@ -379,7 +379,11 @@ public static class CenterDispatcher
 
             if (msg.ClientSessionId > 0)
             {
-                pendingMigrationSource[msg.ClientSessionId] = msg.SourceNodeId ?? string.Empty;
+                pendingMigrationSource[msg.ClientSessionId] = new PendingRoute
+                {
+                    SourceNodeId = msg.SourceNodeId ?? string.Empty,
+                    CreatedTicks = DateTime.UtcNow.Ticks
+                };
             }
             SendPacketToNode(target.Session, MessageIds.EntityMigrateRequest, msg);
             Shared.Log.Info($"Center 中继实体迁移 ClientSessionId:{msg.ClientSessionId} -> {msg.TargetNodeId} EntityType:{msg.EntityType} PropsBytes:{msg.Props?.Length ?? 0}");
@@ -390,28 +394,45 @@ public static class CenterDispatcher
         {
             if (msg.Success)
             {
-                var gateway = NodeManager.Instance.GetNodeByType("Gateway");
-                if (gateway?.Session != null)
+                // 多网关场景：优先通知玩家所属网关（按客户端会话路由）；路由缺失时广播全部网关
+                // （各网关自行忽略不属于自己会话的绑定更新，避免只通知第一个网关导致错误路由）。
+                var routed = new EntityMigrateRouted
                 {
-                    SendPacketToNode(gateway.Session, MessageIds.EntityMigrateRouted, new EntityMigrateRouted
+                    ClientSessionId = msg.ClientSessionId,
+                    NewNodeId = msg.NewNodeId ?? string.Empty
+                };
+                if (msg.ClientSessionId > 0
+                    && Center.Handlers.NodeManager.Instance.TryGetGatewaySessionByClientSessionId(msg.ClientSessionId, out var ownerGw)
+                    && ownerGw.IsConnected)
+                {
+                    SendPacketToNode(ownerGw, MessageIds.EntityMigrateRouted, routed);
+                    Shared.Log.Info($"Center 通知玩家所属 Gateway 切换 Battle 绑定 ClientSessionId:{msg.ClientSessionId} -> {msg.NewNodeId}");
+                }
+                else
+                {
+                    int notified = 0;
+                    foreach (var gw in Center.Handlers.NodeManager.Instance.GetAllNodesByType("Gateway"))
                     {
-                        ClientSessionId = msg.ClientSessionId,
-                        NewNodeId = msg.NewNodeId ?? string.Empty
-                    });
-                    Shared.Log.Info($"Center 通知 Gateway 切换玩家 Battle 绑定 ClientSessionId:{msg.ClientSessionId} -> {msg.NewNodeId}");
+                        if (gw.Session?.IsConnected == true)
+                        {
+                            SendPacketToNode(gw.Session, MessageIds.EntityMigrateRouted, routed);
+                            notified++;
+                        }
+                    }
+                    Shared.Log.Info($"Center 广播 Gateway 切换玩家 Battle 绑定 ClientSessionId:{msg.ClientSessionId} -> {msg.NewNodeId}（通知 {notified} 个网关）");
                 }
             }
 
-            if (pendingMigrationSource.TryRemove(msg.ClientSessionId, out var sourceNodeId)
-                && !string.IsNullOrEmpty(sourceNodeId))
+            if (pendingMigrationSource.TryRemove(msg.ClientSessionId, out var pendingMig)
+                && !string.IsNullOrEmpty(pendingMig.SourceNodeId))
             {
-                var source = NodeManager.Instance.GetNode(sourceNodeId);
+                var source = NodeManager.Instance.GetNode(pendingMig.SourceNodeId);
                 if (source?.Session != null && source.Session.IsConnected)
                 {
                     SendPacketToNode(source.Session, MessageIds.EntityMigrateResult, msg);
                     return;
                 }
-                Shared.Log.Warning($"实体迁移回源失败：源 Battle 节点不可用 SourceNodeId:{sourceNodeId}");
+                Shared.Log.Warning($"实体迁移回源失败：源 Battle 节点不可用 SourceNodeId:{pendingMig.SourceNodeId}");
             }
         });
 
@@ -438,7 +459,11 @@ public static class CenterDispatcher
 
             if (msg.CallId != 0 && !string.IsNullOrEmpty(originNodeId))
             {
-                pendingEntityCallSource[msg.CallId] = originNodeId;
+                pendingEntityCallSource[msg.CallId] = new PendingRoute
+                {
+                    SourceNodeId = originNodeId,
+                    CreatedTicks = DateTime.UtcNow.Ticks
+                };
             }
             SendPacketToNode(target.Session, MessageIds.EntityRemoteCall, msg);
             Shared.Log.Info($"Center 中继实体远程调用 CallId:{msg.CallId} -> {msg.TargetNodeId} EntityId:{msg.EntityId} Method:{msg.MethodName}");
@@ -447,9 +472,9 @@ public static class CenterDispatcher
         // 回源 91002：目标 Battle -> 源 Battle（调用方经 EntityCallHub.HandleResult 关联完成回执/超时）
         dispatcher.Register<EntityRemoteCallResult>(async (ctx, msg) =>
         {
-            if (pendingEntityCallSource.TryRemove(msg.CallId, out var sourceNodeId) && !string.IsNullOrEmpty(sourceNodeId))
+            if (pendingEntityCallSource.TryRemove(msg.CallId, out var pendingCall) && !string.IsNullOrEmpty(pendingCall.SourceNodeId))
             {
-                var source = NodeManager.Instance.GetNode(sourceNodeId);
+                var source = NodeManager.Instance.GetNode(pendingCall.SourceNodeId);
                 if (source?.Session != null && source.Session.IsConnected)
                 {
                     SendPacketToNode(source.Session, MessageIds.EntityRemoteCallResult, msg);
@@ -462,11 +487,48 @@ public static class CenterDispatcher
         return dispatcher;
     }
 
+    /// <summary>进行中的待回源路由（带时间戳，供超时清扫防无界增长）。</summary>
+    private sealed class PendingRoute
+    {
+        public required string SourceNodeId;
+        public long CreatedTicks;
+    }
+
     /// <summary>进行中的实体远程调用回源路由：CallId -> 源 Battle 节点（91002 回源用）。</summary>
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, string> pendingEntityCallSource = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, PendingRoute> pendingEntityCallSource = new();
 
     /// <summary>进行中的实体迁移：ClientSessionId -> 源 Battle 节点（91004 回源用）。</summary>
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, string> pendingMigrationSource = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, PendingRoute> pendingMigrationSource = new();
+
+    /// <summary>
+    /// 清扫超时未回执的待回源路由（源节点死掉/回执丢失时防止 pending 表无界增长）。
+    /// 由 Center 周期循环调用。
+    /// </summary>
+    public static void SweepPending(TimeSpan timeout)
+    {
+        long cutoff = DateTime.UtcNow.Ticks - timeout.Ticks;
+        int removed = 0;
+        foreach (var kv in pendingEntityCallSource.ToArray())
+        {
+            if (kv.Value.CreatedTicks < cutoff)
+            {
+                pendingEntityCallSource.TryRemove(kv.Key, out _);
+                removed++;
+            }
+        }
+        foreach (var kv in pendingMigrationSource.ToArray())
+        {
+            if (kv.Value.CreatedTicks < cutoff)
+            {
+                pendingMigrationSource.TryRemove(kv.Key, out _);
+                removed++;
+            }
+        }
+        if (removed > 0)
+        {
+            Shared.Log.Warning($"Center 已清扫超时待回源路由 {removed} 条（剩余 EntityCall:{pendingEntityCallSource.Count} Migration:{pendingMigrationSource.Count}）");
+        }
+    }
 
     /// <summary>向指定节点会话发送一条内部消息包（[MsgId][MemoryPack 负载]）。</summary>
     private static void SendPacketToNode(Network.ISession session, int msgId, IGameMessage message)

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
@@ -18,6 +18,14 @@ namespace Framework.Entity
         /// <summary>按实体类型索引：TypeName -> (EntityId -> Entity)</summary>
         private readonly ConcurrentDictionary<string, ConcurrentDictionary<long, Entity>> entitiesByType = new(StringComparer.Ordinal);
 
+        // 集合变更版本号：任何 Add/Remove 都自增。
+        // 供外部（EntityBackupService 等缓存实体集合的组件）廉价检测"集合是否发生变更"——
+        // 即使总数不变（增删抵消），版本号也会变化，避免陈旧缓存漏备份新实体。
+        private long version;
+
+        /// <summary>集合变更版本号（Add/Remove 自增）。</summary>
+        public long Version => System.Threading.Interlocked.Read(ref version);
+
         /// <summary>添加或更新实体。</summary>
         public void AddOrUpdateEntity(long entityId, Entity entity)
         {
@@ -27,6 +35,7 @@ namespace Framework.Entity
             entities[entityId] = entity;
             var byType = entitiesByType.GetOrAdd(entity.TypeName, _ => new ConcurrentDictionary<long, Entity>());
             byType[entityId] = entity;
+            System.Threading.Interlocked.Increment(ref version);
         }
 
         /// <summary>移除实体。</summary>
@@ -40,6 +49,7 @@ namespace Framework.Entity
             {
                 byType.TryRemove(entityId, out _);
             }
+            System.Threading.Interlocked.Increment(ref version);
         }
 
         /// <summary>获取实体；不存在返回 null。</summary>
@@ -87,7 +97,17 @@ namespace Framework.Entity
                 return (false, null);
             }
 
-            object?[] args = ArgCodec.Deserialize(call.Args);
+            // E8 修复：畸形参数 payload 不能抛出接收循环，视为调用失败
+            object?[] args;
+            try
+            {
+                args = ArgCodec.Deserialize(call.Args);
+            }
+            catch (Exception ex)
+            {
+                Framework.Core.Log.Warn($"EntityCall 参数反序列化失败，视为调用失败 EntityId:{call.EntityId} Method:{call.MethodName} Err:{ex.Message}");
+                return (false, null);
+            }
             return entity.InvokeMethod(call.MethodName, args);
         }
 

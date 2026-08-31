@@ -1,7 +1,7 @@
 # Login 登录节点
 
 > 账号体系：注册、登录、Token 签发、登录限流。
-> 通过 TCP 与 DB 节点交互（DB 链路 `[MsgId(4)][RequestId(8)][Payload]`，见 [Protocol.md](Protocol.md)）。
+> 通过 TCP 与 DB 节点交互（DB 链路 `[MsgId(4)][Payload(尾部附 __requestId 元数据)]`，见 [Protocol.md](Protocol.md)）。
 >
 > 项目总览见 [README.md](../../README.md)，编码规范见 [Code-Style.md](Code-Style.md)。
 

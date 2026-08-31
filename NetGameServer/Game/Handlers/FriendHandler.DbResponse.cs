@@ -161,6 +161,12 @@ namespace Game.Handlers
                         if (requesterUserId > 0)
                         {
                             SetFriendCache(requesterUserId, friends);
+                            // P2 修复（冷启动）：登录预热回包写入缓存后，此时好友关系已就绪，
+                            // 再向该玩家的好友广播"上线"并补发离线邀请（此前在登录瞬间就通知，缓存未加载而静默丢失）。
+                            if (pending.IsLoginWarmup && dbRes?.Success == true)
+                            {
+                                NotifyFriendOnlineStatus(sendSession, pending.SessionId, requesterUserId, isOnline: true);
+                            }
                         }
 
                         var res = new GetFriendsResponse

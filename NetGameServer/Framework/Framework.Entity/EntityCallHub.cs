@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using Framework.Core;
 
@@ -77,8 +77,17 @@ public sealed class EntityCallHub
         object? value = null;
         if (result.Success && result.Result.Length > 0)
         {
-            object?[] args = ArgCodec.Deserialize(result.Result);
-            value = args.Length > 0 ? args[0] : null;
+            // E8 修复：畸形/损坏的回执 payload 不能抛出接收循环，按失败回调处理
+            try
+            {
+                object?[] args = ArgCodec.Deserialize(result.Result);
+                value = args.Length > 0 ? args[0] : null;
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"EntityCall 回执反序列化失败，按失败回调 CallId:{result.CallId} Method:{pc.MethodName} Err:{ex.Message}");
+                result.Success = false;
+            }
         }
 
         try

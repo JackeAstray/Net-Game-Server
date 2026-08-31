@@ -1,4 +1,4 @@
-namespace Framework.Protocol;
+﻿namespace Framework.Protocol;
 
 /// <summary>
 /// 游戏消息基接口。所有 [GameMessage] 声明的消息类都实现此接口

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 
@@ -76,6 +76,11 @@ public class MessageRouter
     /// <param name="handler">处理逻辑</param>
     public void RegisterHandler(int msgId, MessageHandler handler)
     {
+        // P3 修复：重复注册会静默覆盖前一个处理器，改为显式告警便于排查
+        if (handlers.ContainsKey(msgId))
+        {
+            Shared.Log.Warning($"[MessageRouter] 重复注册 MsgId {msgId}，将覆盖先前处理器。请检查模块间 MsgId 是否冲突。");
+        }
         handlers[msgId] = handler;
     }
 

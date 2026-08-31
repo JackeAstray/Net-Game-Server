@@ -52,6 +52,8 @@ namespace Shared.Messages.Db
     public class AccountQueryResponse
     {
         public bool Exists { get; set; }
+        /// <summary>P2 修复：返回用户 Id，供 Login 层按 Token 绑定"仅可查询本人账户"。</summary>
+        public int UserId { get; set; }
         public bool IsOnline { get; set; }
         public bool IsLocked { get; set; }
         public bool IsAdmin { get; set; }

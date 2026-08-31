@@ -111,10 +111,19 @@ public sealed class LengthPrefixedPacketReader
 
     /// <summary>
     /// 确保内部缓冲区的长度至少可容纳 requiredEnd（相对缓冲开头的绝对下标）；若当前容量不足，则按 2 的倍数增长。
+    /// P3 修复：防止 requiredEnd/required 整数溢出导致的负容量或倍增死循环。
     /// </summary>
     private void EnsureCapacity(int requiredEnd)
     {
+        if (requiredEnd < 0)
+        {
+            throw new InvalidDataException($"无效的缓冲要求（整数溢出）: {requiredEnd}");
+        }
         int required = requiredEnd + startOffset;
+        if (required < requiredEnd)
+        {
+            throw new InvalidDataException("缓冲大小计算溢出");
+        }
         if (required <= buffer.Length)
         {
             return;
@@ -123,6 +132,10 @@ public sealed class LengthPrefixedPacketReader
         int newSize = buffer.Length;
         while (newSize < required)
         {
+            if (newSize > int.MaxValue / 2)
+            {
+                throw new InvalidDataException($"缓冲需求 {required} 过大（疑似异常输入）");
+            }
             newSize *= 2;
         }
 

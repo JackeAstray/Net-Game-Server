@@ -65,6 +65,9 @@ namespace Login
             // 未认证的连接发送的业务消息将被拒绝。密钥与 Center 节点注册共用。
             // 安全修复：拒绝使用占位符/默认密钥，必须显式配置。
             string authSecret = Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret");
+            // 重启窗口修复：周期持久化防重放状态，重启不重置握手重放窗口
+            Framework.Core.Security.InternalAuthFilter.ConfigureReplayPersistence(
+                System.IO.Path.Combine(AppContext.BaseDirectory, "data", "replay_state.bin"));
             var gatewayAuthFilters = new System.Collections.Concurrent.ConcurrentDictionary<long, Framework.Core.Security.InternalAuthFilter>();
 
             void RemoveClientGatewayBinding(long clientSessionId)
@@ -414,8 +417,10 @@ namespace Login
                     {
                         long currentMaxSequenceFromDB = response.MaxUid;
                         int currentRegionId = ConfigHelper.GetConfig<int>("RegionId") == 0 ? 1 : ConfigHelper.GetConfig<int>("RegionId");
-                        Shared.UIDGenerator.Initialize(currentRegionId, currentMaxSequenceFromDB);
-                        Shared.Log.Info($"UID 生成器初始化完成，区服ID:{currentRegionId}，当前同步的最大序列:{currentMaxSequenceFromDB}");
+                        long reserveBatch = ConfigHelper.GetConfig<long>("UidReserveBatch");
+                        if (reserveBatch <= 0) reserveBatch = 1000;
+                        Shared.UIDGenerator.Initialize(currentRegionId, currentMaxSequenceFromDB, reserveBatch);
+                        Shared.Log.Info($"UID 生成器初始化完成，区服ID:{currentRegionId}，当前同步的最大序列:{currentMaxSequenceFromDB}，预留段:{reserveBatch}");
                     }
                 }
             };
@@ -467,6 +472,8 @@ namespace Login
                         {
                             await Task.Delay(TimeSpan.FromSeconds(Shared.NodeHeartbeatDefaults.HeartbeatIntervalSeconds), cancellationToken);
                             SendNodeStatus(centerClient, nodeId, activeGatewaySessions.Count);
+                            // P2 修复：周期清理防重放状态中长期不活跃用户（防字典无界增长）。
+                            GetOrCreateLoginHandler().SweepTokenReplay(TimeSpan.FromHours(24));
                         }
                     }
                     catch (OperationCanceledException)

@@ -137,11 +137,35 @@ public static class Log
     /// <summary>关闭并刷新所有日志接收器（进程退出时调用）。</summary>
     public static void CloseAndFlush() => Serilog.Log.CloseAndFlush();
 
+    private static readonly Serilog.Parsing.MessageTemplateParser TemplateParser = new();
+
+    /// <summary>
+    /// 把 Serilog 模板渲染为普通文本（供 LogSink/日志聚合）。
+    /// P3 修复：模板是命名占位符风格（如 "{Field}"），原实现用 string.Format 无法解析命名占位符，
+    /// 每次抛 FormatException 后回退原模板，导致聚合日志全是未替换的 {Field}。改用 Serilog 自身渲染，
+    /// 支持命名占位符、{{ 转义与 :format 格式符。
+    /// </summary>
     private static string Format(string template, object?[] values)
     {
         try
         {
-            return values.Length == 0 ? template : string.Format(template, values);
+            if (values.Length == 0)
+            {
+                return template;
+            }
+
+            var parsed = TemplateParser.Parse(template);
+            var properties = new Dictionary<string, Serilog.Events.LogEventPropertyValue>();
+            int index = 0;
+            foreach (var token in parsed.Tokens)
+            {
+                if (token is Serilog.Parsing.PropertyToken pt && index < values.Length)
+                {
+                    properties[pt.PropertyName] = new Serilog.Events.ScalarValue(values[index]);
+                    index++;
+                }
+            }
+            return parsed.Render(properties);
         }
         catch
         {

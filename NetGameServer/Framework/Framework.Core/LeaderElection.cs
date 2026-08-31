@@ -1,4 +1,4 @@
-namespace Framework.Core;
+﻿namespace Framework.Core;
 
 /// <summary>
 /// Leader 选举（对标 KBE 主备高可用的基础）：

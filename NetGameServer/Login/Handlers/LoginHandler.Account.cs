@@ -192,6 +192,48 @@ namespace Login.Handlers
         }
 
         /// <summary>
+        /// 按账号解析用户 Id（P2：HTTP 管理接口按登录 Token 绑定"仅可操作本人账户"）。
+        /// 找不到或 DB 无响应时返回 0。
+        /// </summary>
+        public async Task<int> GetUserIdByAccountAsync(string account)
+        {
+            if (string.IsNullOrWhiteSpace(account))
+            {
+                return 0;
+            }
+            var queryReq = new Shared.Messages.Db.AccountQueryRequest { Account = account.Trim() };
+            var resp = await CallDbAsync<Shared.Messages.Db.AccountQueryResponse>(MessageIds.DbAccountQueryReq, queryReq);
+            return resp?.Exists == true ? resp.UserId : 0;
+        }
+
+        /// <summary>
+        /// 带 Token 绑定的账户查询（仅 HTTP 管理端点使用；TCP/网关会话路径不受影响）。
+        /// Token 必须有效，且被查询的账户必须是 Token 持有人本人的账户；否则返回 (Allowed=false, ...)。
+        /// </summary>
+        public async Task<(bool Allowed, string? Reason, AccountQueryResponse? Response)> HandleAccountQueryWithTokenAsync(AccountQueryRequest request, string? token)
+        {
+            var verified = VerifyToken(token);
+            if (verified == null)
+            {
+                return (false, "登录凭证无效或已过期，请重新登录", null);
+            }
+
+            int accountUserId = await GetUserIdByAccountAsync(request.Account ?? string.Empty);
+            if (accountUserId <= 0)
+            {
+                return (false, "账户不存在", null);
+            }
+            if (accountUserId != verified.Value.UserId)
+            {
+                Log.Warning($"账户查询越权被拒：TokenUserId:{verified.Value.UserId} 请求账户 UserId:{accountUserId}");
+                return (false, "无权限查询其他账户", null);
+            }
+
+            var response = await HandleAccountQueryRequestAsync(request);
+            return (true, null, response);
+        }
+
+        /// <summary>
         /// 异步获取在线统计信息：向 DB 请求当前在线、离线和总用户数的统计结果。
         /// </summary>
         /// <param name="request">在线统计请求（目前无字段，仅作调用占位）。</param>
@@ -394,8 +436,11 @@ namespace Login.Handlers
             }
 
             int currentRegionId = ConfigHelper.GetConfig<int>("RegionId") == 0 ? 1 : ConfigHelper.GetConfig<int>("RegionId");
-            UIDGenerator.Initialize(currentRegionId, maxUidResp.MaxUid);
-            Log.Info($"UID 冲突后已重新同步，区服ID:{currentRegionId}，最大序列:{maxUidResp.MaxUid}");
+            // 预留发号段（默认 1000）：本进程只在该段内发号，段耗尽后重新申请，避免多 Login/DB 实例发号碰撞
+            long reserveBatch = ConfigHelper.GetConfig<long>("UidReserveBatch");
+            if (reserveBatch <= 0) reserveBatch = 1000;
+            UIDGenerator.Initialize(currentRegionId, maxUidResp.MaxUid, reserveBatch);
+            Log.Info($"UID 冲突后已重新同步，区服ID:{currentRegionId}，最大序列:{maxUidResp.MaxUid}，预留段:{reserveBatch}");
         }
 
         /// <summary>

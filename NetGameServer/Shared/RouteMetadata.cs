@@ -214,6 +214,14 @@ public static class RouteMetadata
         // 拒绝"旧格式 JSON 内嵌"回退，防止客户端伪造 __userId 冒充任意用户。
         if (Framework.Protocol.BinaryRouteMetadata.TryExtractLong(payload.Span, UserIdField, out long value, out cleanPayload))
         {
+            // P3 修复：二进制 userId 为 long，直接 (int)value 在超 int 范围时会溢出回绕成负数/错值。
+            if (value < int.MinValue || value > int.MaxValue)
+            {
+                Shared.Log.Warning($"RouteMetadata 提取的 UserId 超出 int 范围，视为非法身份拒绝 Value:{value}");
+                cleanPayload = payload.ToArray();
+                userId = 0;
+                return false;
+            }
             userId = (int)value;
             return true;
         }
@@ -265,7 +273,17 @@ public static class RouteMetadata
             JToken? token = obj[fieldName];
             if (token != null && (token.Type == JTokenType.Integer || token.Type == JTokenType.Float))
             {
-                value = token.Value<long>();
+                // P3 修复：超大 Float（如 1e100）转 long 会抛 OverflowException，需安全转换。
+                try
+                {
+                    value = token.Value<long>();
+                }
+                catch (OverflowException)
+                {
+                    cleanPayload = payload.ToArray();
+                    value = 0;
+                    return false;
+                }
                 obj.Remove(fieldName);
                 cleanPayload = Encoding.UTF8.GetBytes(obj.ToString(Newtonsoft.Json.Formatting.None));
                 return true;
@@ -357,7 +375,15 @@ public static class RouteMetadata
         {
             if (property.Value.Type == JTokenType.Integer || property.Value.Type == JTokenType.Float)
             {
-                fields[property.Name] = property.Value.Value<long>();
+                // P3 修复：超大 Float 转 long 抛 OverflowException，视为畸形元数据整体失败（安全回退）。
+                try
+                {
+                    fields[property.Name] = property.Value.Value<long>();
+                }
+                catch (OverflowException)
+                {
+                    return false;
+                }
             }
         }
 

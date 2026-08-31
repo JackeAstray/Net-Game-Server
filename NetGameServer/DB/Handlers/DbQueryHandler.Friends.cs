@@ -30,8 +30,40 @@ namespace DB.Handlers
                 Log.Warning("收到无效的 AddFriendRequest，数据无法被反序列化。");
                 return;
             }
-            // 账号级串行（P1-2）：同一用户的好友写操作按序执行，防止重复好友/并发覆盖
-            await RunPerUser(UserKey(request.UserId), async () =>
+
+            if (request.UserId <= 0 || string.IsNullOrWhiteSpace(request.FriendUniqueId))
+            {
+                SendDbResponse(session, Shared.Messages.MessageIds.DbAddFriendRes,
+                    new DbAddFriendResponse { Success = false, Message = "用户ID或UniqueId无效" }, requestId);
+                return;
+            }
+
+            // P2 修复：双向写操作先只读解析目标用户（UniqueId 唯一），再进入规范化成对锁，
+            // 使 A→B 与 B→A 的并发写互斥（原实现只按请求方 UserKey 加锁，双向并发会竞态，
+            // 一方命中唯一索引 DbUpdateException，报"服务器内部错误"而非干净的"已是好友"）。
+            Shared.Data.User? targetUser = null;
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+                targetUser = await dbContext.Users.FirstOrDefaultAsync(u => u.UniqueId == request.FriendUniqueId.Trim());
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"添加好友目标查询异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbAddFriendRes, "添加好友失败，服务器内部错误");
+                return;
+            }
+
+            if (targetUser == null)
+            {
+                SendDbResponse(session, Shared.Messages.MessageIds.DbAddFriendRes,
+                    new DbAddFriendResponse { Success = false, Message = "目标用户不存在" }, requestId);
+                return;
+            }
+
+            await RunPerUser(PairKey(request.UserId, targetUser.Id), async () =>
             {
             try
             {
@@ -41,76 +73,61 @@ namespace DB.Handlers
 
                 var response = new DbAddFriendResponse();
 
-                if (request.UserId <= 0 || string.IsNullOrWhiteSpace(request.FriendUniqueId))
+                if (targetUser.Id == request.UserId)
                 {
                     response.Success = false;
-                    response.Message = "用户ID或UniqueId无效";
+                    response.Message = "不能添加自己为好友";
                 }
                 else
                 {
-                    string uniqueId = request.FriendUniqueId.Trim();
-                    var targetUser = await dbContext.Users.FirstOrDefaultAsync(u => u.UniqueId == uniqueId);
-                    if (targetUser == null)
+                    bool hasBlacklistConflict = await dbContext.Blacklists.AnyAsync(b =>
+                        (b.UserId == request.UserId && b.BlockedUserId == targetUser.Id)
+                        || (b.UserId == targetUser.Id && b.BlockedUserId == request.UserId));
+                    if (hasBlacklistConflict)
                     {
                         response.Success = false;
-                        response.Message = "目标用户不存在";
-                    }
-                    else if (targetUser.Id == request.UserId)
-                    {
-                        response.Success = false;
-                        response.Message = "不能添加自己为好友";
+                        response.Message = "存在黑名单关系，无法添加好友";
                     }
                     else
                     {
-                        bool hasBlacklistConflict = await dbContext.Blacklists.AnyAsync(b =>
-                            (b.UserId == request.UserId && b.BlockedUserId == targetUser.Id)
-                            || (b.UserId == targetUser.Id && b.BlockedUserId == request.UserId));
-                        if (hasBlacklistConflict)
+                        bool forwardExists = await dbContext.Friends.AnyAsync(f => f.UserId == request.UserId && f.FriendUserId == targetUser.Id);
+                        bool reverseExists = await dbContext.Friends.AnyAsync(f => f.UserId == targetUser.Id && f.FriendUserId == request.UserId);
+                        if (forwardExists && reverseExists)
                         {
                             response.Success = false;
-                            response.Message = "存在黑名单关系，无法添加好友";
+                            response.Message = "已经是好友了";
                         }
                         else
                         {
-                            bool forwardExists = await dbContext.Friends.AnyAsync(f => f.UserId == request.UserId && f.FriendUserId == targetUser.Id);
-                            bool reverseExists = await dbContext.Friends.AnyAsync(f => f.UserId == targetUser.Id && f.FriendUserId == request.UserId);
-                            if (forwardExists && reverseExists)
+                            using var transaction = await dbContext.Database.BeginTransactionAsync();
+
+                            if (!forwardExists)
                             {
-                                response.Success = false;
-                                response.Message = "已经是好友了";
+                                dbContext.Friends.Add(new Shared.Data.Social.Friend
+                                {
+                                    UserId = request.UserId,
+                                    FriendUserId = targetUser.Id,
+                                    Remark = request.Remark?.Trim() ?? string.Empty,
+                                    AddTime = DateTime.UtcNow
+                                });
                             }
-                            else
+
+                            if (!reverseExists)
                             {
-                                using var transaction = await dbContext.Database.BeginTransactionAsync();
-
-                                if (!forwardExists)
+                                dbContext.Friends.Add(new Shared.Data.Social.Friend
                                 {
-                                    dbContext.Friends.Add(new Shared.Data.Social.Friend
-                                    {
-                                        UserId = request.UserId,
-                                        FriendUserId = targetUser.Id,
-                                        Remark = request.Remark?.Trim() ?? string.Empty,
-                                        AddTime = DateTime.UtcNow
-                                    });
-                                }
-
-                                if (!reverseExists)
-                                {
-                                    dbContext.Friends.Add(new Shared.Data.Social.Friend
-                                    {
-                                        UserId = targetUser.Id,
-                                        FriendUserId = request.UserId,
-                                        Remark = string.Empty,
-                                        AddTime = DateTime.UtcNow
-                                    });
-                                }
-
-                                await dbContext.SaveChangesAsync();
-                                await transaction.CommitAsync();
-
-                                response.Success = true;
-                                response.Message = "添加成功";
+                                    UserId = targetUser.Id,
+                                    FriendUserId = request.UserId,
+                                    Remark = string.Empty,
+                                    AddTime = DateTime.UtcNow
+                                });
                             }
+
+                            await dbContext.SaveChangesAsync();
+                            await transaction.CommitAsync();
+
+                            response.Success = true;
+                            response.Message = "添加成功";
                         }
                     }
                 }
@@ -139,8 +156,38 @@ namespace DB.Handlers
                 Log.Warning("收到无效的 RemoveFriendRequest，数据无法被反序列化。");
                 return;
             }
-            // 账号级串行（P1-2）：同一用户的好友移除按序执行
-            await RunPerUser(UserKey(request.UserId), async () =>
+
+            if (string.IsNullOrWhiteSpace(request.FriendUniqueId))
+            {
+                SendDbResponse(session, Shared.Messages.MessageIds.DbRemoveFriendRes,
+                    new DbRemoveFriendResponse { Success = false, Message = "好友UniqueId无效" }, requestId);
+                return;
+            }
+
+            // P2 修复：先只读解析目标，再进入规范化成对锁（与 AddFriend 同一把锁），双向并发删除互斥。
+            Shared.Data.User? targetUser = null;
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+                targetUser = await dbContext.Users.FirstOrDefaultAsync(u => u.UniqueId == request.FriendUniqueId.Trim());
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"删除好友目标查询异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbRemoveFriendRes, "删除好友失败，服务器内部错误");
+                return;
+            }
+
+            if (targetUser == null)
+            {
+                SendDbResponse(session, Shared.Messages.MessageIds.DbRemoveFriendRes,
+                    new DbRemoveFriendResponse { Success = false, Message = "好友不存在" }, requestId);
+                return;
+            }
+
+            await RunPerUser(PairKey(request.UserId, targetUser.Id), async () =>
             {
             try
             {
@@ -150,40 +197,22 @@ namespace DB.Handlers
 
                 var response = new DbRemoveFriendResponse();
 
-                if (string.IsNullOrWhiteSpace(request.FriendUniqueId))
+                var friendPairs = await dbContext.Friends
+                    .Where(f => (f.UserId == request.UserId && f.FriendUserId == targetUser.Id)
+                        || (f.UserId == targetUser.Id && f.FriendUserId == request.UserId))
+                    .ToListAsync();
+
+                if (friendPairs.Count > 0)
                 {
-                    response.Success = false;
-                    response.Message = "好友UniqueId无效";
+                    dbContext.Friends.RemoveRange(friendPairs);
+                    await dbContext.SaveChangesAsync();
+                    response.Success = true;
+                    response.Message = "删除成功";
                 }
                 else
                 {
-                    string uniqueId = request.FriendUniqueId.Trim();
-                    var targetUser = await dbContext.Users.FirstOrDefaultAsync(u => u.UniqueId == uniqueId);
-                    if (targetUser == null)
-                    {
-                        response.Success = false;
-                        response.Message = "好友不存在";
-                    }
-                    else
-                    {
-                        var friendPairs = await dbContext.Friends
-                            .Where(f => (f.UserId == request.UserId && f.FriendUserId == targetUser.Id)
-                                || (f.UserId == targetUser.Id && f.FriendUserId == request.UserId))
-                            .ToListAsync();
-
-                        if (friendPairs.Count > 0)
-                        {
-                            dbContext.Friends.RemoveRange(friendPairs);
-                            await dbContext.SaveChangesAsync();
-                            response.Success = true;
-                            response.Message = "删除成功";
-                        }
-                        else
-                        {
-                            response.Success = false;
-                            response.Message = "好友不存在";
-                        }
-                    }
+                    response.Success = false;
+                    response.Message = "好友不存在";
                 }
 
                 SendDbResponse(session, Shared.Messages.MessageIds.DbRemoveFriendRes, response, requestId);

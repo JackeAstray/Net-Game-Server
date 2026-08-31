@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Linq;
 using Shared;
@@ -195,42 +195,48 @@ namespace Center.Handlers
                 return fallback?.NodeId;
             }
 
-            int totalWeight = 0;
-            string? best = null;
-            int bestWeight = int.MinValue;
-
-            foreach (var node in candidates)
+            // P2 修复：SWRR 的 smoothWeights 是"读-改-写"状态，并发调用（多网关同时匹配/迁移选节点）
+            // 会竞争同一节点权重导致负载失衡；加锁串行化选择。
+            lock (smoothWeights)
             {
-                int weight = Math.Max(1, LoadWeightCeiling - node.CurrentLoad);
-                int current = smoothWeights.AddOrUpdate(node.NodeId, weight, (_, w) => w + weight);
-                totalWeight += weight;
-                if (current > bestWeight)
+                int totalWeight = 0;
+                string? best = null;
+                int bestWeight = int.MinValue;
+
+                foreach (var node in candidates)
                 {
-                    bestWeight = current;
-                    best = node.NodeId;
-                }
-            }
-
-            if (best != null)
-            {
-                smoothWeights[best] -= totalWeight;
-            }
-
-            // 周期性清理已下线/过期节点残留的平滑权重（防字典无限增长）
-            if (++selectCount % 32 == 0)
-            {
-                var live = new HashSet<string>(candidates.Select(n => n.NodeId));
-                // 快照 keys：避免 foreach 中 TryRemove 抛异常
-                foreach (var key in smoothWeights.Keys.ToArray())
-                {
-                    if (!live.Contains(key))
+                    int weight = Math.Max(1, LoadWeightCeiling - node.CurrentLoad);
+                    int current = smoothWeights.TryGetValue(node.NodeId, out var w) ? w + weight : weight;
+                    smoothWeights[node.NodeId] = current;
+                    totalWeight += weight;
+                    if (current > bestWeight)
                     {
-                        smoothWeights.TryRemove(key, out _);
+                        bestWeight = current;
+                        best = node.NodeId;
                     }
                 }
-            }
 
-            return best;
+                if (best != null)
+                {
+                    smoothWeights[best] -= totalWeight;
+                }
+
+                // 周期性清理已下线/过期节点残留的平滑权重（防字典无限增长）
+                if (++selectCount % 32 == 0)
+                {
+                    var live = new HashSet<string>(candidates.Select(n => n.NodeId));
+                    // 快照 keys：避免 foreach 中 TryRemove 抛异常
+                    foreach (var key in smoothWeights.Keys.ToArray())
+                    {
+                        if (!live.Contains(key))
+                        {
+                            smoothWeights.TryRemove(key, out _);
+                        }
+                    }
+                }
+
+                return best;
+            }
         }
 
         /// <summary>负载权重上限（负载越大权重越小）。</summary>
@@ -275,6 +281,16 @@ namespace Center.Handlers
         public ServerNodeInfo? GetNodeByType(string nodeType)
         {
             return nodes.Values.FirstOrDefault(n =>
+                n.NodeType.Equals(nodeType, StringComparison.OrdinalIgnoreCase) &&
+                n.Session != null && n.Session.IsConnected);
+        }
+
+        /// <summary>
+        /// 按类型获取全部已连接节点（多网关/多 Battle 场景下广播通知用）。
+        /// </summary>
+        public IEnumerable<ServerNodeInfo> GetAllNodesByType(string nodeType)
+        {
+            return nodes.Values.Where(n =>
                 n.NodeType.Equals(nodeType, StringComparison.OrdinalIgnoreCase) &&
                 n.Session != null && n.Session.IsConnected);
         }

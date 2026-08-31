@@ -11,6 +11,9 @@ public static class PasswordHasher
 {
     private const int DefaultIterations = 100_000;
 
+    /// <summary>验证时可接受的最大迭代次数（防 CPU DoS：恶意/污染的存储串声明 int.MaxValue 迭代会烧干 CPU）。</summary>
+    private const int MaxAcceptedIterations = 1_000_000;
+
     /// <summary>对明文密码做加盐 PBKDF2 哈希，返回可存储字符串。</summary>
     public static string HashPassword(string rawPassword)
     {
@@ -37,8 +40,9 @@ public static class PasswordHasher
             return false;
         }
 
-        if (!int.TryParse(parts[1], out int iterations) || iterations <= 0)
+        if (!int.TryParse(parts[1], out int iterations) || iterations <= 0 || iterations > MaxAcceptedIterations)
         {
+            // P2 修复：拒绝超上限的迭代次数，防止被污染的存储哈希串触发海量 PBKDF2 计算（CPU DoS）。
             return false;
         }
 

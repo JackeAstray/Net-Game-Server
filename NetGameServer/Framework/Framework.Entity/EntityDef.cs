@@ -1,4 +1,4 @@
-using System.Buffers.Binary;
+﻿using System.Buffers.Binary;
 using System.Text;
 
 namespace Framework.Entity;
@@ -74,6 +74,18 @@ public sealed class EntityDef
 
     public EntityDef Add(EntityProperty property)
     {
+        // P2-4 修复：CellPrivate 必须强制 SyncToClient=false。
+        // 若声明者漏写 syncToClient:false，私有/内部状态会被 Entity.Set 标记脏并广播给其他客户端。
+        if (property.SyncScope == EntitySyncScope.CellPrivate && property.SyncToClient)
+        {
+            property = new EntityProperty
+            {
+                Name = property.Name,
+                Type = property.Type,
+                SyncToClient = false,
+                SyncScope = property.SyncScope
+            };
+        }
         properties[property.Name] = property;
         return this;
     }

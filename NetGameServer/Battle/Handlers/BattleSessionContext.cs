@@ -1,4 +1,4 @@
-using Framework.Protocol;
+﻿using Framework.Protocol;
 using Framework.Protocol.Generated;
 using ISession = Network.ISession;
 

@@ -145,11 +145,12 @@ public abstract class EntityScriptBase : IEntityScript
     /// </summary>
     public static int MathClampAdd(EntityObj entity, string name, int delta, int min, int max)
     {
-        int newValue = entity.Get<int>(name) + delta;
+        // P2 修复：内部用 long 累加，防止 Get<int> + delta 整数溢出回绕（恶意大 delta 可导致结果跳变）。
+        long newValue = (long)entity.Get<int>(name) + delta;
         if (newValue < min) newValue = min;
         else if (newValue > max) newValue = max;
-        entity.Set(name, newValue);
-        return newValue;
+        entity.Set(name, (int)newValue);
+        return (int)newValue;
     }
 }
 

@@ -200,7 +200,28 @@ public sealed class ScriptHost : IDisposable
             entity.PropertyChanged += handler;
             if (scripts.TryGetValue(entity.TypeName, out var script))
             {
-                script.OnCreate(entity);
+                // P3 修复：OnCreate 与 NotifyReload 一致，投递到 tick 线程串行执行。
+                // 原实现直接在当前线程调用，非 tick 线程（如持久化恢复/后台加载）创建实体时
+                // 会与 tick 线程的实体访问/定时器并发竞争。
+                void RunOnCreate()
+                {
+                    try
+                    {
+                        script.OnCreate(entity);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error(ex, $"脚本 {entity.TypeName} OnCreate 异常 EntityId:{entity.EntityId}");
+                    }
+                }
+                if (TickEngine != null)
+                {
+                    TickEngine.Post(RunOnCreate);
+                }
+                else
+                {
+                    RunOnCreate();
+                }
             }
         }
     }
@@ -276,8 +297,22 @@ public sealed class ScriptHost : IDisposable
     /// <summary>
     /// 全局数据变更通知：对每个脚本按其绑定的实体类型直达遍历（类型索引），逐个调用 OnGlobalChanged。
     /// 脚本实例按实体类型共享，因此回调需要实体参数（事件可能影响同类型的多个实体）。
+    /// P3 修复：整体投递到 tick 线程串行执行（与 NotifyReload 一致）——SetGlobal 可能被非 tick 线程
+    /// （配置重载/后台任务）调用，原实现在调用线程直接遍历活动实体集合，与 tick 线程并发竞争。
     /// </summary>
     private void NotifyGlobalChanged(string key, object? value)
+    {
+        if (TickEngine != null)
+        {
+            TickEngine.Post(() => NotifyGlobalChangedOnTick(key, value));
+        }
+        else
+        {
+            NotifyGlobalChangedOnTick(key, value);
+        }
+    }
+
+    private void NotifyGlobalChangedOnTick(string key, object? value)
     {
         foreach (var script in scripts.Values)
         {

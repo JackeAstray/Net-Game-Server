@@ -1,4 +1,4 @@
-namespace Framework.Protocol;
+﻿namespace Framework.Protocol;
 
 /// <summary>
 /// 协议消息标注：声明即协议（方案 A 的单一事实来源，替代 .def）。

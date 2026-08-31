@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Network;
 using Network.Tcp;
@@ -288,6 +288,9 @@ namespace DB
             // 内部连接认证：业务服务（Login/Game）连接必须先通过认证握手（InternalAuth），密钥共享。
             // 安全修复：拒绝占位符密钥。
             string authSecret = Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret");
+            // 重启窗口修复：周期持久化防重放状态，重启不重置握手重放窗口
+            Framework.Core.Security.InternalAuthFilter.ConfigureReplayPersistence(
+                System.IO.Path.Combine(AppContext.BaseDirectory, "data", "replay_state.bin"));
             var clientAuthFilters = new System.Collections.Concurrent.ConcurrentDictionary<long, Framework.Core.Security.InternalAuthFilter>();
 
             // 简单的会话事件日志，用于监控连接与流量；同时登记认证过滤器。

@@ -216,7 +216,10 @@ namespace Game.Handlers
             {
                 UserId = userId
             };
-            _ = TrySendDbRequest(MessageIds.DbGetFriendsReq, gatewaySession, friendsReq, sessionId, MessageIds.GetFriendsRes);
+            // P2 修复（冷启动）：标记为登录预热请求。回包写入 FriendCache 后再补发"好友上线通知 + 离线邀请"，
+            // 否则登录瞬间缓存未加载，NotifyFriendOnlineStatus 早退，好友永远看不到该玩家上线、离线邀请永远不补发。
+            _ = TrySendDbRequest(MessageIds.DbGetFriendsReq, gatewaySession, friendsReq, sessionId, MessageIds.GetFriendsRes,
+                configurePending: p => p.IsLoginWarmup = true);
         }
 
         public static void NotifyFriendOnlineStatus(global::Network.ISession gameSession, long sessionId, int userId, bool isOnline)
@@ -279,6 +282,20 @@ namespace Game.Handlers
             }
 
             FriendCache[userId] = friendIds;
+        }
+
+        /// <summary>
+        /// 玩家离线/注销时清理其好友与黑名单缓存（P2 修复：防 FriendCache/BlacklistCache 随累计登录用户数无界增长）。
+        /// 上线再次触发 WarmupSocialCache 时会重新从 DB 加载。
+        /// </summary>
+        public static void ClearUserCaches(int userId)
+        {
+            if (userId <= 0)
+            {
+                return;
+            }
+            FriendCache.TryRemove(userId, out _);
+            BlacklistCache.TryRemove(userId, out _);
         }
     }
 }

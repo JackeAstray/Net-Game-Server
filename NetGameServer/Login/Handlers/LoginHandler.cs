@@ -63,6 +63,12 @@ namespace Login.Handlers
             => tokenService.Verify(token, tokenAntiReplay);
 
         /// <summary>
+        /// 周期清理防重放状态中长期不活跃用户的条目（P2 修复：防字典随累计登录用户数无界增长）。
+        /// 由 Login 心跳循环周期调用。
+        /// </summary>
+        public void SweepTokenReplay(TimeSpan idle) => tokenAntiReplay.Sweep(idle);
+
+        /// <summary>
         /// 异步处理登录请求：向 DB 服务发送验证请求并返回登录响应。
         /// 若验证成功，会在响应中生成临时 Token（仅示例用途）。
         /// </summary>
@@ -228,11 +234,17 @@ namespace Login.Handlers
                 catch (InvalidOperationException ex)
                 {
                     Log.Warning($"注册失败：UID 生成异常，账号:{account}，异常:{ex.Message}");
-                    return new RegisterResponse
+                    if (!UIDGenerator.IsInitialized)
                     {
-                        Success = false,
-                        Message = "服务器正在初始化UID，请稍后重试"
-                    };
+                        return new RegisterResponse
+                        {
+                            Success = false,
+                            Message = "服务器正在初始化UID，请稍后重试"
+                        };
+                    }
+                    // 预留段耗尽 / 序列越界：重新向 DB 申请发号段后重试（防多实例发号碰撞）
+                    await SyncUidGeneratorFromDbAsync();
+                    continue;
                 }
 
                 var verifyReq = new Shared.Messages.Db.RegisterVerifyRequest

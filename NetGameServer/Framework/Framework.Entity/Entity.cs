@@ -1,4 +1,4 @@
-using Framework.Core;
+﻿using Framework.Core;
 
 namespace Framework.Entity;
 

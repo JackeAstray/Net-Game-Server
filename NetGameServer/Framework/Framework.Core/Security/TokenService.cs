@@ -34,7 +34,10 @@ public sealed class TokenService
     {
         long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         long expires = now + (long)(ttl ?? defaultTtl).TotalSeconds;
-        string payload = $"{userId}|{uid}|{seq}|{now}|{expires}";
+        // P2 修复：uid 为任意账户串，若含分隔符 '|' 会导致 Verify 拆段错误而永久失效。
+        // 对 uid 做百分号转义（%→%25，|→%7C），其余字符原样保留；验证时逆序还原，向后兼容不含保留字符的旧 token。
+        string escapedUid = uid.Replace("%", "%25").Replace("|", "%7C");
+        string payload = $"{userId}|{escapedUid}|{seq}|{now}|{expires}";
         string signature = Sign(payload);
         return $"{ToBase64Url(Convert.ToBase64String(Encoding.UTF8.GetBytes(payload)))}.{signature}";
     }
@@ -98,13 +101,16 @@ public sealed class TokenService
             return null; // 未到生效时间（时钟偏移）或已过期
         }
 
+        // P2 修复：还原 uid 的转义（与 Issue 逆序：先还原 %7C 再还原 %25）。
+        string uid = fields[1].Replace("%7C", "|").Replace("%25", "%");
+
         // D6 单调序号防重放：seq 必须严格递增（首次任意正数）
         if (antiReplay != null && !antiReplay.TryAcceptSeq(userId, seq))
         {
             return null; // 重放旧 token
         }
 
-        return (userId, fields[1], seq, expires);
+        return (userId, uid, seq, expires);
     }
 
     private string Sign(string payload)

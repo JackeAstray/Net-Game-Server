@@ -206,6 +206,36 @@ namespace Battle
         /// <summary>无主世界实体（Npc/Quest 等）允许客户端直接调用的方法白名单（与 SceneManager/脚本 OnMessage 对齐）。</summary>
         private static readonly string[] WorldEntityAllowedMethods = { "TakeDamage", "QueryProgress" };
 
+        /// <summary>TakeDamage 单次伤害上限（P2：防负数/超大值注入）。</summary>
+        private const int MaxScriptTakeDamage = 1_000_000;
+
+        /// <summary>校验 TakeDamage 参数：dmg 必须为正且不超过上限。</summary>
+        private static bool TryValidateTakeDamageArgs(object?[]? args, out string reason)
+        {
+            reason = string.Empty;
+            if (args == null || args.Length == 0)
+            {
+                reason = "缺少伤害参数";
+                return false;
+            }
+            if (args[0] is not int dmg)
+            {
+                reason = "伤害参数必须为整数";
+                return false;
+            }
+            if (dmg <= 0)
+            {
+                reason = "伤害必须为正数";
+                return false;
+            }
+            if (dmg > MaxScriptTakeDamage)
+            {
+                reason = $"伤害超过上限 {MaxScriptTakeDamage}";
+                return false;
+            }
+            return true;
+        }
+
         /// <summary>分发通用实体脚本动作（客户端 ScriptAction 消息 → 脚本 OnMessage）。</summary>
         /// <remarks>
         /// CRITICAL 修复：脚本动作必须鉴权，否则任意客户端可对任意场景/任意实体的任意方法发起调用（改他人血量、
@@ -253,6 +283,17 @@ namespace Battle
                 {
                     Log.Warning($"实体脚本动作被拒绝：调用者无权操作该实体 SessionId:{callerSessionId} EntityId:{entityId} Method:{method}");
                     return;
+                }
+
+                // P2 修复（参数校验）：TakeDamage 白名单方法对任意客户端开放，恶意 dmg（负数/超大值）
+                // 会变成治疗或触发整型溢出。框架层强制 dmg 为正且不超过上限，非法值直接拒绝。
+                if (method == "TakeDamage")
+                {
+                    if (!TryValidateTakeDamageArgs(args, out string rejectReason))
+                    {
+                        Log.Warning($"实体脚本动作被拒绝：TakeDamage 参数非法 SessionId:{callerSessionId} EntityId:{entityId} 原因:{rejectReason}");
+                        return;
+                    }
                 }
 
                 scriptHost?.DispatchMessage(entity, method, args);
@@ -1025,6 +1066,9 @@ namespace Battle
             // 内部连接认证：网关/节点连接必须先通过认证握手（InternalAuth），密钥与 Center 节点注册共用。
             // 安全修复：拒绝占位符密钥。
             string authSecret = Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret");
+            // 重启窗口修复：周期持久化防重放状态，重启不重置握手重放窗口
+            Framework.Core.Security.InternalAuthFilter.ConfigureReplayPersistence(
+                System.IO.Path.Combine(AppContext.BaseDirectory, "data", "replay_state.bin"));
             var gatewayAuthFilters = new System.Collections.Concurrent.ConcurrentDictionary<long, Framework.Core.Security.InternalAuthFilter>();
 
             tcpServer.OnSessionConnected += session =>

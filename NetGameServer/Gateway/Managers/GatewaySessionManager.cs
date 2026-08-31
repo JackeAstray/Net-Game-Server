@@ -1,4 +1,4 @@
-using Network;
+﻿using Network;
 using Shared;
 using System.Collections.Concurrent;
 
@@ -88,20 +88,21 @@ namespace Gateway.Managers
             sessionCreatedAt.TryRemove(sessionId, out _);
             sessionLastActivity.TryRemove(sessionId, out _);
 
-            // 清理断线重连别名（防泄漏）：移除本会话及其被别名指向的旧会话的所有别名项
-            if (sessionIdAliases.TryRemove(sessionId, out long aliasedTo))
-            {
-                sessionIdAliases.TryRemove(aliasedTo, out _);
-            }
-            else
-            {
-                aliasedTo = sessionId;
-            }
+            // 清理断线重连别名（双向表，防泄漏）：移除本会话相关的全部别名项。
+            // 1) 正表（new->old）：移除以本会话为键或为值的项
             foreach (var kv in sessionIdAliases.ToArray())
             {
-                if (kv.Key == sessionId || kv.Value == sessionId || kv.Value == aliasedTo)
+                if (kv.Key == sessionId || kv.Value == sessionId)
                 {
                     sessionIdAliases.TryRemove(kv.Key, out _);
+                }
+            }
+            // 2) 反向表（old->new）：移除以本会话为键或为值的项
+            foreach (var kv in sessionIdReverseAliases.ToArray())
+            {
+                if (kv.Key == sessionId || kv.Value == sessionId)
+                {
+                    sessionIdReverseAliases.TryRemove(kv.Key, out _);
                 }
             }
 
@@ -119,13 +120,32 @@ namespace Gateway.Managers
         /// <summary>
         /// 根据 sessionId 获取对应的客户端会话。
         /// 找不到时返回 null。
+        /// 断线重连后真实会话（ISession）挂在新 ID 键上，而后端仍按旧 ID 回复：
+        /// 此处经反向别名（old->new）解析，保证按旧 ID 的回复能定位到真实会话。
         /// </summary>
         /// <param name="sessionId">要查找的会话 Id</param>
         /// <returns>对应的 ISession 实例，或 null</returns>
         public Network.ISession? GetSession(long sessionId)
         {
-            clientSessions.TryGetValue(sessionId, out var session);
+            if (clientSessions.TryGetValue(sessionId, out var session))
+            {
+                return session;
+            }
+            // 断线重连：旧 ID 经反向别名定位到真实会话所在键（new）
+            if (sessionIdReverseAliases.TryGetValue(sessionId, out long newSessionId))
+            {
+                clientSessions.TryGetValue(newSessionId, out session);
+            }
             return session;
+        }
+
+        /// <summary>
+        /// 解析为"真实会话所在键"（old -> new 反向解析）。
+        /// 后端按旧 ID 回复/下发时，用该结果定位 Gateway 侧真实会话键。
+        /// </summary>
+        public long ResolveToActiveSessionId(long sessionId)
+        {
+            return sessionIdReverseAliases.TryGetValue(sessionId, out long newSessionId) ? newSessionId : sessionId;
         }
 
         /// <summary>
@@ -313,6 +333,8 @@ namespace Gateway.Managers
         // newSessionId -> oldSessionId 的别名映射（断线重连时新会话的身份等价于旧会话 ID）
         // 业务代码通过此映射把"老 SessionId"标识的资源迁移到新会话上。
         private readonly ConcurrentDictionary<long, long> sessionIdAliases = new();
+        // 反向映射：oldSessionId -> newSessionId（旧 ID 定位真实会话所在键；回复路由/断线清理用）
+        private readonly ConcurrentDictionary<long, long> sessionIdReverseAliases = new();
 
         /// <summary>
         /// 解析一个 SessionId 对应的真实 SessionId（如果有别名则返回别名指向的 ID）。
@@ -369,6 +391,8 @@ namespace Gateway.Managers
             sessionIdAliases[newSessionId] = oldSessionId;
             // 同样建立反向映射（用于 GetAllSessions 时识别"该会话是别名重连"）
             sessionIdAliases[oldSessionId] = oldSessionId; // 旧 ID 解析回自己
+            // 反向映射：oldSessionId -> newSessionId（旧 ID 定位真实会话；回复路由/断线清理用）
+            sessionIdReverseAliases[oldSessionId] = newSessionId;
 
             Shared.Log.Info($"Gateway 断线重连：新会话 {newSessionId} 别名到旧 SessionId:{oldSessionId} Remote:{session.RemoteEndPoint} UserId:{userId}");
             return true;

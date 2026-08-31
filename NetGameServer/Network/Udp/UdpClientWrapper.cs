@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading.Tasks;
@@ -81,11 +81,18 @@ public class UdpClientWrapper : INetworkClient
 
         try
         {
+            // A9 修复：与 UdpServer 保持一致的 payload 语义——每个 UDP 数据报经 LengthPrefixedPacketReader
+            // 解析出完整长度帧包后派发（此前直接派发原始 datagram，含 4 字节长度前缀，链路抽象不一致）。
+            var packetReader = new Routing.LengthPrefixedPacketReader();
             while (isRunning)
             {
                 var result = await udpClient.ReceiveAsync();
                 session.LastActivityTime = DateTime.UtcNow;
-                OnDataReceived?.Invoke(session, result.Buffer);
+                packetReader.Append(result.Buffer);
+                while (packetReader.TryReadPacket(out var packet))
+                {
+                    OnDataReceived?.Invoke(session, packet);
+                }
             }
         }
         catch (Exception ex)

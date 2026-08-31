@@ -21,6 +21,44 @@ namespace Game
         public static TcpClientWrapper DbClient { get; private set; } = null!;
         private static System.Threading.CancellationTokenSource? centerHeartbeatCts;
 
+        // P2 修复（跨网关投递）：客户端会话 -> 网关会话 反向索引。
+        // 多网关部署下，向"目标客户端会话"发消息时必须选中该客户端真正所在的网关连接；
+        // 原实现一律沿用请求来源的网关会话，目标在另一网关时消息被发错网关而丢失。
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, global::Network.ISession> clientSessionGateways =
+            new();
+
+        /// <summary>登记/刷新客户端会话与网关会话的归属关系（收到该客户端任何数据包时调用）。</summary>
+        public static void RegisterClientGateway(long clientSessionId, global::Network.ISession gatewaySession)
+        {
+            if (clientSessionId > 0 && gatewaySession != null)
+            {
+                clientSessionGateways[clientSessionId] = gatewaySession;
+            }
+        }
+
+        /// <summary>移除客户端会话的网关归属（玩家断线/网关断开时调用）。</summary>
+        public static void UnregisterClientGateway(long clientSessionId)
+        {
+            if (clientSessionId > 0)
+            {
+                clientSessionGateways.TryRemove(clientSessionId, out _);
+            }
+        }
+
+        /// <summary>解析目标客户端会话所在的网关会话；未知或已断开返回 null。</summary>
+        public static global::Network.ISession? ResolveGatewayForClient(long clientSessionId)
+        {
+            if (clientSessionId <= 0)
+            {
+                return null;
+            }
+            if (clientSessionGateways.TryGetValue(clientSessionId, out var gw) && gw.IsConnected)
+            {
+                return gw;
+            }
+            return null;
+        }
+
         /// <summary>
         /// 异步启动网络监听。
         /// 关键步骤：
@@ -36,6 +74,9 @@ namespace Game
             // 内部连接认证：网关连接必须先通过认证握手（InternalAuth），密钥与 Center 节点注册共用。
             // 安全修复：拒绝占位符密钥。
             string authSecret = Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret");
+            // 重启窗口修复：周期持久化防重放状态，重启不重置握手重放窗口
+            Framework.Core.Security.InternalAuthFilter.ConfigureReplayPersistence(
+                System.IO.Path.Combine(AppContext.BaseDirectory, "data", "replay_state.bin"));
             var gatewayAuthFilters = new System.Collections.Concurrent.ConcurrentDictionary<long, Framework.Core.Security.InternalAuthFilter>();
 
             // V5 修复：网关连接 -> 经它路由的客户端会话集合。
@@ -82,6 +123,13 @@ namespace Game
                         Game.Handlers.FriendHandler.NotifyFriendOnlineStatus(session, clientId, offlineUserId, false);
                         Game.Managers.PlayerSessionManager.Instance.UnbindSession(clientId);
                         Handlers.ChatHandler.RemoveSession(clientId);
+                        // P2 修复：网关断开时级联移除跨网关反向索引。
+                        UnregisterClientGateway(clientId);
+                        // P2 修复：清理离线玩家的好友/黑名单缓存，防字典无界增长（仅当无其他在线会话时清理）。
+                        if (offlineUserId > 0 && Game.Managers.PlayerSessionManager.Instance.GetSessionIdByUserId(offlineUserId) <= 0)
+                        {
+                            Game.Handlers.FriendHandler.ClearUserCaches(offlineUserId);
+                        }
                     }
                     Log.Warning($"网关断开，级联清理客户端会话 {clients.Count} 个");
                 }
@@ -156,9 +204,11 @@ namespace Game
                     }
 
                     // V5 修复：登记该客户端会话与网关连接的关系（网关断开时用于级联清理）。
+                    // P2 修复：同时维护"客户端会话 -> 网关会话"反向索引，供跨网关向目标会话投递时选中正确网关。
                     if (originalSessionId > 0)
                     {
                         gatewayClients.GetOrAdd(session.SessionId, _ => new System.Collections.Concurrent.ConcurrentDictionary<long, byte>())[originalSessionId] = 0;
+                        RegisterClientGateway(originalSessionId, session);
                     }
 
                     if (msgId == MessageIds.PlayerDisconnectNotif)
@@ -167,6 +217,14 @@ namespace Game
                         Game.Handlers.FriendHandler.NotifyFriendOnlineStatus(session, originalSessionId, disconnectedUserId, false);
                         Game.Managers.PlayerSessionManager.Instance.UnbindSession(originalSessionId);
                         Handlers.ChatHandler.RemoveSession(originalSessionId);
+                        // P2 修复：移除跨网关反向索引（该客户端会话已离线）。
+                        UnregisterClientGateway(originalSessionId);
+                        // P2 修复：清理离线玩家的好友/黑名单缓存，防字典无界增长。
+                        // 仅当该用户已无其他在线会话时才清理，避免顶号场景下旧会话断开清掉新会话刚暖好的缓存。
+                        if (disconnectedUserId > 0 && Game.Managers.PlayerSessionManager.Instance.GetSessionIdByUserId(disconnectedUserId) <= 0)
+                        {
+                            Game.Handlers.FriendHandler.ClearUserCaches(disconnectedUserId);
+                        }
                         if (gatewayClients.TryGetValue(session.SessionId, out var clientsForGateway))
                         {
                             clientsForGateway.TryRemove(originalSessionId, out _);
@@ -503,10 +561,12 @@ namespace Game
         }
 
         /// <summary>
-        /// 向指定客户端会话发送"被顶号踢下线"通知（R4 修复；经当前网关路由到目标会话）。
+        /// 向指定客户端会话发送"被顶号踢下线"通知（R4 修复；经目标会话所在网关路由到目标会话）。
+        /// P2 修复：跨网关部署下优先解析目标会话所在网关，而不是沿用请求来源网关。
         /// </summary>
         private static void SendKickedOff(global::Network.ISession gatewaySession, long targetSessionId)
         {
+            global::Network.ISession sendSession = ResolveGatewayForClient(targetSessionId) ?? gatewaySession;
             var msg = new Shared.Messages.Login.KickedOffMessage
             {
                 Reason = "您的账号在其他设备登录",
@@ -516,7 +576,7 @@ namespace Game
             byte[] packet = PacketBuilder.BuildPacket(MessageIds.KickedOffNotif, payload, out int packetLength);
             try
             {
-                gatewaySession.Send(packet.AsSpan(0, packetLength).ToArray());
+                sendSession.Send(packet.AsSpan(0, packetLength).ToArray());
             }
             catch (Exception ex)
             {

@@ -33,7 +33,8 @@ namespace Battle.Handlers
             try
             {
                 // 获取请求的类型，这里默认客户端在加入请求时通过 SceneType 或是默认根据包含 World 处理，也可以像 Center 时带入 CategoryId
-                bool isWorldMap = request.RoomId.Contains("World");
+                // P3 修复：RoomId 可能为 null（校验不完整路径），null 上调用 Contains 抛 NRE。
+                bool isWorldMap = request.RoomId?.Contains("World") == true;
                 string templateId = string.IsNullOrEmpty(request.SceneType) ? (isWorldMap ? "World" : "PVP") : request.SceneType;
 
                 // 查表获取场景模板配置

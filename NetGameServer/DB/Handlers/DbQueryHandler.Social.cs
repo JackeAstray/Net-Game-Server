@@ -28,8 +28,38 @@ namespace DB.Handlers
         public static async Task HandleAddBlacklistRequest(ISession session, DbAddBlacklistRequest? request, long? requestId = null)
         {
             if (request == null) return;
-            // 账号级串行（P1-2）：同一用户的拉黑操作按序执行
-            await RunPerUser(UserKey(request.UserId), async () =>
+
+            if (request.UserId <= 0 || string.IsNullOrWhiteSpace(request.TargetUniqueId))
+            {
+                SendDbResponse(session, Shared.Messages.MessageIds.DbAddBlacklistRes,
+                    new DbAddBlacklistResponse { Success = false, Message = "用户ID或UniqueId无效" }, requestId);
+                return;
+            }
+
+            // P2 修复：先只读解析目标，再进入规范化成对锁（双向拉黑/取消与好友操作共用成对键互斥）。
+            Shared.Data.User? targetUser = null;
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+                targetUser = await dbContext.Users.FirstOrDefaultAsync(u => u.UniqueId == request.TargetUniqueId.Trim());
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"添加黑名单目标查询异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbAddBlacklistRes, "添加黑名单失败，服务器内部错误");
+                return;
+            }
+
+            if (targetUser == null)
+            {
+                SendDbResponse(session, Shared.Messages.MessageIds.DbAddBlacklistRes,
+                    new DbAddBlacklistResponse { Success = false, Message = "目标用户不存在" }, requestId);
+                return;
+            }
+
+            await RunPerUser(PairKey(request.UserId, targetUser.Id), async () =>
             {
             try
             {
@@ -39,59 +69,44 @@ namespace DB.Handlers
 
                 var response = new DbAddBlacklistResponse();
 
-                if (request.UserId <= 0 || string.IsNullOrWhiteSpace(request.TargetUniqueId))
+                if (targetUser.Id == request.UserId)
                 {
                     response.Success = false;
-                    response.Message = "用户ID或UniqueId无效";
+                    response.Message = "不能拉黑自己";
                 }
                 else
                 {
-                    string targetUniqueId = request.TargetUniqueId.Trim();
-                    var targetUser = await dbContext.Users.FirstOrDefaultAsync(u => u.UniqueId == targetUniqueId);
-                    if (targetUser == null)
+                    response.TargetUserId = targetUser.Id;
+                    bool exists = await dbContext.Blacklists.AnyAsync(b => b.UserId == request.UserId && b.BlockedUserId == targetUser.Id);
+                    if (exists)
                     {
                         response.Success = false;
-                        response.Message = "目标用户不存在";
-                    }
-                    else if (targetUser.Id == request.UserId)
-                    {
-                        response.Success = false;
-                        response.Message = "不能拉黑自己";
+                        response.Message = "目标已在黑名单中";
                     }
                     else
                     {
-                        response.TargetUserId = targetUser.Id;
-                        bool exists = await dbContext.Blacklists.AnyAsync(b => b.UserId == request.UserId && b.BlockedUserId == targetUser.Id);
-                        if (exists)
+                        using var transaction = await dbContext.Database.BeginTransactionAsync();
+
+                        dbContext.Blacklists.Add(new Blacklist
                         {
-                            response.Success = false;
-                            response.Message = "目标已在黑名单中";
-                        }
-                        else
+                            UserId = request.UserId,
+                            BlockedUserId = targetUser.Id,
+                            AddTime = DateTime.UtcNow
+                        });
+
+                        var friendPairs = await dbContext.Friends
+                            .Where(f => (f.UserId == request.UserId && f.FriendUserId == targetUser.Id)
+                                || (f.UserId == targetUser.Id && f.FriendUserId == request.UserId))
+                            .ToListAsync();
+                        if (friendPairs.Count > 0)
                         {
-                            using var transaction = await dbContext.Database.BeginTransactionAsync();
-
-                            dbContext.Blacklists.Add(new Blacklist
-                            {
-                                UserId = request.UserId,
-                                BlockedUserId = targetUser.Id,
-                                AddTime = DateTime.UtcNow
-                            });
-
-                            var friendPairs = await dbContext.Friends
-                                .Where(f => (f.UserId == request.UserId && f.FriendUserId == targetUser.Id)
-                                    || (f.UserId == targetUser.Id && f.FriendUserId == request.UserId))
-                                .ToListAsync();
-                            if (friendPairs.Count > 0)
-                            {
-                                dbContext.Friends.RemoveRange(friendPairs);
-                            }
-
-                            await dbContext.SaveChangesAsync();
-                            await transaction.CommitAsync();
-                            response.Success = true;
-                            response.Message = "拉黑成功";
+                            dbContext.Friends.RemoveRange(friendPairs);
                         }
+
+                        await dbContext.SaveChangesAsync();
+                        await transaction.CommitAsync();
+                        response.Success = true;
+                        response.Message = "拉黑成功";
                     }
                 }
 
@@ -121,8 +136,38 @@ namespace DB.Handlers
                 Log.Warning("收到无效的 RemoveBlacklistRequest，数据无法被反序列化。");
                 return;
             }
-            // 账号级串行（P1-2）：同一用户的移出黑名单按序执行
-            await RunPerUser(UserKey(request.UserId), async () =>
+
+            if (request.UserId <= 0 || string.IsNullOrWhiteSpace(request.TargetUniqueId))
+            {
+                SendDbResponse(session, Shared.Messages.MessageIds.DbRemoveBlacklistRes,
+                    new DbRemoveBlacklistResponse { Success = false, Message = "用户ID或UniqueId无效" }, requestId);
+                return;
+            }
+
+            // P2 修复：先只读解析目标，再进入规范化成对锁。
+            Shared.Data.User? targetUser = null;
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+                targetUser = await dbContext.Users.FirstOrDefaultAsync(u => u.UniqueId == request.TargetUniqueId.Trim());
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"移除黑名单目标查询异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbRemoveBlacklistRes, "移除黑名单失败，服务器内部错误");
+                return;
+            }
+
+            if (targetUser == null)
+            {
+                SendDbResponse(session, Shared.Messages.MessageIds.DbRemoveBlacklistRes,
+                    new DbRemoveBlacklistResponse { Success = false, Message = "目标用户不存在" }, requestId);
+                return;
+            }
+
+            await RunPerUser(PairKey(request.UserId, targetUser.Id), async () =>
             {
             try
             {
@@ -130,39 +175,23 @@ namespace DB.Handlers
                 using var scope = factory.CreateScope();
                 var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
 
-                var response = new DbRemoveBlacklistResponse();
+                var response = new DbRemoveBlacklistResponse
+                {
+                    TargetUserId = targetUser.Id
+                };
 
-                if (request.UserId <= 0 || string.IsNullOrWhiteSpace(request.TargetUniqueId))
+                var blacklist = await dbContext.Blacklists.FirstOrDefaultAsync(b => b.UserId == request.UserId && b.BlockedUserId == targetUser.Id);
+                if (blacklist == null)
                 {
                     response.Success = false;
-                    response.Message = "用户ID或UniqueId无效";
+                    response.Message = "目标不在黑名单中";
                 }
                 else
                 {
-                    string targetUniqueId = request.TargetUniqueId.Trim();
-                    var targetUser = await dbContext.Users.FirstOrDefaultAsync(u => u.UniqueId == targetUniqueId);
-                    if (targetUser == null)
-                    {
-                        response.Success = false;
-                        response.Message = "目标用户不存在";
-                    }
-                    else
-                    {
-                        response.TargetUserId = targetUser.Id;
-                        var blacklist = await dbContext.Blacklists.FirstOrDefaultAsync(b => b.UserId == request.UserId && b.BlockedUserId == targetUser.Id);
-                        if (blacklist == null)
-                        {
-                            response.Success = false;
-                            response.Message = "目标不在黑名单中";
-                        }
-                        else
-                        {
-                            dbContext.Blacklists.Remove(blacklist);
-                            await dbContext.SaveChangesAsync();
-                            response.Success = true;
-                            response.Message = "移除成功";
-                        }
-                    }
+                    dbContext.Blacklists.Remove(blacklist);
+                    await dbContext.SaveChangesAsync();
+                    response.Success = true;
+                    response.Message = "移除成功";
                 }
 
                 SendDbResponse(session, Shared.Messages.MessageIds.DbRemoveBlacklistRes, response, requestId);

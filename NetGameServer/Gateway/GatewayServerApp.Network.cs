@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
@@ -226,24 +226,28 @@ namespace Gateway
             SessionDisconnectedHandler onSessionDisconnected = (session, reason) =>
             {
                 Shared.Log.Info($"客户端断开连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Reason:{reason}");
+                // 断线重连：先用别名解析出业务侧规范的会话 ID（重连会话=旧 ID；未重连=自身）。
+                // 后端（Battle/Center/Game）始终按旧 ID 认知该玩家，故断线通知/挂起记录/节点绑定清理
+                // 统一使用规范 ID，避免后端按旧 ID 找不到清理目标、或绑定残留。
+                long canonicalId = Gateway.Managers.GatewaySessionManager.Instance.ResolveSessionId(session.SessionId);
                 // 断线重连（对标 KBE 断线恢复）：有用户绑定的会话记录挂起，宽限期内重新登录可恢复
-                int boundUserId = Gateway.Managers.GatewaySessionManager.Instance.GetUserIdBySessionId(session.SessionId);
+                int boundUserId = Gateway.Managers.GatewaySessionManager.Instance.GetUserIdBySessionId(canonicalId);
                 if (boundUserId > 0)
                 {
                     int grace = ConfigHelper.GetConfig<int>("GatewayReconnectGraceSeconds") == 0 ? 30 : ConfigHelper.GetConfig<int>("GatewayReconnectGraceSeconds");
                     if (grace > 0)
                     {
-                        pendingReconnects[session.SessionId] = new PendingReconnect
+                        pendingReconnects[canonicalId] = new PendingReconnect
                         {
                             UserId = boundUserId,
                             ExpiresAtUtc = DateTime.UtcNow.AddSeconds(grace)
                         };
-                        Shared.Log.Info($"Gateway 记录断线重连会话 SessionId:{session.SessionId} UserId:{boundUserId} 宽限:{grace}s");
+                        Shared.Log.Info($"Gateway 记录断线重连会话 SessionId:{canonicalId} UserId:{boundUserId} 宽限:{grace}s");
                     }
                 }
                 Gateway.Managers.GatewaySessionManager.Instance.RemoveSession(session.SessionId);
-                clientBattleNodeBindings.TryRemove(session.SessionId, out _); // 清除 Battle 节点绑定
-                NotifyPlayerDisconnected(session.SessionId);
+                clientBattleNodeBindings.TryRemove(canonicalId, out _); // 清除 Battle 节点绑定（按规范 ID）
+                NotifyPlayerDisconnected(canonicalId);
             };
 
             tcpServer.OnSessionDisconnected += onSessionDisconnected;

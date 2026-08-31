@@ -41,8 +41,34 @@ namespace Shared
         }
     }
 
-        public static ConnectionMultiplexer Connection => lazyConnection?.Value
-            ?? throw new InvalidOperationException("Redis 未初始化, 请先调用 RedisHelper.Initialize()");
+        public static ConnectionMultiplexer Connection
+        {
+            get
+            {
+                var lazy = Volatile.Read(ref lazyConnection);
+                if (lazy == null)
+                {
+                    throw new InvalidOperationException("Redis 未初始化, 请先调用 RedisHelper.Initialize()");
+                }
+                try
+                {
+                    return lazy.Value;
+                }
+                catch
+                {
+                    // P2 修复：Lazy(ExecutionAndPublication) 会永久缓存工厂异常——Redis 瞬时故障后
+                    // 所有后续访问都抛同一异常，直到进程重启。这里在失败时重置 Lazy，下次访问自动重连。
+                    lock (InitGate)
+                    {
+                        if (ReferenceEquals(Volatile.Read(ref lazyConnection), lazy))
+                        {
+                            lazyConnection = null;
+                        }
+                    }
+                    throw;
+                }
+            }
+        }
 
         public static IDatabase GetDatabase() => Connection.GetDatabase();
 

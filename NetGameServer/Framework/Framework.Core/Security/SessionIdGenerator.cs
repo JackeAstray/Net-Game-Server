@@ -1,36 +1,43 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 
 namespace Framework.Core.Security;
 
 /// <summary>
-/// 会话 ID 生成器：加密随机 + 单调计数器混合。
-/// 解决原实现（纯 Interlocked 计数器，可预测）的会话枚举风险。
-/// 格式：高位 32 位为随机数，低位 32 位为计数器，两者混合后不可顺序预测。
+/// 会话 ID 生成器：单调计数器 + splitmix64 非线性置换（进程随机种子）。
+/// 解决原实现（RandomBase | counter 纯拼接，观察一个 ID 即可反推随机基与计数，后续全部可枚举）
+/// 的会话枚举风险。
+/// splitmix64 是 64 位双射：同一进程内输出互不重复（唯一性），
+/// 且相邻样本无法反推计数器（不可预测性），跨进程种子随机、碰撞概率可忽略。
 /// </summary>
 public static class SessionIdGenerator
 {
     private static readonly RandomNumberGenerator Rng = RandomNumberGenerator.Create();
     private static long counter;
-
-    private static readonly long RandomBase;
+    // 进程随机种子（splitmix64 加盐）
+    private static readonly ulong Seed;
 
     static SessionIdGenerator()
     {
         var buf = new byte[8];
         Rng.GetBytes(buf);
-        // 只取高 32 位随机作为随机基座（转为 long 后再左移，避免无符号运算）。
-        // 注：randomBits & 0x7FFFFFFF 保证非负，RandomBase 恒 ≥ 0（死分支 if(RandomBase<0) 已删除）。
-        long randomBits = BitConverter.ToUInt32(buf, 0) & 0x7FFFFFFF;
-        RandomBase = randomBits << 32;
+        Seed = BitConverter.ToUInt64(buf, 0);
     }
 
     /// <summary>
     /// 生成一个全局唯一且不可预测的会话 ID。
-    /// 单调计数器保证并发下的唯一性，随机基座保证不可预测。
+    /// 单调计数器保证并发下的唯一性，splitmix64 混淆保证不可预测。
     /// </summary>
     public static long Next()
     {
         long seq = Interlocked.Increment(ref counter);
-        return RandomBase | (seq & 0xFFFFFFFFL);
+        return (long)SplitMix64((ulong)seq + Seed);
+    }
+
+    private static ulong SplitMix64(ulong x)
+    {
+        x += 0x9E3779B97F4A7C15UL;
+        x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9UL;
+        x = (x ^ (x >> 27)) * 0x94D049BB133111EBUL;
+        return x ^ (x >> 31);
     }
 }

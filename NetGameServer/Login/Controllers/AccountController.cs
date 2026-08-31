@@ -54,7 +54,9 @@ namespace Login.Controllers
         }
 
         /// <summary>
-        /// 更改昵称接口
+        /// 更改昵称接口。
+        /// P2 修复：原实现是无操作的假成功（无论请求如何都返回"更改成功"，但服务端并未持久化昵称）。
+        /// 与 find-password 的约定一致，显式返回未实现，避免客户端误以为昵称已修改。
         /// </summary>
         /// <param name="request"></param>
         /// <returns></returns>
@@ -63,8 +65,8 @@ namespace Login.Controllers
         {
             var result = new ChangeNicknameResponse
             {
-                Success = true,
-                Message = "更改昵称成功"
+                Success = false,
+                Message = "昵称修改功能尚未实现，请勿依赖此接口"
             };
             return Ok(result);
         }
@@ -82,15 +84,22 @@ namespace Login.Controllers
         }
 
         /// <summary>
-        /// 查询账户信息接口
+        /// 查询账户信息接口。
+        /// P2 修复：除 API Key 外，还要求携带登录 Token（X-Auth-Token 头）且只能查询 Token 持有人本人的账户，
+        /// 防止共享 Key 泄露后任意枚举/窥探他人账户状态（含 Email 等个人数据）。
         /// </summary>
         /// <param name="request"></param>
         /// <returns></returns>
         [HttpPost("query-account")]
         public async Task<IActionResult> QueryAccount([FromBody] AccountQueryRequest request)
         {
-            var result = await loginHandler.HandleAccountQueryRequestAsync(request);
-            return Ok(result);
+            string? token = Request.Headers["X-Auth-Token"].FirstOrDefault();
+            var (allowed, reason, response) = await loginHandler.HandleAccountQueryWithTokenAsync(request, token);
+            if (!allowed || response == null)
+            {
+                return Unauthorized(new AccountQueryResponse { Exists = false, Message = reason ?? "未授权" });
+            }
+            return Ok(response);
         }
 
         /// <summary>

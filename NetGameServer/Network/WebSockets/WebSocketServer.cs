@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.WebSockets;
 
 using Network.Routing;
@@ -110,45 +110,51 @@ public class WebSocketServer : INetworkServer
         OnSessionConnected?.Invoke(session);
 
         var buffer = new byte[4096];
+        // 单条 WS 消息字节上限（P1 DoS 修复）：攻击者用 EndOfMessage=false 无限分片会无界累积
+        // packetReader 缓冲；此处按消息累计字节设上限，超限断开。
+        const long MaxMessageBytes = 256 * 1024;
+        long messageBytes = 0;
 
         try
         {
             while (webSocket.State == WebSocketState.Open)
             {
-                WebSocketReceiveResult receiveResult;
-                do
-                {
-                    receiveResult = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
-
-                    if (receiveResult.MessageType == WebSocketMessageType.Close)
-                    {
-                        break;
-                    }
-
-                    if (receiveResult.Count > 0)
-                    {
-                        Shared.Log.Debug($"[WebSocketServer] 接收分片 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Count:{receiveResult.Count} EndOfMessage:{receiveResult.EndOfMessage}");
-                        packetReader.Append(buffer.AsSpan(0, receiveResult.Count));
-                    }
-                }
-                while (!receiveResult.EndOfMessage);
+                WebSocketReceiveResult receiveResult =
+                    await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
 
                 if (receiveResult.MessageType == WebSocketMessageType.Close)
                 {
                     break;
                 }
 
-                int packetCount = 0;
+                if (receiveResult.Count > 0)
+                {
+                    messageBytes += receiveResult.Count;
+                    if (messageBytes > MaxMessageBytes)
+                    {
+                        Shared.Log.Warning($"[WebSocketServer] 单条消息超过上限 {MaxMessageBytes} 字节，断开 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                        try
+                        {
+                            await webSocket.CloseAsync(WebSocketCloseStatus.MessageTooBig, "message too large", CancellationToken.None);
+                        }
+                        catch { /* 尽力关闭 */ }
+                        break;
+                    }
+                    Shared.Log.Debug($"[WebSocketServer] 接收分片 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Count:{receiveResult.Count} EndOfMessage:{receiveResult.EndOfMessage}");
+                    packetReader.Append(buffer.AsSpan(0, receiveResult.Count));
+                }
+
+                // 逐分片增量解析：完整包立即消费并派发。
+                // 不再等整条消息收齐后再解析——避免缓冲随分片无界增长，也让包边界与 WS 消息边界解耦。
                 while (packetReader.TryReadPacket(out var packet))
                 {
-                    packetCount++;
                     Shared.Log.Debug($"[WebSocketServer] 完整分包 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} PacketLength:{packet.Length}");
                     OnDataReceived?.Invoke(session, packet);
                 }
 
-                if (packetCount == 0)
+                if (receiveResult.EndOfMessage)
                 {
-                    Shared.Log.Debug($"[WebSocketServer] 当前消息未形成完整包 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                    messageBytes = 0; // 一条消息结束，计数归零
                 }
             }
         }

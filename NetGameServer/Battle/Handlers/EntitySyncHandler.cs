@@ -286,18 +286,26 @@ namespace Battle.Handlers
                 scene.AoiManager.AddOrUpdateEntity(sessionId, entity, out _, out var newGrid);
                 var surrounding = scene.AoiManager.GetSurroundingEntities(newGrid.Item1, newGrid.Item2);
 
+                // P3 修复：surrounding 含 NPC/玩法实体。分两步——
+                // 1) 收集周边实体（含非玩家）快照，回发给新玩家（新玩家应看到视野内 NPC）；
+                // 2) 入场通知只发给"玩家"（非玩家 id 无网关会话，原实现对它们也发了新玩家快照，纯浪费投递）。
                 var existingSnapshots = new List<(long id, byte[] props)>();
                 foreach (var targetId in surrounding)
                 {
                     if (targetId == sessionId) continue;
-                    SendSnapshot(gatewaySession, targetId, sessionId, snapshot);
-
                     var other = scene.EntityManager.GetEntity(targetId);
                     if (other != null)
                     {
                         // 回发给新玩家的他人快照同样剔除 OWN_CLIENT（新玩家看不到他人私有属性）
                         existingSnapshots.Add((targetId, PropertyCodec.SerializeAll(other, includeOwnClient: false)));
                     }
+                }
+
+                var players = GetPlayerSet(scene);
+                foreach (var targetId in surrounding)
+                {
+                    if (targetId == sessionId || !players.Contains(targetId)) continue;
+                    SendSnapshot(gatewaySession, targetId, sessionId, snapshot);
                 }
 
                 // 回发已有玩家快照给新玩家

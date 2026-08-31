@@ -1,4 +1,4 @@
-using System.Data;
+﻿using System.Data;
 using System.Globalization;
 using ExcelDataReader;
 using Newtonsoft.Json;

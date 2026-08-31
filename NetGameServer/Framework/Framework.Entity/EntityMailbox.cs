@@ -1,4 +1,4 @@
-using Framework.Core;
+﻿using Framework.Core;
 using Framework.Protocol.Generated;
 
 namespace Framework.Entity;

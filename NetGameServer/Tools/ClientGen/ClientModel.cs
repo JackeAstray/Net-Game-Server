@@ -1,4 +1,4 @@
-namespace ClientGen;
+﻿namespace ClientGen;
 
 /// <summary>
 /// 客户端协议模型：从 .def 协议中筛选「客户端可见」消息与结构体。

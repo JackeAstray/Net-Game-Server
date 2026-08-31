@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using Shared.Data.Chat;
 
 namespace Shared.Messages.Chat

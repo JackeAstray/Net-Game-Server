@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using Framework.Protocol;
 using Framework.Protocol.Generated;
 using Network;

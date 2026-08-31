@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using ExcelToJson;
 
 // ExcelDataReader 在 .NET Core 上解析某些字符串需要 Windows 代码页（如 1252），必须先注册

@@ -118,7 +118,16 @@ namespace Center.Handlers
             string sceneType = string.IsNullOrWhiteSpace(request.SceneType) ? roomEntry.Info.SceneType : request.SceneType.Trim();
             string roomName = string.IsNullOrWhiteSpace(request.RoomName) ? roomEntry.Info.RoomName : request.RoomName.Trim();
             int maxPlayers = request.MaxPlayers <= 0 ? roomEntry.Info.MaxPlayers : request.MaxPlayers;
-            bool hasPassword = !string.IsNullOrWhiteSpace(request.Password);
+
+            // P1 修复：仅更新设置而未携带新密码时，必须保留原密码，否则私密房会被静默清密码变公开。
+            // 有显式新密码才刷新哈希；请求体无"清除密码"字段，故空 Password 一律视为"不修改"。
+            bool hasPassword = roomEntry.Info.HasPassword;
+            string passwordHash = roomEntry.PasswordHash;
+            if (!string.IsNullOrWhiteSpace(request.Password))
+            {
+                hasPassword = true;
+                passwordHash = ComputePasswordHash(request.Password);
+            }
             bool isPrivate = request.IsPrivate || hasPassword;
 
             roomEntry.Info.SceneType = sceneType;
@@ -127,7 +136,7 @@ namespace Center.Handlers
             roomEntry.Info.IsPrivate = isPrivate;
             roomEntry.Info.HasPassword = hasPassword;
             roomEntry.Info.CustomRules = request.CustomRules ?? new Dictionary<string, string>();
-            roomEntry.PasswordHash = ComputePasswordHash(request.Password);
+            roomEntry.PasswordHash = passwordHash;
             roomEntry.Info.Members = BuildRoomMembers(roomEntry);
 
             BroadcastRoomSettingsChanged(gatewaySession, roomEntry, sendToGatewayFunc, $"房间设置已更新：{roomName}");

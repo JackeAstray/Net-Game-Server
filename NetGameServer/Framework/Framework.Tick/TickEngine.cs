@@ -1,4 +1,4 @@
-using Framework.Core;
+﻿using Framework.Core;
 
 namespace Framework.Tick;
 
@@ -50,13 +50,17 @@ public sealed class TickEngine
         }
     }
 
-    // 定时器（由主线程独占访问，无需锁）
-    private readonly PriorityQueue<(long dueTick, long seq, TimerHandle handle), long> timers = new();
+    // 定时器（由主线程独占访问，无需锁）。
+    // P2-8 修复：定时器以单调时钟（Environment.TickCount64）毫秒为到期键，不再依赖帧号，
+    // 避免过载时帧号快于墙钟导致定时器提前/连发。
+    private readonly PriorityQueue<(long dueMs, long seq, TimerHandle handle), long> timers = new();
     private long timerSeq;
 
     // 跨线程投递队列（锁内入队，tick 线程独占消费——用于把非 tick 线程的实体访问迁移到 tick 线程，
     // 如 FSW 热更新线程的 OnReload 对实体属性/定时器的修改，避免与 tick 逻辑并发竞争）
     private readonly Queue<Action> postedActions = new();
+    /// <summary>投递队列上限（D3 修复：防止无界增长）。</summary>
+    private const int MaxPostedActions = 16384;
 
     /// <summary>每 tick 回调（frame 为帧号，从 1 开始）。</summary>
     public event Action<long>? OnTick;
@@ -110,12 +114,13 @@ public sealed class TickEngine
     /// <returns>定时器句柄（可用 Cancel 取消）</returns>
     public TimerHandle AddTimer(int intervalMs, Action callback, bool repeat = false)
     {
-        long due = CurrentFrame + (long)Math.Ceiling(intervalMs / 1000.0 * hertz);
+        // P2-8 修复：按单调时钟（而非帧号）计算到期时间，过载时定时器真实频率不漂移
+        long dueMs = Environment.TickCount64 + Math.Max(1, intervalMs);
         var handle = new TimerHandle(this, intervalMs, callback, repeat);
         lock (timers)
         {
-            handle.ConfigureNextDue(due, timerSeq++);
-            timers.Enqueue((due, handle.Entry.seq, handle), due);
+            handle.ConfigureNextDue(dueMs, timerSeq++);
+            timers.Enqueue((dueMs, handle.Entry.seq, handle), dueMs);
         }
         return handle;
     }
@@ -124,8 +129,8 @@ public sealed class TickEngine
     {
         lock (timers)
         {
-            handle.ConfigureNextDue(handle.Entry.dueTick, timerSeq++);
-            timers.Enqueue((handle.Entry.dueTick, handle.Entry.seq, handle), handle.Entry.dueTick);
+            handle.ConfigureNextDue(handle.Entry.dueMs, timerSeq++);
+            timers.Enqueue((handle.Entry.dueMs, handle.Entry.seq, handle), handle.Entry.dueMs);
         }
     }
 
@@ -139,6 +144,11 @@ public sealed class TickEngine
         if (action == null) throw new ArgumentNullException(nameof(action));
         lock (postedActions)
         {
+            if (postedActions.Count >= MaxPostedActions)
+            {
+                Framework.Core.Log.Warn($"TickEngine 跨线程投递队列已满，丢弃动作（上限 {MaxPostedActions}）");
+                return;
+            }
             postedActions.Enqueue(action);
         }
     }
@@ -213,13 +223,15 @@ public sealed class TickEngine
             }
         }
 
-        // 到期定时器（锁内只出队，锁外执行回调；周期定时器由 handle 重新入队）
+        // 到期定时器（锁内只出队，锁外执行回调；周期定时器由 handle 重新入队）。
+        // P2-8：按单调时钟判定到期，而非帧号。
         while (true)
         {
             TimerHandle? handle = null;
             lock (timers)
             {
-                if (timers.Count == 0 || timers.Peek().dueTick > currentFrame)
+                long now = Environment.TickCount64;
+                if (timers.Count == 0 || timers.Peek().dueMs > now)
                 {
                     break;
                 }
@@ -253,7 +265,8 @@ public sealed class TimerHandle
     private readonly int intervalMs;
     private readonly Action callback;
     private readonly bool repeat;
-    private long nextDueTick;
+    // 下次到期时间：单调时钟毫秒（P2-8 修复，替代原帧号语义）
+    private long nextDueMs;
     private long seq;
     private volatile bool active = true;
 
@@ -284,7 +297,8 @@ public sealed class TimerHandle
 
         if (repeat && active)
         {
-            nextDueTick = engine.CurrentFrame + (long)Math.Ceiling(intervalMs / 1000.0 * engine.Hertz);
+            // 周期定时器：下次到期 = 单调时钟 now + interval（不依赖帧号，过载不失真）
+            nextDueMs = Environment.TickCount64 + Math.Max(1, intervalMs);
             engine.Requeue(this);
         }
     }
@@ -292,11 +306,11 @@ public sealed class TimerHandle
     /// <summary>取消定时器。</summary>
     public void Cancel() => active = false;
 
-    internal void ConfigureNextDue(long dueTick, long seq)
+    internal void ConfigureNextDue(long dueMs, long seq)
     {
-        nextDueTick = dueTick;
+        nextDueMs = dueMs;
         this.seq = seq;
     }
 
-    internal (long dueTick, long seq) Entry => (nextDueTick, seq);
+    internal (long dueMs, long seq) Entry => (nextDueMs, seq);
 }

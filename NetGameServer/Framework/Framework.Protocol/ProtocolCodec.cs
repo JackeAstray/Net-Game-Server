@@ -43,9 +43,10 @@ public static class ProtocolCodec
     {
         msgId = 0;
         payload = default;
+        // P3 修复：原实现 frame.Length<8 会把"仅 MsgId、空 Body"的合法帧（长度恰好 4）误判为不完整。
+        // 只需保证 MsgId 4 字节存在；Body 允许为空。
         if (frame.Length < 4) return false;
         msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(frame.Slice(0, 4));
-        if (frame.Length < 8) return false;
         payload = frame.Slice(4).ToArray();
         return true;
     }

@@ -25,6 +25,8 @@ public class KcpServer : INetworkServer
     private UdpClient? udpClient;
     private CancellationTokenSource? cts;
     private readonly ConcurrentDictionary<SessionKey, KcpSession> sessions = new();
+    // P3 修复：单 IP 会话计数表（替代每次新建会话时 O(n) 全表扫描统计 per-IP 数）。
+    private readonly ConcurrentDictionary<IPAddress, int> sessionsPerIp = new();
     private readonly TimeSpan sessionTimeout = TimeSpan.FromMinutes(5);
     private DateTime nextCleanupAt = DateTime.UtcNow.AddSeconds(30);
 
@@ -76,14 +78,8 @@ public class KcpServer : INetworkServer
                         Shared.Log.Warning($"[KcpServer] 会话数已达上限({MaxSessions})，拒绝新会话 Remote:{result.RemoteEndPoint}");
                         continue;
                     }
-                    int perIp = 0;
-                    foreach (var k in sessions.Keys)
-                    {
-                        if (k.EndPoint.Address.Equals(result.RemoteEndPoint.Address))
-                        {
-                            perIp++;
-                        }
-                    }
+                    // P3 修复：O(1) 查 per-IP 计数（原实现遍历全部会话统计，洪泛时 O(n²)）。
+                    int perIp = sessionsPerIp.TryGetValue(result.RemoteEndPoint.Address, out int c) ? c : 0;
                     if (perIp >= MaxSessionsPerIp)
                     {
                         Shared.Log.Warning($"[KcpServer] 每 IP 会话数已达上限({MaxSessionsPerIp})，拒绝新会话 Remote:{result.RemoteEndPoint}");
@@ -93,6 +89,7 @@ public class KcpServer : INetworkServer
                     session = new KcpSession(udpClient, key.EndPoint, key.Conv);
                     session.OnDataReceived += (s, data) => OnDataReceived?.Invoke(s, data);
                     sessions[key] = session;
+                    sessionsPerIp.AddOrUpdate(result.RemoteEndPoint.Address, 1, (_, v) => v + 1);
                     Shared.Log.Info($"[KcpServer] 新会话建立 SessionId:{session.SessionId} Remote:{key.EndPoint} conv=0x{key.Conv:X8}");
                     OnSessionConnected?.Invoke(session);
                 }
@@ -158,9 +155,23 @@ public class KcpServer : INetworkServer
             if (now - pair.Value.LastActivityTime <= sessionTimeout) continue;
 
             sessions.TryRemove(pair.Key, out var session);
+            DecrementPerIp(pair.Key.EndPoint.Address);
             session?.Close();
             Shared.Log.Warning($"[KcpServer] 会话超时断开 SessionId:{pair.Value.SessionId} Remote:{pair.Key.EndPoint} TimeoutSeconds:{sessionTimeout.TotalSeconds}");
             OnSessionDisconnected?.Invoke(session!, "KCP session timeout.");
+        }
+    }
+
+    private void DecrementPerIp(IPAddress address)
+    {
+        if (!sessionsPerIp.TryGetValue(address, out int v)) return;
+        if (v <= 1)
+        {
+            sessionsPerIp.TryRemove(address, out _);
+        }
+        else
+        {
+            sessionsPerIp.TryUpdate(address, v - 1, v);
         }
     }
 
@@ -178,6 +189,7 @@ public class KcpServer : INetworkServer
             session.Close();
         }
         sessions.Clear();
+        sessionsPerIp.Clear();
         return Task.CompletedTask;
     }
 }

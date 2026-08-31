@@ -89,23 +89,29 @@ namespace Game.Managers
         /// <summary>
         /// 从内部并发字典中移除与指定会话 ID 关联的用户映射，并在反向映射仍指向该会话时移除对应的用户到会话条目。
         /// </summary>
-        /// <remarks>对不存在的会话为无操作；使用 TryRemove/TryGetValue 进行并发安全的移除以避免抛出异常。</remarks>
+        /// <remarks>对不存在的会话为无操作；使用 TryRemove/TryGetValue 进行并发安全的移除以避免抛出异常。
+        /// R5 修复：全程在 bindGate 内执行，与 BindSession/BindUid 互斥——否则"一断一登"并发时，
+        /// UnbindSession 可能在 BindSession 已把 userSessions[U] 改为新会话之后，误删这条指向新会话的反向映射，
+        /// 导致该玩家被判定离线（好友/踢人/邀请全部失联）。</remarks>
         /// <param name="sessionId">要解绑的会话的唯一标识符。</param>
         public void UnbindSession(long sessionId)
         {
-            if (sessionUsers.TryRemove(sessionId, out int userId))
+            lock (bindGate)
             {
-                if (userSessions.TryGetValue(userId, out long mappedSessionId) && mappedSessionId == sessionId)
+                if (sessionUsers.TryRemove(sessionId, out int userId))
                 {
-                    userSessions.TryRemove(userId, out _);
+                    if (userSessions.TryGetValue(userId, out long mappedSessionId) && mappedSessionId == sessionId)
+                    {
+                        userSessions.TryRemove(userId, out _);
+                    }
                 }
-            }
 
-            if (sessionUids.TryRemove(sessionId, out string? uid))
-            {
-                if (uidSessions.TryGetValue(uid, out long mappedSessionId) && mappedSessionId == sessionId)
+                if (sessionUids.TryRemove(sessionId, out string? uid))
                 {
-                    uidSessions.TryRemove(uid, out _);
+                    if (uidSessions.TryGetValue(uid, out long mappedSessionId) && mappedSessionId == sessionId)
+                    {
+                        uidSessions.TryRemove(uid, out _);
+                    }
                 }
             }
         }

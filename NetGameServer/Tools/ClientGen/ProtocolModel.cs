@@ -1,4 +1,4 @@
-namespace ClientGen;
+﻿namespace ClientGen;
 
 // ============================================================
 // 协议模型类（自 Protogen 迁入，去掉 .def 解析器依赖）。

@@ -27,7 +27,14 @@ namespace Logger
             Console.WriteLine("Logger 日志聚合进程启动，监听 UDP 端口: " + port);
             Console.WriteLine("各服务器配置 LoggerHost/LoggerPort 后自动上报（默认 127.0.0.1:31320）");
 
-            using (LoggerServer server = new LoggerServer(port))
+            // P2 鉴权：与各节点同密钥（各节点经 ConfigHelper 读取 LoggerAuthSecret，含环境变量）。
+            string? authSecret = Environment.GetEnvironmentVariable("LoggerAuthSecret");
+            if (!string.IsNullOrWhiteSpace(authSecret))
+            {
+                Console.WriteLine("Logger 已启用 HMAC 鉴权（LoggerAuthSecret）");
+            }
+
+            using (LoggerServer server = new LoggerServer(port, authSecret: authSecret))
             {
                 server.LogReceived += OnLogReceived;
                 server.Start();

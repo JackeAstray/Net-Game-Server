@@ -24,6 +24,10 @@ public static class Program
         [JsonPropertyName("supervisedBy")]
         public string SupervisedBy { get; set; } = "machine";
 
+        /// <summary>集群内部认证共享密钥（CenterNodeSharedSecret）。为空时回退读取环境变量同名值。</summary>
+        [JsonPropertyName("sharedSecret")]
+        public string? SharedSecret { get; set; }
+
         [JsonPropertyName("logDirectory")]
         public string? LogDirectory { get; set; }
 
@@ -319,17 +323,38 @@ public static class Program
         // 把全部实例按层依次启动；层与层之间等待上一层所有实例 ready
         foreach (var layer in layers)
         {
+            // P2 修复：停机信号到达后立即停止继续启动后续层（否则刚拓扑完的层仍会被拉起）。
+            if (stoppingToken.IsCancellationRequested)
+            {
+                Console.WriteLine("[Machine] 收到停止信号，中止剩余启动层");
+                return;
+            }
+
             // 同层并行启动
-            var startTasks = layer.Select(m => Task.Run(() => StartProcess(m, topology), stoppingToken));
-            await Task.WhenAll(startTasks);
+            var startTasks = layer.Select(m => Task.Run(() => StartProcess(m, topology, stoppingToken), stoppingToken));
+            try
+            {
+                await Task.WhenAll(startTasks);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
 
             // 等待同层 ready（带超时）
             await WaitForLayerReadyAsync(layer, topology, stoppingToken);
         }
     }
 
-    private static void StartProcess(ManagedInstance managed, Topology topology)
+    private static void StartProcess(ManagedInstance managed, Topology topology, CancellationToken stoppingToken = default)
     {
+        // P2 修复：停机中不再启动新进程（防 Ctrl+C 竞态窗口内拉起孤儿进程）。
+        if (stoppingToken.IsCancellationRequested || managed.Stopping)
+        {
+            Console.WriteLine($"[Machine] 跳过启动 {managed.Spec.InstanceId}（正在停机）");
+            return;
+        }
+
         managed.StartCount++;
         managed.LastStartedAtUtc = DateTime.UtcNow;
 
@@ -350,6 +375,17 @@ public static class Program
             UseShellExecute = false,
             CreateNoWindow = true
         };
+        // 集群共享密钥注入：优先 topology.sharedSecret，其次环境变量 CenterNodeSharedSecret（子进程默认继承父环境）。
+        // 各节点共用同一密钥完成内部 HMAC 认证；缺失时节点启动会明确报错，此处不再静默生成（多机部署需外部统一）。
+        string? clusterSecret = topology.SharedSecret;
+        if (string.IsNullOrEmpty(clusterSecret))
+        {
+            clusterSecret = Environment.GetEnvironmentVariable("CenterNodeSharedSecret");
+        }
+        if (!string.IsNullOrEmpty(clusterSecret))
+        {
+            psi.Environment["CenterNodeSharedSecret"] = clusterSecret;
+        }
         foreach (var a in argList) psi.ArgumentList.Add(a);
 
         bool captureOutput = !string.IsNullOrWhiteSpace(topology.LogDirectory);
@@ -550,23 +586,32 @@ public static class Program
         }
 
         var instances = ExpandInstances(topology);
-        var processes = instances.Select(inst => new
+
+        // P2 修复：参数按"单个 token"引号化，而不是把整条 "--key value" 对包起来。
+        // 原实现把含空格的 "--port 31306" 整体加引号变成一个参数，Supervisor 解析后 argv 错乱。
+        static string QuoteToken(string token)
+            => token.Contains(' ') || token.Contains('"') ? $"\"{token.Replace("\"", "\\\"")}\"" : token;
+
+        var processes = instances.Select(inst =>
         {
-            name = inst.InstanceId,
-            file = inst.Template.File,
-            args = string.Join(" ", inst.Template.Args
-                .Concat(new[] {
-                    $"--port {inst.EffectivePort}",
-                    $"--host {inst.EffectiveHost}",
-                    $"--node-id {inst.GeneratedNodeId}",
-                    $"--instance-id {inst.InstanceId}",
-                    $"--machine-id {topology.MachineId}",
-                    $"--supervised-by supervisor"
-                })
-                .Select(a => a.Contains(' ') ? $"\"{a}\"" : a)),
-            workingDirectory = inst.Template.WorkingDirectory,
-            enabled = true,
-            restartDelayMs = inst.Template.RestartDelayMs
+            var extraTokens = new[]
+            {
+                "--port", inst.EffectivePort.ToString(),
+                "--host", inst.EffectiveHost,
+                "--node-id", inst.GeneratedNodeId,
+                "--instance-id", inst.InstanceId,
+                "--machine-id", topology.MachineId,
+                "--supervised-by", "supervisor"
+            };
+            return new
+            {
+                name = inst.InstanceId,
+                file = inst.Template.File,
+                args = string.Join(" ", inst.Template.Args.Concat(extraTokens).Select(QuoteToken)),
+                workingDirectory = inst.Template.WorkingDirectory,
+                enabled = true,
+                restartDelayMs = inst.Template.RestartDelayMs
+            };
         });
 
         var supervisorConfig = new

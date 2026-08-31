@@ -1,4 +1,4 @@
-using Network;
+﻿using Network;
 using Network.Tcp;
 
 namespace Network;

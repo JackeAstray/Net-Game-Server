@@ -1,4 +1,4 @@
-using System.Buffers;
+﻿using System.Buffers;
 using System.Net;
 using System.Net.Sockets;
 using System.Net.Sockets.Kcp;
@@ -22,6 +22,8 @@ public class KcpClientWrapper : INetworkClient
     private readonly ArrayBufferWriter<byte> recvWriter = new(1024);
     /// <summary>KCP 状态互斥锁（P1 三线程并发修复）：接收线程 Input、驱动线程 Update、Send 并发触碰同一 Kcp 实例。</summary>
     private readonly object kcpGate = new();
+    /// <summary>客户端侧会话代理（事件回调的 ISession 参数；P1 修复：不再向事件派发 null）。</summary>
+    private KcpClientSessionProxy? sessionProxy;
 
     public event SessionConnectedHandler? OnConnected;
     public event DataReceivedHandler? OnDataReceived;
@@ -71,6 +73,7 @@ public class KcpClientWrapper : INetworkClient
 
         cts = new CancellationTokenSource();
         var session = new KcpClientSessionProxy(this, remoteEndPoint);
+        sessionProxy = session;
         Shared.Log.Info($"[KcpClientWrapper] KCP 连接成功 {host}:{port} conv=0x{conv:X8}");
         OnConnected?.Invoke(session);
 
@@ -93,7 +96,7 @@ public class KcpClientWrapper : INetworkClient
 
                     while (kcp != null && kcp.TryRecv(recvWriter) > 0)
                     {
-                        OnDataReceived?.Invoke(null!, recvWriter.WrittenMemory.ToArray());
+                        OnDataReceived?.Invoke(sessionProxy!, recvWriter.WrittenMemory.ToArray());
                         recvWriter.Clear();
                     }
                 }
@@ -105,7 +108,7 @@ public class KcpClientWrapper : INetworkClient
         catch (Exception ex)
         {
             Shared.Log.Warning($"[KcpClientWrapper] 接收循环异常 {ex.Message}");
-            OnDisconnected?.Invoke(null!, ex.Message);
+            OnDisconnected?.Invoke(sessionProxy!, ex.Message);
         }
     }
 
@@ -153,11 +156,15 @@ public class KcpClientWrapper : INetworkClient
     {
         isRunning = false;
         cts?.Cancel();
-        udpClient?.Close();
-        udpClient?.Dispose();
-        udpClient = null;
-        kcp?.Dispose();
-        kcp = null;
+        // 持锁 dispose：避免与接收/驱动/Send 线程并发触碰 Kcp 实例（P2-10 拆卸竞态修复）
+        lock (kcpGate)
+        {
+            udpClient?.Close();
+            udpClient?.Dispose();
+            udpClient = null;
+            kcp?.Dispose();
+            kcp = null;
+        }
     }
 
     /// <summary>客户端侧会话代理（ISession 适配）。</summary>

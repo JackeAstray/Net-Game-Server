@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
@@ -57,7 +57,10 @@ namespace Gateway
         /// <summary>按玩家绑定（或默认节点）发送到对应 Battle 节点。</summary>
         private static void SendToBattle(byte[] outbound, long clientSessionId)
         {
-            string nodeId = clientBattleNodeBindings.TryGetValue(clientSessionId, out var bound)
+            // 断线重连：客户端消息携带新会话 ID，但玩家->Battle 节点绑定以旧会话 ID 为键。
+            // 必须先做 新->旧 别名解析，否则多 Battle 节点下会回退默认节点导致路由错误。
+            long routingKey = Gateway.Managers.GatewaySessionManager.Instance.ResolveSessionId(clientSessionId);
+            string nodeId = clientBattleNodeBindings.TryGetValue(routingKey, out var bound)
                 ? bound
                 : defaultBattleNodeId;
             if (battleNodeSenders.TryGetValue(nodeId, out var sender))
@@ -67,7 +70,7 @@ namespace Gateway
             else if (battleNodeSenders.Count > 0)
             {
                 // 绑定节点不存在（节点已下线）：回退默认节点并清除绑定
-                clientBattleNodeBindings.TryRemove(clientSessionId, out _);
+                clientBattleNodeBindings.TryRemove(routingKey, out _);
                 battleNodeSenders.TryGetValue(defaultBattleNodeId, out sender);
                 sender?.SendOrBuffer(outbound);
             }
