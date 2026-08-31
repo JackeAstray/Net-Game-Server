@@ -27,6 +27,33 @@ namespace Game
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, global::Network.ISession> clientSessionGateways =
             new();
 
+        // 跨网关广播（世界频道聊天）：活跃网关连接集合（网关 SessionId -> 网关会话）。
+        // 多网关部署下，世界广播必须发给每个活跃网关（各网关再广播给其下客户端），
+        // 只沿来源网关发送会导致其他网关的玩家收不到世界频道消息。
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, global::Network.ISession> activeGatewaySessions =
+            new();
+
+        /// <summary>登记活跃网关连接（OnSessionConnected 时调用）。</summary>
+        public static void RegisterGatewaySession(global::Network.ISession gatewaySession)
+        {
+            if (gatewaySession != null)
+            {
+                activeGatewaySessions[gatewaySession.SessionId] = gatewaySession;
+            }
+        }
+
+        /// <summary>移除活跃网关连接（OnSessionDisconnected 时调用）。</summary>
+        public static void UnregisterGatewaySession(long sessionId)
+        {
+            activeGatewaySessions.TryRemove(sessionId, out _);
+        }
+
+        /// <summary>获取全部活跃网关连接（世界频道广播用；已断开连接过滤）。</summary>
+        public static global::Network.ISession[] GetAllActiveGatewaySessions()
+        {
+            return activeGatewaySessions.Values.Where(gw => gw.IsConnected).ToArray();
+        }
+
         /// <summary>登记/刷新客户端会话与网关会话的归属关系（收到该客户端任何数据包时调用）。</summary>
         public static void RegisterClientGateway(long clientSessionId, global::Network.ISession gatewaySession)
         {
@@ -106,11 +133,15 @@ namespace Game
             tcpServer.OnSessionConnected += session =>
             {
                 Log.Info($"客户端已连接: {session.RemoteEndPoint}");
+                // 跨网关广播：登记活跃网关连接（世界频道广播需发给每个网关）
+                RegisterGatewaySession(session);
                 gatewayAuthFilters[session.SessionId] = new Framework.Core.Security.InternalAuthFilter(authSecret, $"Game-{ConfigHelper.GetConfig<string>("GameHost") ?? "127.0.0.1"}:{port}");
             };
             tcpServer.OnSessionDisconnected += (session, reason) =>
             {
                 gatewayAuthFilters.TryRemove(session.SessionId, out _);
+                // 跨网关广播：移除活跃网关连接
+                UnregisterGatewaySession(session.SessionId);
                 Log.Info($"客户端断开连接，原因: {reason}");
 
                 // V5 修复：网关连接断开时级联清理经该网关路由的全部客户端会话状态

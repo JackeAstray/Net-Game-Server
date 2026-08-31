@@ -90,13 +90,22 @@ namespace DB
                     // P2 修复：原实现把全表 UniqueId 拉进内存找最大序号，用户量大时启动慢且占内存。
                     // 改为单条 SQL 聚合（SELECT MAX(UniqueId) WHERE UniqueId IS NOT NULL）。
                     // 注：UID 为定宽 9 位数字串（100000000+序号），字符串字典序 == 数值序，取 MAX 字符串即数值最大。
+                    // 空表修复（与 DbQueryHandler.HandleGetMaxUidRequest 保持一致）：Users 表为空或全无 UniqueId 时，
+                    // 直接 .Max() 会抛 "Sequence contains no elements"，导致后续 UID/Redis/SuperAdmin 初始化被跳过；
+                    // 先 Any 判定空表返回 0（正确的初始序号），并用"长度降序+字典序降序"兼容位数不同的历史脏数据。
                     long currentMaxSequence = 0;
-                    string? maxUniqueId = dbContext.Users
-                        .Where(u => !string.IsNullOrWhiteSpace(u.UniqueId))
-                        .Max(u => u.UniqueId);
-                    if (maxUniqueId != null && long.TryParse(maxUniqueId, out long maxUid))
+                    if (await dbContext.Users.AnyAsync(u => !string.IsNullOrWhiteSpace(u.UniqueId)))
                     {
-                        currentMaxSequence = maxUid % 100000000L;
+                        string? maxUniqueId = await dbContext.Users
+                            .Where(u => !string.IsNullOrWhiteSpace(u.UniqueId))
+                            .OrderByDescending(u => u.UniqueId.Length)
+                            .ThenByDescending(u => u.UniqueId)
+                            .Select(u => u.UniqueId)
+                            .FirstOrDefaultAsync();
+                        if (maxUniqueId != null && long.TryParse(maxUniqueId, out long maxUid))
+                        {
+                            currentMaxSequence = maxUid % 100000000L;
+                        }
                     }
 
                     Shared.UIDGenerator.Initialize(regionId, currentMaxSequence);

@@ -1,4 +1,4 @@
-﻿using Framework.Protocol;
+using Framework.Protocol;
 using Framework.Protocol.Generated;
 using Shared.Messages.Chat;
 using Shared.Data.Chat;
@@ -41,9 +41,12 @@ public sealed class GameSessionContext : ISessionContext
     {
         byte[] routedPayload = Shared.RouteMetadata.AttachTargetSessionId(payload, targetSessionId);
         byte[] packet = global::Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int totalLength);
+        // 跨网关修复：目标会话可能位于另一网关，优先解析其所在网关会话；
+        // 解析不到（同网关或目标已离线）时回退到请求来源网关。
+        var targetSession = GameServerApp.ResolveGatewayForClient(targetSessionId) ?? gatewaySession;
         // P1 修复：零拷贝直传（缓冲所有权移交给 PacketSender，TcpSession 写入后自动归还）。
         // 此前 ToArray() 会多复制 2-3 份字节；调用方不再手动 Return 池化缓冲。
-        global::Network.PacketSender.Send(gatewaySession, packet, totalLength);
+        global::Network.PacketSender.Send(targetSession, packet, totalLength);
     }
 }
 

@@ -1,4 +1,4 @@
-﻿using Shared.Messages;
+using Shared.Messages;
 using Shared.Messages.Chat;
 using Shared.Data.Chat;
 using Shared;
@@ -260,7 +260,10 @@ namespace Game.Handlers
                     var notifData = PacketBuilder.BuildPacket(MessageIds.ChatMessageNotif, routedNotifPayload, out int notifLength);
                     try
                     {
-                        session.Send(notifData.AsSpan(0, notifLength).ToArray());
+                        // 跨网关修复：接收者可能位于另一网关，优先解析其所在网关会话（与 SendResponseBySessionId/SendKickedOff 一致），
+                        // 不能沿用发送者来源网关——否则接收者在别的网关时消息被发错网关而丢失。
+                        var targetSession = GameServerApp.ResolveGatewayForClient(targetSessionId) ?? session;
+                        targetSession.Send(notifData.AsSpan(0, notifLength).ToArray());
                     }
                     finally
                     {
@@ -277,7 +280,21 @@ namespace Game.Handlers
                 var notifData = PacketBuilder.BuildPacket(MessageIds.ChatMessageNotif, routedNotifPayload, out int notifLength);
                 try
                 {
-                    session.Send(notifData.AsSpan(0, notifLength).ToArray());
+                    // 跨网关修复：世界频道广播必须投递给所有活跃网关（各网关再广播给其下客户端），
+                    // 原实现只沿发送者来源网关发送，多网关部署下其他网关的玩家收不到世界消息。
+                    var gatewaySessions = GameServerApp.GetAllActiveGatewaySessions();
+                    if (gatewaySessions.Length > 0)
+                    {
+                        foreach (var gatewaySession in gatewaySessions)
+                        {
+                            gatewaySession.Send(notifData.AsSpan(0, notifLength).ToArray());
+                        }
+                    }
+                    else
+                    {
+                        // 兜底：无活跃网关索引时退回发送者来源网关（单网关部署场景）
+                        session.Send(notifData.AsSpan(0, notifLength).ToArray());
+                    }
                 }
                 finally
                 {

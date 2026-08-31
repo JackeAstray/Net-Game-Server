@@ -539,6 +539,10 @@ namespace Login.Handlers
 
                 using (var client = new SmtpClient())
                 {
+                    // 可靠性：设置连接/IO 超时（毫秒），避免 SMTP 不可达时"找回密码"请求长时间挂起。
+                    // MailKit 默认 ConnectTimeout=100s / Timeout=120s，对在线 HTTP 请求而言过长，统一降为 15s。
+                    client.ConnectTimeout = 15000;
+                    client.Timeout = 15000;
                     // SSL 安全修复：不再设置"接受所有证书"回调。
                     // MailKit 默认只信任系统 CA 证书，移除任意 ServerCertificateValidationCallback。
                     // 若需要自签证书，请将证书安装到系统 CA 证书库，或通过 certFile/certPassword 显式加载。

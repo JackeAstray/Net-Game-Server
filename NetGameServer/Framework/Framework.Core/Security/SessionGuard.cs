@@ -59,8 +59,12 @@ public static class SessionGuard
         }
 
         /// <summary>
-        /// 接受一次 token 使用：seq 必须严格大于上次接受值（首次为任意正数）。
-        /// 返回 true 表示接受（并原子更新 lastSeq）；false 表示重放或参数无效 → TokenService.Verify 应据此拒绝。
+        /// 接受一次 token 使用：seq 必须不小于上次接受值（首次为任意正数）。
+        /// 返回 true 表示接受；false 表示回退（旧 token 重放）或参数无效 → TokenService.Verify 应据此拒绝。
+        /// 修复（token 幂等复用）：原实现要求 seq 必须严格大于 lastSeq，导致同一合法 token 只能被验证一次，
+        /// HTTP 管理接口（如 query-account）第二次携带同一 token 时被判重放返回 401。
+        /// 改为"不允许回退"：seq == lastSeq（同一 token 复用）视为合法并幂等接受；
+        /// seq &lt; lastSeq（旧登录会话的 token）仍被拒绝，防重放语义保留。
         /// 无锁 CAS 循环：并发竞争下保持单调性。
         /// </summary>
         public bool TryAcceptSeq(int userId, long seq)
@@ -73,9 +77,14 @@ public static class SessionGuard
             {
                 if (lastSeqByUser.TryGetValue(userId, out var last))
                 {
-                    if (seq <= last)
+                    if (seq < last)
                     {
-                        return false; // 重放：seq 不递增
+                        return false; // 回退：旧 token 重放
+                    }
+                    if (seq == last)
+                    {
+                        lastActivityByUser[userId] = Environment.TickCount64;
+                        return true; // 幂等：同一 token 复用
                     }
                     if (lastSeqByUser.TryUpdate(userId, seq, last))
                     {

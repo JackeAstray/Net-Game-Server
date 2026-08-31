@@ -305,7 +305,11 @@ namespace Battle.Handlers
                 foreach (var targetId in surrounding)
                 {
                     if (targetId == sessionId || !players.Contains(targetId)) continue;
-                    SendSnapshot(gatewaySession, targetId, sessionId, snapshot);
+                    // 跨网关修复：入场通知需投递给"目标玩家自身所在的网关"（与 BroadcastToTargets/UpdateAoiGrid 一致），
+                    // 不能复用进入玩家自己的网关会话——多网关部署下其他玩家在别的网关会导致消息被丢弃。
+                    var targetGateway = BattleServerApp.GetGatewaySessionByClient(targetId);
+                    if (targetGateway == null) continue;
+                    SendSnapshot(targetGateway, targetId, sessionId, snapshot);
                 }
 
                 // 回发已有玩家快照给新玩家
@@ -327,7 +331,10 @@ namespace Battle.Handlers
                 foreach (var targetId in scene.EntityManager.GetAllSessionIds())
                 {
                     if (targetId == sessionId) continue;
-                    SendSnapshot(gatewaySession, targetId, sessionId, snapshot);
+                    // 跨网关修复：入场通知投递到目标玩家自身所在网关（同 AOI 分支）
+                    var targetGateway = BattleServerApp.GetGatewaySessionByClient(targetId);
+                    if (targetGateway == null) continue;
+                    SendSnapshot(targetGateway, targetId, sessionId, snapshot);
                 }
             }
         }
@@ -371,7 +378,10 @@ namespace Battle.Handlers
                 byte[] leavePayload = Shared.Json.SerializeToUtf8Bytes(leaveNotif);
                 foreach (var targetId in targetIds)
                 {
-                    SendPacket(gatewaySession, targetId, GenIds.EntityLeaveViewNotify, leavePayload);
+                    // 跨网关修复：离开通知投递到目标玩家自身所在网关（同 BroadcastToTargets/UpdateAoiGrid）
+                    var targetGateway = BattleServerApp.GetGatewaySessionByClient(targetId);
+                    if (targetGateway == null) continue;
+                    SendPacket(targetGateway, targetId, GenIds.EntityLeaveViewNotify, leavePayload);
                 }
             }
         }

@@ -44,8 +44,9 @@ public sealed class TokenService
 
     /// <summary>
     /// 验证 Token。成功返回 (userId, uid, seq, expires)；失败返回 null。
-    /// D6 防重放：传入 <paramref name="antiReplay"/> 时，token 中的 seq 必须严格大于该用户已接受的最大值；
-    /// 重放（seq &lt;= 上次）返回 null。Token TTL 仍由签发/过期字段保障。
+    /// D6 防重放：传入 <paramref name="antiReplay"/> 时，token 中的 seq 必须不小于该用户已接受的最大值
+    /// （回退 seq 小于上次 = 旧 token 重放 → 拒绝；seq 相等 = 同一 token 复用 → 幂等接受）。
+    /// Token TTL 仍由签发/过期字段保障。
     /// </summary>
     /// <param name="token">客户端提交的 token。</param>
     /// <param name="antiReplay">可选的单调序号状态；为 null 时不做防重放校验（仅 TTL 校验）。</param>
