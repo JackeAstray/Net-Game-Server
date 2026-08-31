@@ -2,7 +2,7 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 
-set "PROCS=redis-server.exe DB.exe Gateway.exe Login.exe Game.exe Center.exe Battle.exe"
+set "PROCS=redis-server.exe DB.exe DB2.exe DB3.exe Gateway.exe Login.exe Login2.exe Login3.exe Game.exe Game2.exe Game3.exe Center.exe Battle.exe"
 
 echo 正在结束服务器进程（需要管理员权限以结束某些进程）...
 for %%P in (%PROCS%) do (

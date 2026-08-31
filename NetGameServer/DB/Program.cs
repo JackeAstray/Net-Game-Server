@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection;
 using Shared;
 
 namespace DB
@@ -25,7 +25,7 @@ namespace DB
 
             Log.Info("DB服务器正在启动...");
 
-            DbServerApp.InitializeDatabase();
+            await DbServerApp.InitializeDatabase();
             await DbServerApp.StartNetworkAsync();
 
             await Task.Delay(-1);

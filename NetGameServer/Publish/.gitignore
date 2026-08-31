@@ -2,6 +2,12 @@ DLL/
 Gateway/
 DB/
 Game/
+Game2/
+Game3/
 Login/
+Login2/
+Login3/
 Battle/
 Center/
+# 部署密钥（禁止上传）
+.cluster_secret

@@ -39,7 +39,9 @@ namespace DB.Handlers
                 var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
 
                 // P2 修复：原实现全表拉取 UniqueId 到内存找最大序号；改为单条 SQL 聚合。
-                // 注：UID 为定宽 9 位数字串（100000000+序号），字符串字典序 == 数值序，取 MAX 字符串即数值最大。
+                // 修复（P3）：不能对字符串列取字典序 MAX——一旦出现位数不同的 UID（例如 8 位脏数据 "12345679" 与 9 位 "112345680"），
+                // 字符串序 "12345679" > "112345680"，会把序号同步到偏小的值，从而生成已存在的 UID，引发注册"UID 生成冲突"。
+                // 改为"先按长度降序、再按字典序降序"得到数值最大（纯数字、无前导零的定宽/变宽 UID 均正确）。
                 // P2 修复（空表）：Users 表为空或全无 UniqueId 时，MaxAsync 会抛 "Sequence contains no elements"，
                 // 产生异常日志噪音并回错包；先 Any 判定，空表返回 MaxUid=0（正是正确的初始序号，调用方默认值一致）。
                 long maxSequence = 0;
@@ -47,7 +49,10 @@ namespace DB.Handlers
                 {
                     string? maxUniqueId = await dbContext.Users
                         .Where(u => !string.IsNullOrWhiteSpace(u.UniqueId))
-                        .MaxAsync(u => u.UniqueId);
+                        .OrderByDescending(u => u.UniqueId.Length)
+                        .ThenByDescending(u => u.UniqueId)
+                        .Select(u => u.UniqueId)
+                        .FirstOrDefaultAsync();
                     if (maxUniqueId != null && long.TryParse(maxUniqueId, out long maxUid))
                     {
                         maxSequence = maxUid % 100000000L;

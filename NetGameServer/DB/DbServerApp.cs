@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Network;
 using Network.Tcp;
@@ -54,10 +54,10 @@ namespace DB
         /// <summary>
         /// 初始化数据库连接与初始数据：
         /// 1. 根据配置构建 DbContext 并生成 ServiceProvider。
-        /// 2. 确保数据库存在（EnsureCreated）。
+        /// 2. 应用 EF 迁移自动建库建表；对缺失表/列/唯一索引做结构体检并自动修复（SchemaMigrator + SchemaDoctor）。
         /// 3. 若不存在默认超级管理员账号，则插入一个便于首次使用。
         /// </summary>
-        public static void InitializeDatabase()
+        public static async Task InitializeDatabase()
         {
             var services = new ServiceCollection();
             // 安全修复：禁止硬编码连接字符串作为 fallback——必须从配置读取。
@@ -81,9 +81,10 @@ namespace DB
                 var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
                 try
                 {
-                    Shared.Log.Info("正在检查并尝试创建数据库(如果不存在)...");
-                    dbContext.Database.EnsureCreated();
-                    Shared.Log.Info("数据库检查完毕.");
+                    Shared.Log.Info("正在执行数据库迁移与结构体检（自动建库建表/修复缺失表、列与唯一索引）...");
+                    await Schema.SchemaMigrator.EnsureMigratedAsync(dbContext);
+                    await Schema.SchemaDoctor.VerifyAndRepairAsync(dbContext);
+                    Shared.Log.Info("数据库结构体检完毕.");
 
                     int regionId = Shared.ConfigHelper.GetConfig<int>("RegionId") == 0 ? 1 : Shared.ConfigHelper.GetConfig<int>("RegionId");
                     // P2 修复：原实现把全表 UniqueId 拉进内存找最大序号，用户量大时启动慢且占内存。

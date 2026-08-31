@@ -1,4 +1,4 @@
-﻿using Network;
+using Network;
 
 namespace DB.Routing
 {
@@ -32,10 +32,14 @@ namespace DB.Routing
         /// <summary>
         /// 发送指定字节数据：若 requestId<=0 或 数据长度小于 4 字节则透传原始数据；否则将前 4 字节按小端解析为消息 ID，向负载附加请求 ID，构建路由数据包并发送。
         /// </summary>
-        /// <remarks>使用 Shared.RouteMetadata.AttachRequestId 向负载附加请求 ID，并通过
+        /// <remarks>兼容两种调用约定：
+        /// 1) 旧处理器已用 PacketBuilder.BuildPacket 预打包的完整帧 [TotalLength(4)][MsgId(4)][Payload]（TotalLength == data.Length - 4）；
+        /// 2) 未打包的 [MsgId(4)][Payload]。
+        /// 判定为完整帧时从偏移 4 读取真实 MsgId、从偏移 8 取负载，避免"帧中套帧"导致对端（如 Login）解析失败。
+        /// 使用 Shared.RouteMetadata.AttachRequestId 向负载附加请求 ID，并通过
         /// Network.Routing.PacketBuilder.BuildPacket 构建数据包。仅发送 BuildPacket 返回的 totalLength 字节，并在 finally 中将租用的数组归还到
         /// ArrayPool&lt;byte&gt;.Shared。对于 requestId&lt;=0 或短包直接调用内部发送器。</remarks>
-        /// <param name="data">要发送的只读字节缓冲区；前 4 字节（小端）为消息 ID，其余为负载；长度小于 4 字节时按原样透传。</param>
+        /// <param name="data">要发送的只读字节缓冲区；完整帧（带长度前缀）或 [MsgId][Payload]；长度小于 4 字节时按原样透传。</param>
         public void Send(ReadOnlyMemory<byte> data)
         {
             if (requestId <= 0)
@@ -50,10 +54,23 @@ namespace DB.Routing
                 return;
             }
 
-            int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
-            byte[] payload = data.Slice(4).ToArray();
+            int headerMsgId;
+            ReadOnlyMemory<byte> payload;
+            if (data.Length >= 8
+                && System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4)) == data.Length - 4)
+            {
+                // 完整帧：前 4 字节是 TotalLength，MsgId 在偏移 4，Payload 从偏移 8 开始。
+                headerMsgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(4, 4));
+                payload = data.Slice(8);
+            }
+            else
+            {
+                headerMsgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                payload = data.Slice(4);
+            }
+
             byte[] payloadWithRequestId = Shared.RouteMetadata.AttachRequestId(payload, requestId);
-            byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payloadWithRequestId, out int totalLength);
+            byte[] packet = Network.Routing.PacketBuilder.BuildPacket(headerMsgId, payloadWithRequestId, out int totalLength);
             try
             {
                 inner.Send(packet.AsSpan(0, totalLength).ToArray());

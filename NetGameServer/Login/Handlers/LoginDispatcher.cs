@@ -1,4 +1,4 @@
-﻿using Framework.Protocol;
+using Framework.Protocol;
 using Framework.Protocol.Generated;
 using Shared.Messages;
 using Shared.Messages.Login;
@@ -73,25 +73,13 @@ public static partial class MessageRouter
 
         // 登录（旧客户端 JSON / 新客户端 MemoryPack 双格式）
         // async 处理：避免 GetAwaiter().GetResult() 阻塞网关收包线程（DB 校验可能耗时数百毫秒）
+        // 回包一律 JSON（MsgId 用旧 MessageIds.XxxRes，与 Gateway/Bots 的 JSON 解析一致），
+        // 不再用生成消息的 MemoryPack 序列化（否则 Gateway 按 JSON 解析 LoginRes 会抛 JsonReaderException）。
         dispatcher.Register<LoginMsg>(async (ctx, msg) =>
         {
             var req = new LoginRequest { Account = msg.Account, Password = msg.Password };
             var res = await loginHandler.HandleLoginRequestAsync(req, ctx.ClientSessionId);
-            ctx.Send(new LoginResult
-            {
-                Success = res.Success,
-                Message = res.Message ?? string.Empty,
-                UserId = res.UserId,
-                Token = res.Token ?? string.Empty,
-                UniqueId = res.UniqueId ?? string.Empty,
-                Nickname = res.Nickname ?? string.Empty,
-                Email = res.Email ?? string.Empty,
-                LastLoginTime = res.LastLoginTime.Kind == DateTimeKind.Utc
-                    ? new DateTimeOffset(res.LastLoginTime).ToUnixTimeSeconds()
-                    : new DateTimeOffset(res.LastLoginTime, TimeSpan.Zero).ToUnixTimeSeconds(),
-                LoginCount = res.LoginCount,
-                IsAdmin = res.IsAdmin
-            });
+            ctx.Send(Shared.Messages.MessageIds.LoginRes, Shared.Json.SerializeToUtf8Bytes(res));
         }, jsonFallback: true);
 
         // 注册
@@ -99,7 +87,7 @@ public static partial class MessageRouter
         {
             var req = new RegisterRequest { Account = msg.Account, Password = msg.Password, Nickname = msg.Nickname };
             var res = await loginHandler.HandleRegisterRequestAsync(req);
-            ctx.Send(new RegisterResult { Success = res.Success, Message = res.Message ?? string.Empty });
+            ctx.Send(Shared.Messages.MessageIds.RegisterRes, Shared.Json.SerializeToUtf8Bytes(res));
         }, jsonFallback: true);
 
         // 登出
@@ -107,7 +95,7 @@ public static partial class MessageRouter
         {
             var req = new LogoutRequest { UserId = msg.UserId };
             var res = await loginHandler.HandleLogoutRequestAsync(req, ctx.ClientSessionId);
-            ctx.Send(new LogoutResult { Success = res.Success, Message = res.Message ?? string.Empty });
+            ctx.Send(Shared.Messages.MessageIds.LogoutRes, Shared.Json.SerializeToUtf8Bytes(res));
         }, jsonFallback: true);
 
         // 玩家断线通知（网关内部消息）
@@ -126,13 +114,17 @@ public static partial class MessageRouter
                 NewPassword = msg.NewPassword
             };
             var res = await loginHandler.HandleChangePasswordRequestAsync(req, ctx.ClientSessionId);
-            ctx.Send(new ResetPasswordResult { Success = res.Success, Message = res.Message ?? string.Empty });
+            ctx.Send(Shared.Messages.MessageIds.ResetPasswordRes, Shared.Json.SerializeToUtf8Bytes(res));
         }, jsonFallback: true);
 
         // 更新昵称（与旧 UpdateNicknameReq 一致：直接返回成功）
         dispatcher.RegisterSync<UpdateNickname>((ctx, msg) =>
         {
-            ctx.Send(new UpdateNicknameResult { Success = true, Message = "更改昵称成功" });
+            ctx.Send(Shared.Messages.MessageIds.UpdateNicknameRes, Shared.Json.SerializeToUtf8Bytes(new ChangeNicknameResponse
+            {
+                Success = true,
+                Message = "更改昵称成功"
+            }));
         }, jsonFallback: true);
 
         // 找回密码（发送验证码；对标旧 FindPasswordWithCodeReq）
@@ -140,7 +132,7 @@ public static partial class MessageRouter
         {
             var req = new FindPasswordRequest { Account = msg.Account, Email = msg.Email };
             var res = await loginHandler.HandleFindPasswordRequestAsync(req);
-            ctx.Send(new FindPasswordWithCodeResult { Success = res.Success, Message = res.Message ?? string.Empty });
+            ctx.Send(Shared.Messages.MessageIds.FindPasswordWithCodeRes, Shared.Json.SerializeToUtf8Bytes(res));
         }, jsonFallback: true);
 
         return dispatcher;

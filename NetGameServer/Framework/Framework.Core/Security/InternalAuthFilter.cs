@@ -1,4 +1,4 @@
-﻿using System.Security.Cryptography;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace Framework.Core.Security;
@@ -27,7 +27,7 @@ public static class SecretConfig
     /// <param name="minLength">最小长度（建议 ≥ 16 字节）</param>
     public static string Require(string configKey, int minLength = 16)
     {
-        var value = Config.Get(configKey);
+        var value = Resolve(configKey);
         if (string.IsNullOrWhiteSpace(value))
         {
             throw new InvalidOperationException(
@@ -64,6 +64,26 @@ public static class SecretConfig
     /// </summary>
     public static bool AllowPlaceholderSecrets { get; private set; }
 
+    /// <summary>
+    /// 按优先级从多个文档化来源解析共享密钥：
+    /// 1) 配置树顶层键（appsettings.json 顶层 "CenterNodeSharedSecret" 或 NG_ 前缀环境变量）；
+    /// 2) appsettings.json 的 Security:{configKey} 节（README 手写配置方式）；
+    /// 3) 无前缀环境变量 {configKey}（README 手动启动 / StartServers.bat / Machine 注入约定）。
+    /// </summary>
+    private static string? Resolve(string configKey)
+    {
+        var value = Config.Get(configKey);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            value = Config.Get("Security:" + configKey);
+        }
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            value = Environment.GetEnvironmentVariable(configKey);
+        }
+        return string.IsNullOrWhiteSpace(value) ? null : value;
+    }
+
     /// <summary>测试启动入口：允许占位符密钥。仅应在测试 setup/teardown 调用。</summary>
     public static void AllowPlaceholderSecretsInTests() => AllowPlaceholderSecrets = true;
 
@@ -76,7 +96,7 @@ public static class SecretConfig
     /// </summary>
     public static string GetOrRandom(string configKey, int randomBytes = 32)
     {
-        var value = Config.Get(configKey);
+        var value = Resolve(configKey);
         if (!string.IsNullOrWhiteSpace(value) &&
             !Array.Exists(PlaceholderSecrets, p => p == value) &&
             value.Length >= 16)

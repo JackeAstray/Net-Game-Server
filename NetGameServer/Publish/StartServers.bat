@@ -60,7 +60,9 @@ exit /b 0
 
 :gen_secret
 :: 用 PowerShell 生成 32 字节随机密钥（Base64 编码，44 字符）并写入 .cluster_secret
-for /f "usebackq delims=" %%S in (`powershell -NoProfile -Command "$b = New-Object byte[] 32; [System.Security.Cryptography.RandomNumberGenerator]::Fill($b); [Convert]::ToBase64String($b)"`) do set "SECRET=%%S"
+:: 注意：用 RandomNumberGenerator.Create().GetBytes()（PS 5.1/.NET Framework 与 PS 7/.NET 均可用），
+:: 不能使用 RandomNumberGenerator.Fill（仅 .NET Core，Windows PowerShell 5.1 会报方法不存在 → 生成全零弱密钥）。
+for /f "usebackq delims=" %%S in (`powershell -NoProfile -Command "$b = New-Object byte[] 32; [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b)"`) do set "SECRET=%%S"
 if "%SECRET%"=="" (
   echo [错误] 自动生成共享密钥失败（PowerShell 不可用？），请手动设置 CenterNodeSharedSecret 环境变量。
   exit /b 1

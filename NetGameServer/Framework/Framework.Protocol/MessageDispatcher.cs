@@ -91,8 +91,15 @@ public sealed class MessageDispatcher
     /// </summary>
     private static TMessage DeserializeCompatible<TMessage>(ReadOnlyMemory<byte> payload) where TMessage : class, IGameMessage, new()
     {
+        // 空 payload：路由元数据已把上下文带出（如 PlayerDisconnect 用 ctx.ClientSessionId，Gateway 只发空 body）。
+        // 直接对空缓冲做 MemoryPack 反序列化会抛 "Sequence reached end"，导致断线清理永不执行且刷 ERR 日志。
+        if (payload.Length == 0)
+        {
+            return new TMessage();
+        }
+
         // 探测：JSON 文本以 '{' 开头
-        if (payload.Length > 0 && payload.Span[0] == (byte)'{')
+        if (payload.Span[0] == (byte)'{')
         {
             var json = System.Text.Encoding.UTF8.GetString(payload.Span);
             var msg = Newtonsoft.Json.JsonConvert.DeserializeObject<TMessage>(json);
@@ -100,8 +107,26 @@ public sealed class MessageDispatcher
         }
         else
         {
-            var bin = MemoryPackSerializer.Deserialize<TMessage>(payload.Span);
-            if (bin != null) return bin;
+            // 二进制（MemoryPack）优先；短包/截断/非 MemoryPack 字节抛异常时回退 JSON，避免异常外泄到 TryDispatch。
+            try
+            {
+                var bin = MemoryPackSerializer.Deserialize<TMessage>(payload.Span);
+                if (bin != null) return bin;
+            }
+            catch (MemoryPack.MemoryPackSerializationException)
+            {
+                // 回退：尝试 JSON 解析
+            }
+        }
+
+        try
+        {
+            var jsonMsg = Newtonsoft.Json.JsonConvert.DeserializeObject<TMessage>(System.Text.Encoding.UTF8.GetString(payload.Span));
+            if (jsonMsg != null) return jsonMsg;
+        }
+        catch (Newtonsoft.Json.JsonException)
+        {
+            // 既非合法 MemoryPack 也非合法 JSON：交给调用方统一处理
         }
 
         throw new InvalidOperationException($"消息 {typeof(TMessage).Name} 兼容反序列化失败");

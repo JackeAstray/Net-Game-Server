@@ -229,6 +229,11 @@ namespace Game
                         {
                             clientsForGateway.TryRemove(originalSessionId, out _);
                         }
+                        // 断线通知已内联处理完毕（含会话解绑/好友状态/缓存清理）。
+                        // 此处必须 return：PlayerDisconnectNotif 有意不注册到 gameDispatcher/MessageRouter
+                        // （见上方注释，避免重复处理与误用网关会话 ID），否则 fall-through 到 TryDispatch 会
+                        // 打印误导性的 "[MessageRouter] 未找到消息类型的处理器: 10000" 告警。
+                        return;
                     }
                     else
                     {
