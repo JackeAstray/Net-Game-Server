@@ -1,4 +1,4 @@
-﻿using Framework.Core;
+using Framework.Core;
 
 namespace Framework.Tick;
 
@@ -104,6 +104,12 @@ public sealed class TickEngine
         thread = null;
         Log.Info("TickEngine 已停止");
     }
+
+    /// <summary>
+    /// 当前调用是否运行在 tick 线程上（P3：脚本宿主据此决定同步执行还是投递到 tick 线程，
+    /// 既保留 tick 线程内"创建→初始化→立即读取"的同步语义，又避免非 tick 线程直接遍历实体）。
+    /// </summary>
+    public bool IsOnTickThread => thread != null && Thread.CurrentThread == thread;
 
     /// <summary>
     /// 添加一次性/周期定时器（在 tick 线程内回调）。

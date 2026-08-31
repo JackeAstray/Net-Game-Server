@@ -32,9 +32,12 @@ namespace Battle.Handlers
         {
             try
             {
-                // 获取请求的类型，这里默认客户端在加入请求时通过 SceneType 或是默认根据包含 World 处理，也可以像 Center 时带入 CategoryId
                 // P3 修复：RoomId 可能为 null（校验不完整路径），null 上调用 Contains 抛 NRE。
-                bool isWorldMap = request.RoomId?.Contains("World") == true;
+                // 统一用局部非空变量，避免在 `?.` 后编译器把属性标记为可空而触发下游可空告警。
+                string roomId = request.RoomId ?? string.Empty;
+
+                // 获取请求的类型，这里默认客户端在加入请求时通过 SceneType 或是默认根据包含 World 处理，也可以像 Center 时带入 CategoryId
+                bool isWorldMap = roomId.Contains("World");
                 string templateId = string.IsNullOrEmpty(request.SceneType) ? (isWorldMap ? "World" : "PVP") : request.SceneType;
 
                 // 查表获取场景模板配置
@@ -55,7 +58,7 @@ namespace Battle.Handlers
 
                 var sceneConfig = new SceneConfig
                 {
-                    SceneId = request.RoomId,
+                    SceneId = roomId,
                     Name = templateConfig?.Name ?? "默认场景",
                     SceneType = templateConfig?.SceneType ?? "Room",
                     UseAoi = templateConfig?.UseAoi ?? false,
@@ -79,7 +82,7 @@ namespace Battle.Handlers
                 }
 
                 // 将玩家绑定到该场景
-                sceneManager.BindPlayerToScene(clientSessionId, request.RoomId);
+                sceneManager.BindPlayerToScene(clientSessionId, roomId);
 
                 // 基于实体框架创建玩家实体（属性脏标记 + 增量同步）
                 var newPlayerEntity = Battle.Entities.PlayerEntityDef.Create(clientSessionId);
@@ -113,7 +116,7 @@ namespace Battle.Handlers
 
                 // 触发进入事件，进行数据广播（全量快照 + AOI 登记）
                 entitySyncHandler.OnPlayerEnter(clientSessionId, newPlayerEntity, gatewaySession);
-                Battle.BattleServerApp.SyncRoomPlayerCount(request.RoomId);
+                Battle.BattleServerApp.SyncRoomPlayerCount(roomId);
 
                 return Task.FromResult(new BattleJoinResponse
                 {

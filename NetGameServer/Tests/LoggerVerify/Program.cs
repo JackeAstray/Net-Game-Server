@@ -1,4 +1,4 @@
-﻿using System.Net.Sockets;
+using System.Net.Sockets;
 using System.Text;
 using Framework.Core;
 using Logger;
@@ -54,6 +54,30 @@ internal static class Program
         string content = File.ReadAllText(logFile);
         Console.WriteLine($"落盘内容行数: {content.Split('\n').Length} (期望 >=3)");
         if (content.Split('\n').Length < 3) return 1;
+
+        // ===== P2 鉴权专项：HMAC-SHA256 校验（合法密钥收到、错误密钥被拒）=====
+        int authPort = 31322;
+        var authServer = new LoggerServer(authPort,
+            logDir: Path.Combine(Path.GetTempPath(), $"logger_auth_{Guid.NewGuid():N}"),
+            authSecret: "test-secret");
+        var authReceived = new List<(string level, string node, string msg)>();
+        authServer.LogReceived += (level, node, msg) => authReceived.Add((level, node, msg));
+        authServer.Start();
+
+        using (var goodClient = new RemoteLogClient("AuthGood", "127.0.0.1", authPort, "test-secret"))
+        using (var badClient = new RemoteLogClient("AuthBad", "127.0.0.1", authPort, "wrong-secret"))
+        {
+            goodClient.Start();
+            badClient.Start();
+            Log.Info("鉴权测试: 合法节点日志");
+            await Task.Delay(1500); // 等待批量冲刷
+        }
+        authServer.Dispose();
+
+        bool gotGood = authReceived.Any(r => r.node == "AuthGood" && r.msg.Contains("合法节点日志"));
+        bool gotBad = authReceived.Any(r => r.node == "AuthBad");
+        Console.WriteLine($"鉴权校验: 合法密钥收到={gotGood} 错误密钥节点被拒={!gotBad} (期望 True/True)");
+        if (!gotGood || gotBad) return 1;
 
         server.Dispose();
         Console.WriteLine("\n===== Logger 验证通过 =====");

@@ -1,4 +1,4 @@
-﻿using Framework.Scripting;
+using Framework.Scripting;
 using Framework.Tick;
 using EntityObj = Framework.Entity.Entity;
 
@@ -68,6 +68,42 @@ internal static class Program
         Console.WriteLine($"[3] TakeDamage(9999) Hp={avatar.Get<int>("Hp")} (期望 0，边界钳制)");
         if (avatar.Get<int>("Hp") != 0) return 1;
 
+        // === P2 溢出专项回归：伤害计算 long 防溢出（修复后不得回绕成回血/负值）===
+        // [3a] 超大伤害 int.MaxValue、倍率 1：delta=-2147483647，Hp 钳制到 0
+        var avatarOv1 = avatarDef.CreateEntity(1101);
+        manager.AddOrUpdateEntity(1101, avatarOv1);
+        host.NotifyCreate(avatarOv1);
+        host.DispatchMessage(avatarOv1, "TakeDamage", new object?[] { int.MaxValue });
+        Console.WriteLine($"[3a] TakeDamage(int.MaxValue) Hp={avatarOv1.Get<int>("Hp")} (期望 0，无溢出回绕)");
+        if (avatarOv1.Get<int>("Hp") != 0) return 1;
+
+        // [3b] 极端组合 dmg=int.MaxValue、倍率=int.MaxValue：long 计算后钳 int.MinValue → Hp 0（修复前 int 溢出会回绕）
+        host.SetGlobal("DamageMultiplier", int.MaxValue);
+        var avatarOv2 = avatarDef.CreateEntity(1102);
+        manager.AddOrUpdateEntity(1102, avatarOv2);
+        host.NotifyCreate(avatarOv2);
+        host.DispatchMessage(avatarOv2, "TakeDamage", new object?[] { int.MaxValue });
+        Console.WriteLine($"[3b] TakeDamage(MAX,倍率MAX) Hp={avatarOv2.Get<int>("Hp")} (期望 0，无回绕)");
+        if (avatarOv2.Get<int>("Hp") != 0) return 1;
+        host.SetGlobal("DamageMultiplier", null);
+
+        // [3c] 负伤害（int.MinValue）= 治疗：delta=+2147483648 → 钳 int.MaxValue，Hp 封顶不可回绕为负
+        var avatarOv3 = avatarDef.CreateEntity(1103);
+        manager.AddOrUpdateEntity(1103, avatarOv3);
+        host.NotifyCreate(avatarOv3);
+        host.DispatchMessage(avatarOv3, "TakeDamage", new object?[] { int.MinValue });
+        Console.WriteLine($"[3c] TakeDamage(int.MinValue) Hp={avatarOv3.Get<int>("Hp")} (期望 {int.MaxValue}，负伤害封顶治疗)");
+        if (avatarOv3.Get<int>("Hp") != int.MaxValue) return 1;
+
+        // [3d] 上边界回血：Hp=int.MaxValue-3，heal 5 → 超 int.MaxValue 钳制封顶，不可回绕为负（修复前 int 加法溢出成负值）
+        var avatarOv4 = avatarDef.CreateEntity(1104);
+        manager.AddOrUpdateEntity(1104, avatarOv4);
+        host.NotifyCreate(avatarOv4);
+        avatarOv4.Set("Hp", int.MaxValue - 3);
+        host.DispatchMessage(avatarOv4, "TakeDamage", new object?[] { -5 });
+        Console.WriteLine($"[3d] 上界回血 Hp={avatarOv4.Get<int>("Hp")} (期望 {int.MaxValue}，封顶无回绕)");
+        if (avatarOv4.Get<int>("Hp") != int.MaxValue) return 1;
+
         // S2：定时器回血。Avatar 脚本 AddTimer(1000ms) 每秒回 1。
         // TickEngine 跑 ~1.2s（覆盖至少 1 个回血周期）
         await Task.Delay(1200);
@@ -129,7 +165,10 @@ internal static class Program
         // 累计 40 经验（>20 阈值）→ Quest 完成（事件驱动，立即触发）
         // 注：单只 Npc 死亡只掉落 20 经验（isDead 实例字段共享，避免再生 Npc 时 SetGlobal 跳过）
         //     → 先把 Quest 监听打开，再单独 SetGlobal 模拟累计
+        // 注：本测试在"主线程"调用 SetGlobal；P3 线程感知语义下非 tick 线程的 SetGlobal 会投递到
+        //     tick 线程触发 OnGlobalChanged（生产环境脚本在 tick 线程调用，仍为同步）。故此处等一拍。
         host.SetGlobal("TotalExpDropped", 40);
+        await Task.Delay(120); // 20Hz tick：等待投递的 OnGlobalChanged 执行
         bool questCompleted = host.GetGlobal("QuestCompleted") is bool qc && qc;
         Console.WriteLine($"[11] Quest 完成（事件驱动）: {questCompleted} (期望 True)");
         if (!questCompleted) return 1;
