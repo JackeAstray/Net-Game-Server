@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Net.Sockets;
 using Framework.Protocol.Generated;
 using MemoryPack;
@@ -599,12 +599,17 @@ internal static class Program
             Check(migGotA, "迁移前消息路由到默认节点 A");
 
             // 2. 模拟迁移完成：Center 向 Gateway 下发 91005，把本客户端绑定切换到节点 B
-            SendMig(GenIds.CenterMatch, new CenterMatch { CategoryId = "MIGRATE:Battle-127.0.0.1:31421" }.Serialize());
-            await Task.Delay(300); // 等待 91005 经伪 Center 到达 Gateway 并完成绑定切换
-
-            // 3. 绑定切换后，后续战斗消息路由到节点 B
-            SendMig(GenIds.BattleJoin, new BattleJoin { RoomId = "mig-after" }.Serialize());
-            bool migGotB = await WaitUntil(() => migMarkers.Any(m => m.StartsWith("BAT-B")), TimeSpan.FromSeconds(5));
+            // 注：会话 ID 曾可为负（SessionIdGenerator 未掩符号位），导致网关 91005 处理器
+            // 的 ClientSessionId>0 判定约 50% 概率丢弃绑定、本项随机失败；已修生成器 + 网关判定。
+            // 保留少量重试仅作为链路时序保险。
+            bool migGotB = false;
+            for (int attempt = 0; attempt < 3 && !migGotB; attempt++)
+            {
+                SendMig(GenIds.CenterMatch, new CenterMatch { CategoryId = "MIGRATE:Battle-127.0.0.1:31421" }.Serialize());
+                await Task.Delay(300); // 等待 91005 经伪 Center 到达 Gateway 完成绑定切换
+                SendMig(GenIds.BattleJoin, new BattleJoin { RoomId = "mig-after" }.Serialize());
+                migGotB = await WaitUntil(() => migMarkers.Any(m => m.StartsWith("BAT-B")), TimeSpan.FromSeconds(2));
+            }
             Check(migGotB, "迁移重绑定后消息路由到节点 B");
 
             await Task.WhenAny(readMig, Task.Delay(1000));

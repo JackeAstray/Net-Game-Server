@@ -21,6 +21,11 @@ namespace Battle
         private static Framework.Tick.TickEngine? tickEngine;
         private static Battle.Handlers.EntitySyncHandler? entitySyncHandler;
         private static TcpClientWrapper? centerClient;
+
+        // 实体位置路由缓存（迭代 21，对标 ET Location）：entityId -> nodeId，迁移后修正 stale 路由
+        private static Framework.Entity.EntityCallRouter entityCallRouter = new();
+        // 跨 Battle 直达开关（配置 EntityCallDirectRouting；失败自动回退 Center 中继）
+        private static bool entityCallDirectRouting;
         public static string CurrentNodeId { get; private set; } = string.Empty;
 
         /// <summary>挂起玩家（断线重连）：clientSessionId -> 挂起截止时间（Ticks）。</summary>
@@ -38,12 +43,15 @@ namespace Battle
         public static void NotifyEntityCreated(Framework.Entity.Entity entity)
         {
             scriptHost?.NotifyCreate(entity);
+            SendEntityLocation(register: true, entity.EntityId);
         }
 
         /// <summary>通知游戏逻辑脚本：实体销毁（离开场景）。</summary>
         public static void NotifyEntityDestroyed(Framework.Entity.Entity entity)
         {
             scriptHost?.NotifyDestroy(entity);
+            entityCallRouter.Invalidate(entity.EntityId);
+            SendEntityLocation(register: false, entity.EntityId);
         }
 
         /// <summary>
@@ -114,9 +122,13 @@ namespace Battle
             if (scene == null) return;
             for (int i = 0; i < 3; i++)
             {
-                RegisterSceneEntity(scene, Battle.Entities.GameplayEntityDefs.Npc.CreateEntity(NextGameplayEntityId()));
+                var npc = Battle.Entities.GameplayEntityDefs.Npc.CreateEntity(NextGameplayEntityId());
+                npc.SetSilent("SceneId", scene.SceneId); // 脚本按场景键控全局数据，防跨房间污染
+                RegisterSceneEntity(scene, npc);
             }
-            RegisterSceneEntity(scene, Battle.Entities.GameplayEntityDefs.Quest.CreateEntity(NextGameplayEntityId()));
+            var quest = Battle.Entities.GameplayEntityDefs.Quest.CreateEntity(NextGameplayEntityId());
+            quest.SetSilent("SceneId", scene.SceneId);
+            RegisterSceneEntity(scene, quest);
             Log.Info($"场景玩法实体已生成 SceneId:{scene.SceneId}");
         }
 
@@ -278,11 +290,23 @@ namespace Battle
                 // 2) 属主规则：允许操作自属实体的全部方法
                 bool isOwner = entity.OwnerClientId == callerSessionId || entity.EntityId == callerSessionId;
 
-                // 3) 非属主（他人实体或无主世界实体）：仅放行白名单方法
-                if (!isOwner && System.Array.IndexOf(WorldEntityAllowedMethods, method) < 0)
+                // 3) 非属主：仅无主世界实体（Npc/Quest，OwnerClientId==0）放行白名单方法。
+                //    P3 加固：白名单严禁作用于他人玩家的实体（含其私有 Skill/Item）——
+                //    此前"非属主 + 白名单方法"会对其他玩家的实体生效，导致跨玩家 TakeDamage 秒杀
+                //    与 QueryProgress 私有状态泄露。
+                bool isWorldEntity = entity.OwnerClientId == 0;
+                if (!isOwner)
                 {
-                    Log.Warning($"实体脚本动作被拒绝：调用者无权操作该实体 SessionId:{callerSessionId} EntityId:{entityId} Method:{method}");
-                    return;
+                    if (!isWorldEntity)
+                    {
+                        Log.Warning($"实体脚本动作被拒绝：跨玩家操作被禁止 SessionId:{callerSessionId} EntityId:{entityId} Method:{method}");
+                        return;
+                    }
+                    if (System.Array.IndexOf(WorldEntityAllowedMethods, method) < 0)
+                    {
+                        Log.Warning($"实体脚本动作被拒绝：调用者无权操作该实体 SessionId:{callerSessionId} EntityId:{entityId} Method:{method}");
+                        return;
+                    }
                 }
 
                 // P2 修复（参数校验）：TakeDamage 白名单方法对任意客户端开放，恶意 dmg（负数/超大值）
@@ -392,6 +416,51 @@ namespace Battle
             {
                 Log.Error(ex, $"玩家实体持久化失败 EntityId:{entity.EntityId}");
             }
+        }
+
+        /// <summary>
+        /// 优雅关闭（迭代 21，NodeLifecycle 关闭钩子）：
+        /// flush 未落库的在线实体 → 停止 tick 引擎 → 断开 Center 心跳与连接。
+        /// </summary>
+        public static async Task ShutdownAsync()
+        {
+            Log.Info("Battle 优雅关闭开始：flush 实体持久化...");
+
+            // P3 加固：先停 tick 引擎（此后不再产生新脏实体/新批量落库），再 flush 落库 + 释放存储，
+            // 避免关服期间在途批量写入被中断或与新 flush 交错导致数据丢失。
+            try
+            {
+                tickEngine?.Stop();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Battle 停止 tick 引擎异常");
+            }
+
+            try
+            {
+                if (persistService != null)
+                {
+                    await persistService.FlushDirtyAsync();
+                    persistService.Dispose();
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Battle 关服 flush 实体持久化失败");
+            }
+
+            try
+            {
+                centerHeartbeatCts?.Cancel();
+                centerClient?.Stop();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Battle 关闭 Center 连接异常");
+            }
+
+            Log.Info("Battle 优雅关闭完成。");
         }
 
         /// <summary>客户端会话 -> 网关会话 映射（帧同步广播用；收包时登记，断开时清除）</summary>
@@ -885,17 +954,25 @@ namespace Battle
             };
         }
 
-        /// <summary>向 Center 回 91002 实体远程调用回执（Center 中继回源 Battle，调用方完成回执/超时）。</summary>
-        public static void SendEntityRemoteCallResult(Framework.Protocol.Generated.EntityRemoteCallResult result)
+        /// <summary>
+        /// 发送实体远程调用回执（91002）。优先回发到来源会话（直达会话/ Center 中继会话），
+        /// 无来源会话时回 Center。Center 中继路径行为不变（来源会话即 centerClient 会话 → 仍发 Center）。
+        /// </summary>
+        public static void SendEntityRemoteCallResult(Framework.Protocol.Generated.EntityRemoteCallResult result, Network.ISession? originSession = null)
         {
-            if (centerClient == null)
-            {
-                return;
-            }
             byte[] payload = result.Serialize();
             byte[] packet = PacketBuilder.BuildPacket(Framework.Protocol.Generated.MessageIds.EntityRemoteCallResult, payload, out int totalLength);
             try
             {
+                if (originSession != null && originSession.IsConnected)
+                {
+                    Network.PacketSender.Send(originSession, packet, totalLength);
+                    return;
+                }
+                if (centerClient == null)
+                {
+                    return;
+                }
                 Network.PacketSender.Send(centerClient, packet, totalLength);
             }
             catch (Exception ex)
@@ -913,9 +990,27 @@ namespace Battle
             return Framework.Entity.EntityCall.Remote(targetNodeId, entityId, SendEntityRemoteCallToCenter);
         }
 
-        /// <summary>把 EntityRemoteCall 消息发送到 Center（Center 中继目标 Battle）。</summary>
+        /// <summary>
+        /// 发送 EntityRemoteCall（91001）：路由缓存覆盖可能的 stale TargetNodeId → 直达优先 → Center 中继回退。
+        /// </summary>
         private static void SendEntityRemoteCallToCenter(Framework.Protocol.Generated.EntityRemoteCall call)
         {
+            // 路由缓存（对标 ET Location）：缓存有更新鲜的位置则覆盖调用方可能过期的 TargetNodeId
+            string? resolved = entityCallRouter.Resolve(call.EntityId,
+                string.IsNullOrEmpty(call.TargetNodeId) ? null : call.TargetNodeId);
+            if (!string.IsNullOrEmpty(resolved))
+            {
+                call.TargetNodeId = resolved;
+                entityCallRouter.Update(call.EntityId, resolved);
+            }
+
+            // 直达优先（降低 Center 热点）：已建立目标 Battle 直达会话则直发；失败自动回退 Center
+            if (entityCallDirectRouting && !string.IsNullOrEmpty(call.TargetNodeId)
+                && EntityCallDirectRouter.TrySendDirect(call))
+            {
+                return;
+            }
+
             if (centerClient == null)
             {
                 Log.Warn($"实体远程调用发送失败：未连接 Center EntityId:{call.EntityId} Method:{call.MethodName}");
@@ -934,6 +1029,82 @@ namespace Battle
         }
 
         /// <summary>
+        /// 实体位置登记/注销通知（91007/91008 发送到 Center，对标 ET Location 代理）。
+        /// </summary>
+        private static void SendEntityLocation(bool register, long entityId)
+        {
+            if (centerClient == null)
+            {
+                return;
+            }
+            try
+            {
+                byte[] payload;
+                int msgId;
+                if (register)
+                {
+                    payload = new Framework.Protocol.Generated.EntityLocationRegister
+                    {
+                        EntityId = entityId,
+                        NodeId = CurrentNodeId
+                    }.Serialize();
+                    msgId = Framework.Protocol.Generated.MessageIds.EntityLocationRegister;
+                }
+                else
+                {
+                    payload = new Framework.Protocol.Generated.EntityLocationUnregister { EntityId = entityId }.Serialize();
+                    msgId = Framework.Protocol.Generated.MessageIds.EntityLocationUnregister;
+                }
+                byte[] packet = PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
+                Network.PacketSender.Send(centerClient, packet, totalLength);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, $"实体位置通知失败 EntityId:{entityId} Register:{register}");
+            }
+        }
+
+        /// <summary>查询实体位置（91009 发送到 Center；响应 91010 到达后更新路由缓存）。</summary>
+        public static void RequestEntityLocation(long entityId)
+        {
+            if (centerClient == null)
+            {
+                return;
+            }
+            try
+            {
+                byte[] payload = new Framework.Protocol.Generated.EntityLocateRequest { EntityId = entityId }.Serialize();
+                byte[] packet = PacketBuilder.BuildPacket(Framework.Protocol.Generated.MessageIds.EntityLocateRequest, payload, out int totalLength);
+                Network.PacketSender.Send(centerClient, packet, totalLength);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, $"实体位置查询发送失败 EntityId:{entityId}");
+            }
+        }
+
+        /// <summary>处理实体位置查询响应（91010）：更新路由缓存；直达开启时预热直连会话。</summary>
+        public static void HandleEntityLocationResponse(Framework.Protocol.Generated.EntityLocateResponse msg)
+        {
+            if (!msg.Found || string.IsNullOrEmpty(msg.NodeId))
+            {
+                return;
+            }
+            entityCallRouter.Update(msg.EntityId, msg.NodeId);
+            if (entityCallDirectRouting && !string.IsNullOrEmpty(msg.Host) && msg.Port > 0)
+            {
+                EntityCallDirectRouter.EnsurePeer(msg.NodeId, msg.Host, msg.Port);
+            }
+        }
+
+        /// <summary>实体迁移路由完成（91005）：更新调用方路由缓存，指向实体新所在节点（对标 ET Location）。</summary>
+        public static void OnEntityMigratedRouted(long entityId, string newNodeId)
+        {
+            entityCallRouter.Update(entityId, newNodeId);
+            Log.Info($"实体位置缓存更新（迁移路由）EntityId:{entityId} -> {newNodeId}");
+        }
+
+        /// <summary>
         /// 加载配置，构建场景与消息处理器，注册并启动战斗服务器的 TCP 网络，处理会话连接/断开与数据接收并分发内部消息，随后连接到中心服。
         /// </summary>
         /// <remarks>使用 ConfigManager 加载配置；若未配置端口则使用默认端口 31307。初始化
@@ -946,6 +1117,13 @@ namespace Battle
             Configs.ConfigManager.LoadAll(); // 读取策划配置文件
 
             int port = ConfigHelper.GetConfig<int>("BattlePort") == 0 ? 31307 : ConfigHelper.GetConfig<int>("BattlePort");
+
+            // 跨 Battle 实体调用直达开关（迭代 21）：开启后优先直发目标 Battle，失败自动回退 Center 中继
+            entityCallDirectRouting = ConfigHelper.GetConfig<bool>("EntityCallDirectRouting");
+            entityCallRouter.CacheTtlTicks = TimeSpan.FromMilliseconds(
+                ConfigHelper.GetConfig<long>("EntityCallLocationCacheTtlMs") > 0
+                    ? ConfigHelper.GetConfig<long>("EntityCallLocationCacheTtlMs") : 30000).Ticks;
+            Log.Info($"跨 Battle 实体调用直达: {(entityCallDirectRouting ? "开启（失败回退 Center）" : "关闭（Center 中继）")} 位置缓存TTL:{entityCallRouter.CacheTtlTicks / TimeSpan.TicksPerMillisecond}ms");
 
             // 单线程 tick 引擎（对标 KBE gameUpdateHertz，默认 20Hz）：驱动帧同步与定时逻辑
             int tickHertz = ConfigHelper.GetConfig<int>("BattleTickHertz") == 0 ? 20 : ConfigHelper.GetConfig<int>("BattleTickHertz");
@@ -969,14 +1147,28 @@ namespace Battle
             scriptHost.Start();
             BattleServerApp.scriptHost = scriptHost;
 
-            // 实体持久化服务（对标 KBE dbmgr entity_table 自动存取 + restore_entity_handler 崩溃恢复）
-            string persistDir = ConfigHelper.GetConfig<string>("EntityPersistDir")
-                ?? Path.Combine(AppContext.BaseDirectory, "persist", "entities");
-            var persistService = new Framework.Entity.EntityPersistenceService(persistDir, id =>
+            // 实体持久化服务（对标 KBE dbmgr entity_table + GeekServer 脏状态批量落库，迭代 21）：
+            // 后端按配置可插拔（File 默认 / MySql / PostgreSql / Redis），周期把在线实体的属性变更批量异步落库。
+            var persistOptions = new Framework.Persistence.EntityPersistenceOptions
             {
-                return Battle.Entities.PlayerEntityDef.Create(id);
-            });
+                Provider = ConfigHelper.GetConfig("EntityPersistence:Provider") ?? "File",
+                Directory = ConfigHelper.GetConfig("EntityPersistence:Directory")
+                    ?? ConfigHelper.GetConfig("EntityPersistDir")
+                    ?? Path.Combine(AppContext.BaseDirectory, "persist", "entities"),
+                ConnectionString = ConfigHelper.GetConfig("EntityPersistence:ConnectionString"),
+                FlushIntervalMs = ConfigHelper.GetConfig<long>("EntityPersistence:FlushIntervalMs") > 0
+                    ? ConfigHelper.GetConfig<long>("EntityPersistence:FlushIntervalMs") : 5000,
+                FlushBatchSize = ConfigHelper.GetConfig<int>("EntityPersistence:FlushBatchSize") > 0
+                    ? ConfigHelper.GetConfig<int>("EntityPersistence:FlushBatchSize") : 256,
+            };
+            var persistStore = Framework.Persistence.PersistenceStoreFactory.Create(persistOptions);
+            var persistService = new Framework.Entity.EntityPersistenceService(
+                persistStore,
+                id => Battle.Entities.PlayerEntityDef.Create(id),
+                persistOptions.FlushIntervalMs,
+                persistOptions.FlushBatchSize);
             BattleServerApp.persistService = persistService;
+            Log.Info($"实体持久化后端: {persistService.StoreName}（Provider={persistOptions.Provider}，批量落库间隔={persistOptions.FlushIntervalMs}ms）");
 
             sceneManager = new Battle.Handlers.SceneManager();
             // 帧同步管理器声明提前：场景销毁事件在下方引用它做字典清理（闭包捕获要求先声明）。
@@ -987,6 +1179,7 @@ namespace Battle
             {
                 scriptHost.RegisterEntityManager(scene.EntityManager);
                 backupService.AddManager(scene.EntityManager);
+                persistService.AttachManager(scene.EntityManager); // 周期批量落库的实体来源
                 SpawnSceneGameplayEntities(scene);
             };
             // 场景销毁：必须反向注销（A2/A3 修复）——此前 entityManagers/备份管理器只写不删、
@@ -999,6 +1192,7 @@ namespace Battle
                 }
                 scriptHost.UnregisterEntityManager(scene.EntityManager);
                 backupService.RemoveManager(scene.EntityManager);
+                persistService.RemoveManager(scene.EntityManager);
                 frameSyncManager?.RemoveScene(scene.SceneId);
             };
             var entitySyncHandler = new Battle.Handlers.EntitySyncHandler(sceneManager);
@@ -1019,6 +1213,8 @@ namespace Battle
                     }
                     // 按实体量平滑分摊备份（对标 KBE backuper：每 tick 只备份部分实体）
                     backupService.Tick();
+                    // 周期批量落库（对标 GeekServer 脏状态自动保存）：到达间隔且有脏实体时后台异步写存储
+                    persistService.FlushDirtyIfDue();
                     // 脚本/AI 驱动的属性变化增量广播（NPC 巡逻、回血、冷却、掉落）
                     entitySyncHandler.TickWitness();
                 }

@@ -1,4 +1,4 @@
-﻿using Shared;
+using Shared;
 using Log = Shared.Log;
 
 namespace Gateway
@@ -29,7 +29,12 @@ namespace Gateway
             await GatewayServerApp.StartNetworkAsync();
             await GatewayServerApp.StartReverseProxyAsync(args);
 
-            await Task.Delay(-1);
+            // 健康检查 + 优雅关闭（迭代 21）
+            int healthPort = ConfigHelper.GetConfig<int>("HealthPort") == 0 ? 31300 + 10000 : ConfigHelper.GetConfig<int>("HealthPort");
+            HealthServer.Start(healthPort, nodeId);
+            NodeLifecycle.Default.RegisterShutdownHook(GatewayServerApp.ShutdownAsync);
+            await NodeLifecycle.Default.WaitForShutdownAsync();
+            await NodeLifecycle.Default.RunShutdownAsync();
         }
     }
 }

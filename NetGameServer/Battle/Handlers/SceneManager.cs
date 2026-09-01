@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Linq;
 
 namespace Battle.Handlers
@@ -35,9 +35,18 @@ namespace Battle.Handlers
         private readonly ConcurrentDictionary<string, ConcurrentDictionary<long, byte>> sceneToPlayers = new(StringComparer.Ordinal);
 
         /// <summary>
+        /// 实体 Id -> 所在场景 Id 反索引（修复：FindSceneByEntityId 原为 O(场景数×每场景实体表) 逐场景扫描，
+        /// 在脚本动作/EntityCall 热路径上每帧调用；改为订阅各场景 EntityManager 增删事件维护本表，
+        /// 查询降为 O(1)）。
+        /// </summary>
+        private readonly ConcurrentDictionary<long, string> entityToSceneBinding = new();
+
+        /// <summary>
         /// 根据场景配置获取已有场景或创建新场景。
         /// 如果指定 SceneId 的场景已存在则返回该场景，否则创建并返回新的 BattleScene 实例。
         /// 新场景创建后会触发 SceneCreated 事件（场景级玩法实体生成钩子）。
+        /// 创建后立即订阅其 EntityManager 的实体增删事件，维护 entityId→sceneId 反索引
+        /// （必须在 SceneCreated 之前订阅，以捕获宿主生成场景级玩法实体的注册）。
         /// </summary>
         /// <param name="config">用于创建场景的配置信息，必须包含 SceneId。</param>
         /// <returns>对应的 BattleScene 实例。</returns>
@@ -46,6 +55,9 @@ namespace Battle.Handlers
             return scenes.GetOrAdd(config.SceneId, id =>
             {
                 var scene = new BattleScene(config);
+                // 维护实体反索引：新增/更新→记录，移除→清除。
+                scene.EntityManager.EntityAdded += (entityId, _) => entityToSceneBinding[entityId] = id;
+                scene.EntityManager.EntityRemoved += (entityId, _) => entityToSceneBinding.TryRemove(entityId, out string? _);
                 SceneCreated?.Invoke(scene);
                 return scene;
             });
@@ -53,15 +65,15 @@ namespace Battle.Handlers
 
         /// <summary>
         /// 根据实体 ID 查找其所在场景（跨场景实体路由/脚本动作分发用）。
+        /// 修复：由逐场景扫描降为 O(1) 反索引查询（命中场景再 O(1) 确认实体仍存在）。
         /// </summary>
         public BattleScene? FindSceneByEntityId(long entityId)
         {
-            foreach (var scene in scenes.Values)
+            if (entityToSceneBinding.TryGetValue(entityId, out var sceneId)
+                && scenes.TryGetValue(sceneId, out var scene)
+                && scene.EntityManager.GetEntity(entityId) != null)
             {
-                if (scene.EntityManager.GetEntity(entityId) != null)
-                {
-                    return scene;
-                }
+                return scene;
             }
             return null;
         }
@@ -150,6 +162,14 @@ namespace Battle.Handlers
         {
             if (scenes.TryRemove(sceneId, out var removedScene))
             {
+                // 清理实体反索引中指向该场景的条目（场景销毁时实体可能未逐条走 RemoveEntity）。
+                foreach (var kv in entityToSceneBinding)
+                {
+                    if (kv.Value == sceneId)
+                    {
+                        entityToSceneBinding.TryRemove(kv.Key, out _);
+                    }
+                }
                 SceneDestroyed?.Invoke(removedScene);
                 Shared.Log.Info($" 场景已移除并清理干净: {sceneId}");
             }

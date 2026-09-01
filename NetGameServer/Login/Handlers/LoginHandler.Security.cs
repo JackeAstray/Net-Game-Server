@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
 using Network.Tcp;
@@ -32,7 +32,13 @@ namespace Login.Handlers
 
             // Generate sequence/request Id
             long requestId = System.Threading.Interlocked.Increment(ref sequenceId);
-            LoginServerApp.PendingRequests[requestId] = tcs;
+            // P3 加固：记录期望的响应 msgid（DB 请求/响应成对约定：响应 = 请求 + 100，见 DbMessages 1000-1119 序列），
+            // 接收端（LoginServerApp.OnDataReceived）校验 msgid 不符即拒绝，防类型混淆/错误调用者完成他人请求。
+            LoginServerApp.PendingRequests[requestId] = new LoginServerApp.PendingDbRequest
+            {
+                Tcs = tcs,
+                ResponseMsgId = msgId + 100
+            };
 
             byte[] payloadWithRequestId = Shared.RouteMetadata.AttachRequestId(data, requestId);
             byte[] packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payloadWithRequestId, out int totalLength);

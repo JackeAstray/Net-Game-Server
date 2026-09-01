@@ -28,7 +28,16 @@ namespace DB
             await DbServerApp.InitializeDatabase();
             await DbServerApp.StartNetworkAsync();
 
-            await Task.Delay(-1);
+            // 健康检查 + 优雅关闭（迭代 21）
+            int healthPort = ConfigHelper.GetConfig<int>("HealthPort") == 0 ? 31305 + 10000 : ConfigHelper.GetConfig<int>("HealthPort");
+            Shared.HealthServer.Start(healthPort, nodeId);
+            NodeLifecycle.Default.RegisterShutdownHook(() =>
+            {
+                Log.Info("DB 优雅关闭：断开业务连接（心跳超时自动摘除注册）。");
+                return Task.CompletedTask;
+            });
+            await NodeLifecycle.Default.WaitForShutdownAsync();
+            await NodeLifecycle.Default.RunShutdownAsync();
         }
     }
 }

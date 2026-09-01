@@ -13,9 +13,11 @@
   <Project Path="Framework/Framework.Entity/Framework.Entity.csproj" />
   <Project Path="Framework/Framework.Tick/Framework.Tick.csproj" />
   <Project Path="Framework/Framework.Scripting/Framework.Scripting.csproj" />
+  <Project Path="Framework/Framework.Persistence/Framework.Persistence.csproj" />
   <Project Path="Tests/ProtocolVerify/ProtocolVerify.csproj" />
   <Project Path="Tests/ScriptHostVerify/ScriptHostVerify.csproj" />
   <Project Path="Tests/LoggerVerify/LoggerVerify.csproj" />
+  <Project Path="Tests/LifecycleVerify/LifecycleVerify.csproj" />
   <Project Path="Tests/NetworkVerify/NetworkVerify.csproj" />
   <Project Path="Tests/SupervisorVerify/SupervisorVerify.csproj" />
   <Project Path="Tests/MachineVerify/MachineVerify.csproj" />

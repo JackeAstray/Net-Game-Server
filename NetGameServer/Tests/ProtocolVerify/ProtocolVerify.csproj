@@ -16,6 +16,7 @@
     <ProjectReference Include="..\..\Network\Network.csproj" />
     <ProjectReference Include="..\..\Center\Center.csproj" />
     <ProjectReference Include="..\..\DB\DB.csproj" />
+    <ProjectReference Include="..\..\Battle\Battle.csproj" />
   </ItemGroup>
 
 </Project>

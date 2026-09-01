@@ -160,28 +160,32 @@ namespace DB
                         }
                         else
                         {
-                            // 强警告：随机密码仅在控制台/日志出现一次，丢失后无法找回，必须立即修改
+                            // P3 加固：随机密码只输出到控制台（临时输出，不落日志文件），禁止写入 Log 文件。
+                            // 若控制台输出也被 supervisor 重定向到文件，运维应改用 Admin:DefaultPassword 显式配置。
                             Shared.Log.Warning("=========================================================");
                             Shared.Log.Warning("默认超级管理员已创建，密码随机生成（仅出现这一次）：");
-                            Shared.Log.Warning($"  账号: SuperAdmin");
-                            Shared.Log.Warning($"  密码: {defaultAdminPassword}");
+                            Shared.Log.Warning("  账号: SuperAdmin");
+                            Shared.Log.Warning("  密码: 见控制台输出（为安全起见未写入日志文件）");
                             Shared.Log.Warning($"  UID:  {adminUid}");
                             Shared.Log.Warning("请立即登录管理台修改此密码并妥善保存。");
                             Shared.Log.Warning("=========================================================");
                             Console.Error.WriteLine("=========================================================");
-                            Console.Error.WriteLine($"DEFAULT SuperAdmin PASSWORD: {defaultAdminPassword}");
+                            Console.Error.WriteLine("DEFAULT SuperAdmin PASSWORD: " + defaultAdminPassword);
                             Console.Error.WriteLine("=========================================================");
                         }
                     }
                 }
                 catch (Exception ex)
                 {
-                    // 捕获并记录初始化过程中出现的异常，便于运维与排查
+                    // 记录初始化过程中的异常，并 fail-fast 终止启动：
+                    // 不允许 DB 节点以"半启动"状态继续监听（此前吞掉异常后仍 StartNetworkAsync，
+                    // 节点带病上线，所有业务请求失败且难以排查——连接串错误/迁移失败应直接拒绝启动）。
                     Shared.Log.Error($"数据库初始化失败: {ex}");
                     if (ex.InnerException != null)
                     {
                         Shared.Log.Error($"数据库初始化内部异常: {ex.InnerException}");
                     }
+                    throw;
                 }
             }
         }

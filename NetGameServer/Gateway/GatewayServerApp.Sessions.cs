@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
@@ -126,6 +126,37 @@ namespace Gateway
                 }
                 return;
             }
+        }
+
+        /// <summary>
+        /// 优雅关闭（迭代 21，NodeLifecycle 关闭钩子）：
+        /// 断开全部客户端会话（触发后端实体离场/持久化），随后由心跳超时自动摘除 Center 注册。
+        /// </summary>
+        public static async Task ShutdownAsync()
+        {
+            Shared.Log.Info("Gateway 优雅关闭开始：断开全部客户端会话...");
+            int closed = 0;
+            try
+            {
+                foreach (var session in Gateway.Managers.GatewaySessionManager.Instance.GetAllSessions())
+                {
+                    try
+                    {
+                        session.Close();
+                        closed++;
+                    }
+                    catch
+                    {
+                        // 单会话关闭失败不阻塞整体
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Shared.Log.Error(ex, "Gateway 关闭客户端会话异常");
+            }
+            Shared.Log.Info($"Gateway 优雅关闭完成（已断开 {closed} 个客户端会话）。");
+            await Task.CompletedTask;
         }
     }
 }

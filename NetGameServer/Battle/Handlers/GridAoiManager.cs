@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
@@ -16,6 +16,9 @@ namespace Battle.Handlers
         // 网格的边长（比如每 50 米划分一个网格）
         public float GridSize { get; }
 
+        // AOI 视野半径（以网格为单位的邻格半径，1=3x3 九宫格，2=5x5，3=7x7...）
+        public int ViewRadius { get; }
+
         // 所有实体的状态存储
         private readonly ConcurrentDictionary<long, Framework.Entity.Entity> entities = new();
 
@@ -29,10 +32,17 @@ namespace Battle.Handlers
         // 网格坐标钳制范围（防 NaN/Inf/超大坐标导致 float→int 未定义行为与网格索引无界增长）
         private const float MaxGridCoord = 10000f;
 
-        public GridAoiManager(float gridSize = 50.0f)
+        public GridAoiManager(float gridSize = 50.0f, int viewRadius = 1)
         {
             GridSize = gridSize;
+            ViewRadius = Math.Max(1, viewRadius);
         }
+
+        /// <summary>当前 AOI 实体总数（统计用）。</summary>
+        public int EntityCount => entities.Count;
+
+        /// <summary>当前非空网格数（统计用）。</summary>
+        public int GridCount => grids.Count;
 
         /// <summary>
         /// 获取给定世界坐标对应的网格坐标 (GridX, GridY)。使用向下取整确保坐标正确划分到网格中；
@@ -142,14 +152,15 @@ namespace Battle.Handlers
         }
 
         /// <summary>
-        /// 获取指定网格周围九宫格范围内的所有实体 SessionId 列表。
+        /// 获取指定网格周围九宫格（半径 <see cref="ViewRadius"/>）范围内的所有实体 SessionId 列表。
         /// </summary>
         public List<long> GetSurroundingEntities(int gridX, int gridZ)
         {
             var result = new List<long>();
-            for (int x = gridX - 1; x <= gridX + 1; x++)
+            int r = ViewRadius;
+            for (int x = gridX - r; x <= gridX + r; x++)
             {
-                for (int z = gridZ - 1; z <= gridZ + 1; z++)
+                for (int z = gridZ - r; z <= gridZ + r; z++)
                 {
                     if (grids.TryGetValue((x, z), out var gridSet))
                     {
@@ -165,17 +176,18 @@ namespace Battle.Handlers
         /// </summary>
         public void CalculateGridDiff((int x, int z) oldGrid, (int x, int z) newGrid, out List<long> enterEntities, out List<long> leaveEntities)
         {
+            int r = ViewRadius;
             var oldSurroundings = new HashSet<(int, int)>();
             if (oldGrid.x != int.MinValue)
             {
-                for (int x = oldGrid.x - 1; x <= oldGrid.x + 1; x++)
-                    for (int z = oldGrid.z - 1; z <= oldGrid.z + 1; z++)
+                for (int x = oldGrid.x - r; x <= oldGrid.x + r; x++)
+                    for (int z = oldGrid.z - r; z <= oldGrid.z + r; z++)
                         oldSurroundings.Add((x, z));
             }
 
             var newSurroundings = new HashSet<(int, int)>();
-            for (int x = newGrid.x - 1; x <= newGrid.x + 1; x++)
-                for (int z = newGrid.z - 1; z <= newGrid.z + 1; z++)
+            for (int x = newGrid.x - r; x <= newGrid.x + r; x++)
+                for (int z = newGrid.z - r; z <= newGrid.z + r; z++)
                     newSurroundings.Add((x, z));
 
             enterEntities = new List<long>();

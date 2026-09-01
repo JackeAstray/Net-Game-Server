@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using Framework.Core;
 
 namespace Framework.Entity;
@@ -75,6 +75,7 @@ public sealed class EntityCall
         {
             CallId = callId,
             TargetNodeId = TargetNodeId,
+            EntityId = EntityId,
             MethodName = methodName,
             DeadlineUtc = DateTime.UtcNow.AddMilliseconds(Math.Max(1, timeoutMs)),
             Callback = onComplete ?? NoopCallback

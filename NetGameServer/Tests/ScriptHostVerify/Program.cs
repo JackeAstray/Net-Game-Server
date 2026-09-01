@@ -126,12 +126,13 @@ internal static class Program
             .Add("Hp", Framework.Entity.EntityPropertyType.Int32)
             .Add("MaxHp", Framework.Entity.EntityPropertyType.Int32)
             .Add("Score", Framework.Entity.EntityPropertyType.Int32)
-            .Add("Position", Framework.Entity.EntityPropertyType.Float3);
+            .Add("Position", Framework.Entity.EntityPropertyType.Float3)
+            .Add("SceneId", Framework.Entity.EntityPropertyType.String);
         var npc = npcDef.CreateEntity(3001);
         manager.AddOrUpdateEntity(3001, npc);
         var npcScript = host.GetScript("Npc");
-        Console.WriteLine($"[6] Npc 脚本: v{npcScript?.ScriptVersion} (期望 2)");
-        if (npcScript == null || npcScript.ScriptVersion != 2) return 1;
+        Console.WriteLine($"[6] Npc 脚本: v{npcScript?.ScriptVersion} (期望 3)");
+        if (npcScript == null || npcScript.ScriptVersion != 3) return 1;
 
         host.NotifyCreate(npc);
         var posBefore = npc.Get<Framework.Entity.Float3>("Position");
@@ -152,7 +153,8 @@ internal static class Program
         var questDef = new Framework.Entity.EntityDef { Name = "Quest" }
             .Add("Hp", Framework.Entity.EntityPropertyType.Int32)
             .Add("MaxHp", Framework.Entity.EntityPropertyType.Int32)
-            .Add("Score", Framework.Entity.EntityPropertyType.Int32);
+            .Add("Score", Framework.Entity.EntityPropertyType.Int32)
+            .Add("SceneId", Framework.Entity.EntityPropertyType.String);
         var quest = questDef.CreateEntity(4001);
         manager.AddOrUpdateEntity(4001, quest);
         host.NotifyCreate(quest);
@@ -160,7 +162,7 @@ internal static class Program
 
         var questScript = host.GetScript("Quest");
         Console.WriteLine($"[10] Quest 脚本: v{questScript?.ScriptVersion}");
-        if (questScript == null || questScript.ScriptVersion != 2) return 1;
+        if (questScript == null || questScript.ScriptVersion != 3) return 1;
 
         // 累计 40 经验（>20 阈值）→ Quest 完成（事件驱动，立即触发）
         // 注：单只 Npc 死亡只掉落 20 经验（isDead 实例字段共享，避免再生 Npc 时 SetGlobal 跳过）
@@ -172,6 +174,27 @@ internal static class Program
         bool questCompleted = host.GetGlobal("QuestCompleted") is bool qc && qc;
         Console.WriteLine($"[11] Quest 完成（事件驱动）: {questCompleted} (期望 True)");
         if (!questCompleted) return 1;
+
+        // === 6b. Quest 场景/房间隔离（修复：跨房间内容污染）===
+        // 同一节点两个"房间"：房间 A 击杀 NPC 只应完成房间 A 的 Quest，不得污染房间 B。
+        var questRoomA = questDef.CreateEntity(4101);
+        questRoomA.SetSilent("SceneId", "roomA");
+        manager.AddOrUpdateEntity(4101, questRoomA);
+        host.NotifyCreate(questRoomA);
+
+        var questRoomB = questDef.CreateEntity(4102);
+        questRoomB.SetSilent("SceneId", "roomB");
+        manager.AddOrUpdateEntity(4102, questRoomB);
+        host.NotifyCreate(questRoomB);
+
+        // 房间 B 击杀（模拟累计 40 经验，键带房间作用域）
+        host.SetGlobal("TotalExpDropped:roomB", 40);
+        await Task.Delay(120);
+        bool roomACompleted = host.GetGlobal("QuestCompleted:roomA") is bool qa && qa;
+        bool roomBCompleted = host.GetGlobal("QuestCompleted:roomB") is bool qb && qb;
+        Console.WriteLine($"[11b] Quest 场景隔离: roomA完成={roomACompleted} roomB完成={roomBCompleted} (期望 False/True)");
+        if (roomACompleted) return 1;    // 房间 A 不得被房间 B 的击杀完成
+        if (!roomBCompleted) return 1;   // 房间 B 的 Quest 正常完成
 
         // === 7. Skill 验证：定时器冷却 (S2) + 边界 (S3) ===
         var skillDef = new Framework.Entity.EntityDef { Name = "Skill" }

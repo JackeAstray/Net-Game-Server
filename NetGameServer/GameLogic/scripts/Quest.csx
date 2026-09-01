@@ -1,4 +1,4 @@
-﻿// ===== 示例游戏逻辑脚本：Quest（任务系统） =====
+// ===== 示例游戏逻辑脚本：Quest（任务系统） =====
 // 展示脚本层的事件驱动协作（对标 KBE 属性/全局数据回调，替代轮询）：
 // - Npc 死亡时把经验写入全局数据（见 Npc.csx 的 TotalExpDropped）
 // - Quest 脚本通过 OnGlobalChanged 事件监听全局数据变化，达标**立即**完成任务（无需 tick 轮询）
@@ -20,7 +20,7 @@ using Framework.Scripting;
 public class QuestScript : EntityScriptBase
 {
     public override string EntityType => "Quest";
-    public override int ScriptVersion => 2;
+    public override int ScriptVersion => 3;
 
     private const int ExpThreshold = 20;
     private const int MaxExp = int.MaxValue; // KBE-Gap-Review S3：经验上限
@@ -28,13 +28,21 @@ public class QuestScript : EntityScriptBase
     // 每实体完成标记（A1 修复：按 EntityId 键控）
     private readonly ConcurrentDictionary<long, bool> completedByEntity = new();
 
+    /// <summary>全局数据键按场景/房间命名空间（防跨房间污染）：只响应本场景的经验掉落。
+    /// 有 SceneId 用 "Key:SceneId"，无则退回裸键（测试/无场景实体）。</summary>
+    private static string SceneScope(Entity entity, string baseKey)
+    {
+        string sceneId = entity.Get<string>("SceneId") ?? string.Empty;
+        return string.IsNullOrEmpty(sceneId) ? baseKey : baseKey + ":" + sceneId;
+    }
+
     public override void OnCreate(Entity entity)
     {
         entity.Set("Hp", 1);
         entity.Set("Score", 0);
         entity.Set("MaxHp", ExpThreshold);
         completedByEntity[entity.EntityId] = false;
-        Log.Info("Quest", "Quest {EntityId} 创建，目标经验={Threshold}", entity.EntityId, ExpThreshold);
+        Log.Info("Quest", "Quest {EntityId} 创建，目标经验={Threshold}（作用域 {Scope}）", entity.EntityId, ExpThreshold, SceneScope(entity, "TotalExpDropped"));
     }
 
     /// <summary>
@@ -43,7 +51,8 @@ public class QuestScript : EntityScriptBase
     public override void OnGlobalChanged(Entity entity, string key, object? value)
     {
         bool completed = completedByEntity.TryGetValue(entity.EntityId, out var c) && c;
-        if (completed || key != "TotalExpDropped") return;
+        // 只响应本实体所在场景/房间的经验掉落键（防任一玩家击杀 NPC 完成全节点其他房间任务）
+        if (completed || key != SceneScope(entity, "TotalExpDropped")) return;
 
         int exp = value is int e ? e : 0;
         // KBE-Gap-Review S3：边界钳制
@@ -53,8 +62,8 @@ public class QuestScript : EntityScriptBase
 
         completedByEntity[entity.EntityId] = true;
         entity.Set("Hp", 0);
-        ScriptHost.Current?.SetGlobal("QuestCompleted", true);
-        Log.Info("Quest", "Quest {EntityId} 完成！奖励已发放（事件驱动）", entity.EntityId);
+        ScriptHost.Current?.SetGlobal(SceneScope(entity, "QuestCompleted"), true);
+        Log.Info("Quest", "Quest {EntityId} 完成！奖励已发放（事件驱动，作用域 {Scope}）", entity.EntityId, SceneScope(entity, "QuestCompleted"));
     }
 
     public override void OnMessage(Entity entity, string method, object?[] args)

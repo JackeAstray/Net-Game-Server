@@ -89,6 +89,15 @@ public sealed class LengthPrefixedPacketReader
         int total = 4 + packetLength;
         if (available < total)
         {
+            // 慢速/悬空 DoS 防护：长度前缀已声明（≤ maxPacketLength）但载荷迟迟不补齐，
+            // 且已缓冲的未解析字节已超过 单包上限+4(前缀) —— 说明对端在持续投喂数据却从不构成完整包，
+            // 内部缓冲会随 Append 无限增长导致 OOM（此前无此上限）。超出即抛异常，由调用方关闭连接。
+            // 说明：合法在途的单包最多占用 maxPacketLength+4 字节，超过即判定为异常输入。
+            if (available > maxPacketLength + 4)
+            {
+                throw new InvalidDataException(
+                    $"数据包载荷未补齐且缓冲超限（已缓冲 {available} 字节，上限 {maxPacketLength + 4}），疑似慢速 DoS 攻击，已拒绝");
+            }
             return false;
         }
 

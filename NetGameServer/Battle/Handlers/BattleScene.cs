@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using Shared.Messages.Battle;
@@ -26,7 +26,7 @@ namespace Battle.Handlers
 
             if (config.UseAoi)
             {
-                AoiManager = new GridAoiManager(config.GridSize);
+                AoiManager = new GridAoiManager(config.GridSize, config.AoiViewRadius);
             }
         }
     }

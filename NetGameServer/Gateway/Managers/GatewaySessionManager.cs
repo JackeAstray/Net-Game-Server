@@ -1,4 +1,4 @@
-﻿using Network;
+using Network;
 using Shared;
 using System.Collections.Concurrent;
 
@@ -38,6 +38,13 @@ namespace Gateway.Managers
         // D6 客户端会话防重放：会话建立时间 + 最近活动时间，用于 SessionGuard 时间窗判定（防止过期 SessionId 重放）
         private readonly ConcurrentDictionary<long, DateTime> sessionCreatedAt = new();
         private readonly ConcurrentDictionary<long, DateTime> sessionLastActivity = new();
+        // P6 加固：每会话入站消息速率状态（滑动窗口，防客户端洪泛打满共享后端队列）。
+        private sealed class SessionRateState
+        {
+            public long WindowStartMs;
+            public int Count;
+        }
+        private readonly ConcurrentDictionary<long, SessionRateState> sessionInboundRates = new();
 
         /// <summary>
         /// 私有构造函数，防止外部实例化（实现单例模式）
@@ -87,6 +94,7 @@ namespace Gateway.Managers
             sessionNicknames.TryRemove(sessionId, out _);
             sessionCreatedAt.TryRemove(sessionId, out _);
             sessionLastActivity.TryRemove(sessionId, out _);
+            sessionInboundRates.TryRemove(sessionId, out _); // P6：清理速率状态
 
             // 清理断线重连别名（双向表，防泄漏）：移除本会话相关的全部别名项。
             // 1) 正表（new->old）：移除以本会话为键或为值的项
@@ -116,6 +124,26 @@ namespace Gateway.Managers
         /// <summary>D6：获取客户端会话的最近活动时间（UTC）。无记录返回 null。</summary>
         public DateTime? GetLastActivity(long sessionId)
             => sessionLastActivity.TryGetValue(sessionId, out var t) ? t : null;
+
+        /// <summary>每会话入站消息速率上限（次/秒），默认 600，由配置 GatewayMaxInboundPerSecond 覆盖。</summary>
+        public int GetInboundRateLimit()
+        {
+            int cfg = ConfigHelper.GetConfig<int>("GatewayMaxInboundPerSecond");
+            return cfg > 0 ? cfg : 600;
+        }
+
+        /// <summary>尝试消耗一次入站消息速率配额；超限返回 false（调用方应丢弃该消息并隔离该会话）。</summary>
+        public bool TryConsumeInboundRate(long sessionId, int limitPerSecond)
+        {
+            var state = sessionInboundRates.GetOrAdd(sessionId, _ => new SessionRateState { WindowStartMs = Environment.TickCount64 });
+            long now = Environment.TickCount64;
+            if (now - state.WindowStartMs >= 1000)
+            {
+                state.WindowStartMs = now;
+                state.Count = 0;
+            }
+            return ++state.Count <= limitPerSecond;
+        }
 
         /// <summary>
         /// 根据 sessionId 获取对应的客户端会话。

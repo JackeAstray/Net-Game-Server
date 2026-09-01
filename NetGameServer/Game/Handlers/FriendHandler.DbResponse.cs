@@ -33,9 +33,34 @@ namespace Game.Handlers
                 return false;
             }
 
-            if (!PendingFriendRequests.TryRemove(requestId, out var pending))
+            if (!PendingFriendRequests.TryGetValue(requestId, out var pending))
             {
                 Shared.Log.Warning($"Game 未找到匹配的待处理 DB 请求 RequestId:{requestId} MsgId:{dbMsgId}");
+                return false;
+            }
+
+            // P3 加固：校验响应 msgid 与请求期望一致（防类型混淆/错误调用者完成他人请求）。
+            // 不符则不消费该待处理项，交由请求方超时清理；被攻破/异常的 DB 无法用错误 msgid 完成他人请求。
+            if (pending.DbResponseMsgId != 0 && pending.DbResponseMsgId != dbMsgId)
+            {
+                Shared.Log.Warning($"Game DB 回包 MsgId:{dbMsgId} 与请求期望 {pending.DbResponseMsgId} 不符，RequestId:{requestId}，已拒绝");
+                return false;
+            }
+
+            if (!PendingFriendRequests.TryRemove(requestId, out pending))
+            {
+                // 并发下已被其他线程取走，忽略。
+                return false;
+            }
+
+            // P6 加固：配额记账递减（随待处理项移除）。
+            if (pending != null && pending.SessionId > 0)
+            {
+                PendingBySession.AddOrUpdate(pending.SessionId, 0, (_, v) => Math.Max(0, v - 1));
+            }
+            if (pending == null)
+            {
+                // TryRemove 的 out 参数理论上可为 null；防御性拒绝（不应发生）。
                 return false;
             }
 
@@ -173,7 +198,7 @@ namespace Game.Handlers
                         {
                             Success = dbRes?.Success == true,
                             Message = dbRes?.Message ?? "获取好友列表失败",
-                            Friends = friends
+                            Friends = CapList(friends)
                         };
                         SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, res);
                         return true;
@@ -244,7 +269,7 @@ namespace Game.Handlers
                         {
                             Success = dbRes?.Success == true,
                             Message = dbRes?.Message ?? "获取黑名单失败",
-                            Blacklists = blacklists
+                            Blacklists = CapList(blacklists)
                         };
                         SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, res);
                         return true;
@@ -310,7 +335,7 @@ namespace Game.Handlers
                         {
                             Success = dbRes?.Success == true,
                             Message = dbRes?.Message ?? "获取好友申请列表失败",
-                            Applies = applies
+                            Applies = CapList(applies)
                         };
                         SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, res);
                         return true;

@@ -28,7 +28,8 @@
 | `Center/Program.cs` | 启动入口 |
 | `Center/CenterServerApp.cs` | 节点主类（partial） |
 | `Center/Handlers/NodeManager.cs` | 节点注册表 / 心跳 / `GetBestBattleNode`（SWRR） / `pendingEntityCallSource`（EntityCall 中继） |
-| `Center/Handlers/CenterDispatcher.cs` | 强类型消息分发（含 91001/91002 中继逻辑） |
+| `Center/Handlers/CenterDispatcher.cs` | 强类型消息分发（含 91001/91002 中继 + 91007~91010 位置服务） |
+| `Center/Handlers/EntityLocationService.cs` | 实体位置注册表（91007 登记 / 91008 注销 / 91009 查询 / 91010 响应，TTL 清扫） |
 | `Center/Handlers/MatchHandler.cs` | 房间匹配（创建/加入/聊天/离开） |
 | `Center/Handlers/CenterSessionContext.cs` | 内部消息上下文（带 `GatewaySession` / `RoutedUserId`） |
 
@@ -45,6 +46,12 @@
   （Center 不主动清超时——超时回调必须在调用方）。
 - **Leader 选举**：`Framework.Core.LeaderElection`（`Tools/SupervisorVerify` 验证过），
   多 Center 实例时通过文件锁争锁，单实例无需关注。
+- **实体位置服务（迭代 21，对标 ET Location）**：Battle 在实体生成/绑定/迁移完成时发
+  `91007` 登记（实体销毁/迁出发 `91008` 注销）；调用方拿不准目标节点可发 `91009` 查询，
+  Center 回 `91010`（含目标节点 host/port 供 Battle 直达）。条目 TTL 120s，Center 周期清扫防位置泄漏。
+  Battle 侧 `EntityCallRouter` 缓存 entityId→nodeId，发送时覆盖调用方可能过期的 `TargetNodeId`，
+  迁移路由完成（91005）与位置响应（91010）都会刷新缓存；`EntityCallDirectRouting=true` 时优先直发
+  目标 Battle（`EntityCallDirectRouter`），任何失败自动回退 Center 中继。
 
 ## 排错
 

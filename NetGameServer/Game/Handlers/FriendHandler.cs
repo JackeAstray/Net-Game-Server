@@ -29,6 +29,28 @@ namespace Game.Handlers
         private static readonly TimeSpan PendingRequestTimeout = TimeSpan.FromSeconds(30);
         private static long lastPendingSweepTicks;
 
+        /// <summary>单客户端待处理 DB 请求配额上限（P6 加固：防请求洪泛撑爆待处理字典）。</summary>
+        private const int MaxPendingPerSession = 16;
+        /// <summary>全局待处理 DB 请求总数上限（P6 加固：防单客户端洪泛填满全局字典饿死他人）。</summary>
+        private const int MaxTotalPending = 1024;
+        /// <summary>单次好友/黑名单/申请列表返回的最大条目数（修复：DB 全量列表无上限时，
+        /// 超大的回包会超过网关出站帧上限而被丢弃，且 Game 侧已消费 pending → 客户端永久挂起。
+        /// 回包前截断到该上限，保证回包可送达、客户端不挂起）。</summary>
+        private const int MaxListItemsPerResponse = 200;
+
+        /// <summary>截断列表到 <see cref="MaxListItemsPerResponse"/>（超过时截断并告警）。</summary>
+        private static T[] CapList<T>(T[] items)
+        {
+            if (items.Length <= MaxListItemsPerResponse)
+            {
+                return items;
+            }
+            Shared.Log.Warning($"列表响应超过单次上限 {MaxListItemsPerResponse}（实际 {items.Length}），已截断返回，请提示客户端分页/清理。");
+            return items.Take(MaxListItemsPerResponse).ToArray();
+        }
+        /// <summary>会话 -> 当前待处理 DB 请求数（配额记账，随移除递减）。</summary>
+        private static readonly ConcurrentDictionary<long, int> PendingBySession = new();
+
         /// <summary>发送者的好友列表是否已从 DB 加载（缓存 warm）。用于聊天私聊好友校验的 fail-safe：缓存未加载时不强制拦截。</summary>
         public static bool IsFriendListLoaded(int userId) => userId > 0 && FriendCache.ContainsKey(userId);
 
@@ -48,8 +70,13 @@ namespace Game.Handlers
             {
                 if (now - kv.Value.CreatedAtTicks > PendingRequestTimeout.Ticks)
                 {
-                    if (PendingFriendRequests.TryRemove(kv.Key, out _))
+                    if (PendingFriendRequests.TryRemove(kv.Key, out var removedPending))
                     {
+                        // P6 加固：配额记账递减。
+                        if (removedPending != null && removedPending.SessionId > 0)
+                        {
+                            PendingBySession.AddOrUpdate(removedPending.SessionId, 0, (_, v) => Math.Max(0, v - 1));
+                        }
                         Shared.Log.Warning($"好友 DB 请求超时清理 RequestId:{kv.Key} SessionId:{kv.Value.SessionId} MsgId:{kv.Value.ResponseMsgId}");
                         TrySendTimeoutResponse(kv.Value);
                     }
@@ -79,6 +106,9 @@ namespace Game.Handlers
         {
             public long SessionId { get; set; }
             public int ResponseMsgId { get; set; }
+            /// <summary>期望的 DB 响应 msgid（P3 加固：接收端校验 dbMsgId 不符即拒绝，防类型混淆/错误调用者完成他人请求）。
+            /// DB 请求/响应成对约定：响应 = 请求 + 100（见 DbMessages 1000-1119 序列）。</summary>
+            public int DbResponseMsgId { get; set; }
             /// <summary>请求发起时间（超时清理用）。</summary>
             public long CreatedAtTicks { get; set; } = DateTime.UtcNow.Ticks;
             /// <summary>请求发起时的网关会话（用于 DB 回包回发客户端；DB 回包路径不能使用 Game↔DB 连接发送客户端消息）。</summary>
@@ -185,6 +215,16 @@ namespace Game.Handlers
             }
 
             long requestId = System.Threading.Interlocked.Increment(ref requestIdSeed);
+
+            // P6 加固：待处理 DB 请求配额（单会话 + 全局），超限拒绝，防请求洪泛撑爆待处理字典。
+            int pendingCount = PendingBySession.AddOrUpdate(clientSessionId, 1, (_, v) => v + 1);
+            if (pendingCount > MaxPendingPerSession || PendingFriendRequests.Count >= MaxTotalPending)
+            {
+                PendingBySession.AddOrUpdate(clientSessionId, 0, (_, v) => Math.Max(0, v - 1));
+                Shared.Log.Warning($"好友 DB 请求超配额被拒绝 SessionId:{clientSessionId} Pending:{pendingCount} 上限:{MaxPendingPerSession}");
+                return false;
+            }
+
             byte[] payload = Shared.Json.SerializeToUtf8Bytes(request!);
             byte[] routedPayload = Shared.RouteMetadata.AttachRequestId(payload, requestId);
             byte[] packet = PacketBuilder.BuildPacket(dbMsgId, routedPayload, out int totalLength);
@@ -195,7 +235,9 @@ namespace Game.Handlers
                 {
                     SessionId = clientSessionId,
                     ResponseMsgId = responseMsgId,
-                    GatewaySession = gatewaySession
+                    GatewaySession = gatewaySession,
+                    // DB 请求/响应成对约定：响应 msgid = 请求 msgid + 100（P3 加固，接收端校验用）。
+                    DbResponseMsgId = dbMsgId + 100
                 };
                 configurePending?.Invoke(pending);
                 PendingFriendRequests[requestId] = pending;
@@ -204,7 +246,10 @@ namespace Game.Handlers
             }
             catch (Exception ex)
             {
-                PendingFriendRequests.TryRemove(requestId, out _);
+                if (PendingFriendRequests.TryRemove(requestId, out var failedPending) && failedPending != null && failedPending.SessionId > 0)
+                {
+                    PendingBySession.AddOrUpdate(failedPending.SessionId, 0, (_, v) => Math.Max(0, v - 1));
+                }
                 Shared.Log.Error($"Game 发送 DB 请求失败 MsgId:{dbMsgId} SessionId:{clientSessionId} RequestId:{requestId} Exception:{ex}");
                 return false;
             }

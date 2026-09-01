@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using Framework.Core;
 
@@ -23,6 +23,9 @@ public sealed class EntityCallHub
     /// <summary>待回执调用表：CallId -> PendingCall。</summary>
     private readonly ConcurrentDictionary<long, PendingCall> pending = new();
 
+    /// <summary>CallId 随机掩码（P3 加固：混淆 CallId 序列，防止攻击者根据已观察的 CallId 预测后续值并伪造回执）。</summary>
+    private readonly long callIdMask = ((long)Random.Shared.NextInt64() << 32) ^ (long)Random.Shared.NextInt64();
+
     /// <summary>实例唯一性后缀（用于 CallId 空间隔离）。</summary>
     public string HubId { get; }
 
@@ -45,16 +48,17 @@ public sealed class EntityCallHub
     {
         public long CallId { get; init; }
         public string? TargetNodeId { get; init; }
+        public long EntityId { get; init; }
         public string? MethodName { get; init; }
         public DateTime DeadlineUtc { get; set; }
         /// <summary>回执回调：(Success, ResultValue)。超时或失败时 Success=false。</summary>
         public Action<bool, object?>? Callback { get; init; }
     }
 
-    /// <summary>分配下一个调用 ID（线程安全）。</summary>
+    /// <summary>分配下一个调用 ID（线程安全）。用随机掩码混淆原始单调序列（XOR 为双射，不产生碰撞）。</summary>
     public long NextCallId()
     {
-        return System.Threading.Interlocked.Increment(ref callIdSeed);
+        return System.Threading.Interlocked.Increment(ref callIdSeed) ^ callIdMask;
     }
 
     /// <summary>注册待回执调用。</summary>
@@ -69,7 +73,23 @@ public sealed class EntityCallHub
     /// </summary>
     public bool HandleResult(Framework.Protocol.Generated.EntityRemoteCallResult result)
     {
-        if (!pending.TryRemove(result.CallId, out var pc))
+        // P3 加固：回执必须与发起调用的目标（实体 + 方法）一致，否则视为伪造/串扰回执。
+        // 仅凭可预测 CallId 无法再完成他人待回执调用（攻击者需同时猜中实体与方法名）。
+        if (!pending.TryGetValue(result.CallId, out var pc))
+        {
+            return false;
+        }
+        if (!string.IsNullOrEmpty(pc.MethodName) && !string.Equals(pc.MethodName, result.MethodName, StringComparison.Ordinal))
+        {
+            Log.Warn($"EntityCall 回执方法不匹配 CallId:{result.CallId} 期望:{pc.MethodName} 实际:{result.MethodName}，已拒绝");
+            return false;
+        }
+        if (pc.EntityId != 0 && pc.EntityId != result.EntityId)
+        {
+            Log.Warn($"EntityCall 回执实体不匹配 CallId:{result.CallId} 期望:{pc.EntityId} 实际:{result.EntityId}，已拒绝");
+            return false;
+        }
+        if (!pending.TryRemove(result.CallId, out pc))
         {
             return false;
         }

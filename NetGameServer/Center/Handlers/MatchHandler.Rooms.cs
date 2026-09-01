@@ -44,6 +44,24 @@ namespace Center.Handlers
                 });
             }
 
+            // 私密房间访问控制（枚举/泄露加入阻断）：此前 IsPrivate 只影响列表可见性，
+            // 拿到 RoomId 的任意玩家都能直接加入（私密形同虚设）。
+            // 有密码的私密房间由下方密码门禁授权；无密码的私密房间仅允许房主与已在房间内的成员
+            // （重连/已授权）进入，未在房内者一律拒绝——防 RoomId 泄露/共享后被未受邀玩家闯入。
+            if (room.Info.IsPrivate && !room.Info.HasPassword
+                && requesterUserId != room.Info.OwnerUserId
+                && !room.MemberStates.ContainsKey(clientSessionId))
+            {
+                return Task.FromResult(new CenterJoinRoomResponse
+                {
+                    Success = false,
+                    RoomId = room.Info.RoomId,
+                    RoomName = room.Info.RoomName,
+                    HasPassword = room.Info.HasPassword,
+                    Message = "该房间为私密房间，仅限房主邀请的玩家进入。"
+                });
+            }
+
             if (room.Info.HasPassword && !IsPasswordValid(room.PasswordHash, request.Password))
             {
                 return Task.FromResult(new CenterJoinRoomResponse
@@ -117,7 +135,8 @@ namespace Center.Handlers
 
             string sceneType = string.IsNullOrWhiteSpace(request.SceneType) ? roomEntry.Info.SceneType : request.SceneType.Trim();
             string roomName = string.IsNullOrWhiteSpace(request.RoomName) ? roomEntry.Info.RoomName : request.RoomName.Trim();
-            int maxPlayers = request.MaxPlayers <= 0 ? roomEntry.Info.MaxPlayers : request.MaxPlayers;
+            // 容量钳制 [1, MaxRoomCapacity]：防客户端在更新设置时把容量改得无限大（与创建/匹配/Battle 侧对齐）。
+            int maxPlayers = Math.Clamp(request.MaxPlayers <= 0 ? roomEntry.Info.MaxPlayers : request.MaxPlayers, 1, MaxRoomCapacity);
 
             // P1 修复：仅更新设置而未携带新密码时，必须保留原密码，否则私密房会被静默清密码变公开。
             // 有显式新密码才刷新哈希；请求体无"清除密码"字段，故空 Password 一律视为"不修改"。

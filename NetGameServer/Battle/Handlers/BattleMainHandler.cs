@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Threading.Tasks;
 using Shared.Messages.Center;
 using Shared.Messages;
@@ -26,6 +26,14 @@ namespace Battle.Handlers
         {
             try
             {
+                // P3 加固：Center 创建场景同样校验 RoomId 非空 + 容量钳制到服务端硬上限，
+                // 防止经 Center 路径创建 MaxPlayers=int.MaxValue 的房间使 RoomHandler 的 200 上限失效。
+                const int HardMaxPlayers = 200;
+                if (string.IsNullOrWhiteSpace(request.RoomId))
+                {
+                    return Task.FromResult(new CenterCreateSceneResponse { Success = false, RoomId = "", SceneId = "" });
+                }
+
                 var sceneConfig = new SceneConfig
                 {
                     SceneId = request.RoomId,
@@ -33,7 +41,7 @@ namespace Battle.Handlers
                     SceneType = request.SceneType,
                     UseAoi = request.SceneType.Contains("World", StringComparison.OrdinalIgnoreCase),
                     GridSize = 50.0f,
-                    MaxPlayers = request.MaxPlayers > 0 ? request.MaxPlayers : 100,
+                    MaxPlayers = request.MaxPlayers > 0 ? Math.Min(request.MaxPlayers, HardMaxPlayers) : 100,
                     IsPrivate = request.IsPrivate
                 };
 

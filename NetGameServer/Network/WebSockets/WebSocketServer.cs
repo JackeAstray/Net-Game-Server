@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Net.WebSockets;
 
 using Network.Routing;
@@ -13,6 +13,14 @@ public class WebSocketServer : INetworkServer
 {
     private HttpListener? listener;
     private CancellationTokenSource? cts;
+    private int activeConnections;
+    private int maxConnections = -1;
+
+    /// <summary>
+    /// 最大并发 WebSocket 连接数（拒绝资源耗尽 DoS）。
+    /// 未显式设置（≤0）时在 StartAsync 从配置 <c>MaxConnections</c> 读取，默认 10000，钳制 [32, 200000]。
+    /// </summary>
+    public int MaxConnections { get; set; } = -1;
 
     public event SessionConnectedHandler? OnSessionConnected;
     public event DataReceivedHandler? OnDataReceived;
@@ -22,6 +30,16 @@ public class WebSocketServer : INetworkServer
     {
         try
         {
+            if (maxConnections <= 0)
+            {
+                maxConnections = Shared.ConfigHelper.GetConfig<int>("MaxConnections");
+                if (maxConnections <= 0)
+                {
+                    maxConnections = 10000;
+                }
+                maxConnections = Math.Clamp(maxConnections, 32, 200000);
+            }
+
             listener = new HttpListener();
             // 优先绑定全部地址，满足跨机器客户端接入；若系统未授权则回退到本机地址用于本地开发。
             listener.Prefixes.Add($"http://+:{port}/");
@@ -29,7 +47,7 @@ public class WebSocketServer : INetworkServer
             try
             {
                 listener.Start();
-                Shared.Log.Info($"[WebSocketServer] 启动成功，监听前缀:http://+:{port}/");
+                Shared.Log.Info($"[WebSocketServer] 启动成功，监听前缀:http://+:{port}/ MaxConnections:{maxConnections}");
             }
             catch (HttpListenerException ex) when (ex.ErrorCode == 5)
             {
@@ -59,19 +77,45 @@ public class WebSocketServer : INetworkServer
     /// 在循环中接受传入的 HttpListenerContext，接受 WebSocket 请求并将 WebSocket 交由 HandleWebSocketAsync 处理；对于非 WebSocket 请求返回 400
     /// 并关闭响应，直到取消或 listener 为空。
     /// </summary>
-    /// <remarks>在 listener 停止时可能抛出 HttpListenerException，该异常被忽略；其他异常会记录到日志。对 WebSocket 请求以非等待方式启动
-    /// HandleWebSocketAsync（fire-and-forget），对非 WebSocket 请求设置 400 并关闭响应。</remarks>
+    /// <remarks>W1 修复：单次连接处理（握手/拒绝/回包）放在内层 try/catch，一次畸形握手或客户端半途断开
+    /// 不再终止整个 accept 循环——此前 AcceptWebSocketAsync 抛异常会跳出循环，所有后续 WebSocket 连接
+    /// 永久被拒直到重启。外层仅捕获 GetContextAsync 的停止异常退出循环。</remarks>
     /// <param name="cancellationToken">用于在外部请求取消时终止接受循环。</param>
-    /// <returns>表示接受循环的异步操作，当循环停止或发生未恢复的异常时任务完成。</returns>
+    /// <returns>表示接受循环的异步操作，当循环停止时任务完成。</returns>
     private async Task AcceptLoopAsync(CancellationToken cancellationToken)
     {
-        try
+        while (!cancellationToken.IsCancellationRequested && listener != null)
         {
-            while (!cancellationToken.IsCancellationRequested && listener != null)
+            HttpListenerContext? context = null;
+            try
             {
-                var context = await listener.GetContextAsync();
+                context = await listener.GetContextAsync();
+            }
+            catch (HttpListenerException)
+            {
+                // Listener 停止时抛出异常，正常退出循环
+                break;
+            }
+            catch (Exception ex)
+            {
+                Shared.Log.Warning($"[WebSocketServer] 接受连接异常（循环继续）: {ex.Message}");
+                continue;
+            }
+
+            // 单连接处理隔离：任何异常都不允许终止 accept 循环（W1 修复）。
+            try
+            {
                 if (context.Request.IsWebSocketRequest)
                 {
+                    // 连接数上限：超过 MaxConnections 直接拒绝握手，防资源耗尽。
+                    if (Interlocked.Increment(ref activeConnections) > maxConnections)
+                    {
+                        Interlocked.Decrement(ref activeConnections);
+                        Shared.Log.Warning($"[WebSocketServer] 连接数已达上限({maxConnections})，拒绝新握手 Remote:{context.Request.RemoteEndPoint}");
+                        context.Response.StatusCode = 503;
+                        context.Response.Close();
+                        continue;
+                    }
                     Shared.Log.Info($"[WebSocketServer] 收到握手请求 Remote:{context.Request.RemoteEndPoint} Url:{context.Request.Url}");
                     var wsContext = await context.AcceptWebSocketAsync(null);
                     _ = HandleWebSocketAsync(wsContext.WebSocket, context.Request.RemoteEndPoint);
@@ -83,14 +127,10 @@ public class WebSocketServer : INetworkServer
                     context.Response.Close();
                 }
             }
-        }
-        catch (HttpListenerException)
-        {
-            // Listener停止时可能抛出异常，忽略即可
-        }
-        catch (Exception ex)
-        {
-            Shared.Log.Error($"WebSocket接受循环异常：{ex.Message}");
+            catch (Exception ex)
+            {
+                Shared.Log.Warning($"[WebSocketServer] 单连接处理失败，忽略并继续接受新连接 Remote:{context.Request.RemoteEndPoint} Exception:{ex.Message}");
+            }
         }
     }
 
@@ -140,6 +180,8 @@ public class WebSocketServer : INetworkServer
                         catch { /* 尽力关闭 */ }
                         break;
                     }
+                    // 空闲超时检测用：收到任何字节即刷新活动时间（此前仅连接/发送时更新，静默连接无法被空闲踢线）。
+                    session.LastActivityTime = DateTime.UtcNow;
                     Shared.Log.Debug($"[WebSocketServer] 接收分片 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Count:{receiveResult.Count} EndOfMessage:{receiveResult.EndOfMessage}");
                     packetReader.Append(buffer.AsSpan(0, receiveResult.Count));
                 }
@@ -163,6 +205,10 @@ public class WebSocketServer : INetworkServer
             Shared.Log.Warning($"[WebSocketServer] 会话异常断开 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Exception:{ex}");
             OnSessionDisconnected?.Invoke(session, ex.Message);
             return;
+        }
+        finally
+        {
+            Interlocked.Decrement(ref activeConnections);
         }
 
         Shared.Log.Info($"[WebSocketServer] 会话正常关闭 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");

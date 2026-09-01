@@ -1,4 +1,4 @@
-﻿// ===== 示例游戏逻辑脚本：Npc（野怪/怪物） =====
+// ===== 示例游戏逻辑脚本：Npc（野怪/怪物） =====
 // 展示多脚本共存：与 Avatar.csx 同时加载，绑定不同实体类型。
 // NPC 逻辑：出生时随机坐标 → 定时器巡逻（正弦移动）→ 受击死亡掉落经验。
 // 所有逻辑只写在这一个 .csx 里，框架零改动，保存即热更新。
@@ -17,15 +17,24 @@ using Framework.Tick;
 public class NpcScript : EntityScriptBase
 {
     public override string EntityType => "Npc";
-    public override int ScriptVersion => 2;
+    public override int ScriptVersion => 3;
 
     private const int PatrolIntervalMs = 500; // 0.5s 巡逻一次
     private const int MaxHp = 9999;           // KBE-Gap-Review S3：Hp 上限
+    private const int RespawnDelayMs = 10000; // 死亡后 10s 重生，防止单玩家永久清空共享世界 NPC
 
     // 每实体状态（A1 修复：按 EntityId 键控）
     private readonly ConcurrentDictionary<long, Random> randoms = new();
     private readonly ConcurrentDictionary<long, float> baseXs = new();
     private readonly ConcurrentDictionary<long, TimerHandle> patrolTimers = new();
+    private readonly ConcurrentDictionary<long, TimerHandle> respawnTimers = new();
+
+    /// <summary>全局数据键按场景/房间命名空间（防跨房间污染）：有 SceneId 用 "Key:SceneId"，无则退回裸键（测试/无场景实体）。</summary>
+    private static string SceneScope(Entity entity, string baseKey)
+    {
+        string sceneId = entity.Get<string>("SceneId") ?? string.Empty;
+        return string.IsNullOrEmpty(sceneId) ? baseKey : baseKey + ":" + sceneId;
+    }
 
     public override void OnCreate(Entity entity)
     {
@@ -67,12 +76,37 @@ public class NpcScript : EntityScriptBase
             if (newHp <= 0 && !entity.Get<bool>("IsDead"))
             {
                 entity.Set("IsDead", true);
-                var raw = ScriptHost.Current?.GetGlobal("TotalExpDropped");
+                var key = SceneScope(entity, "TotalExpDropped");
+                var raw = ScriptHost.Current?.GetGlobal(key);
                 int total = raw is int t ? t : 0;
-                ScriptHost.Current?.SetGlobal("TotalExpDropped", total + 20);
-                Log.Info("Npc", "Npc {EntityId} 死亡，累计掉落经验={Total}", entity.EntityId, total + 20);
+                ScriptHost.Current?.SetGlobal(key, total + 20);
+                Log.Info("Npc", "Npc {EntityId} 死亡，累计掉落经验={Total}（键 {Key}）", entity.EntityId, total + 20, key);
                 entity.Set("Hp", 0);
+
+                // 重生：死亡后定时复活，防止单玩家把共享世界 NPC 永久清空
+                CancelRespawnTimer(entity.EntityId);
+                respawnTimers[entity.EntityId] = AddTimer(entity, RespawnDelayMs, () => Respawn(entity), repeat: false);
             }
+        }
+    }
+
+    private void Respawn(Entity entity)
+    {
+        respawnTimers.TryRemove(entity.EntityId, out _);
+        if (entity.Get<bool>("IsDead"))
+        {
+            entity.SetSilent("IsDead", false);
+            entity.Set("Hp", 50);
+            entity.Set("Score", 0);
+            Log.Info("Npc", "Npc {EntityId} 复活，Hp=50", entity.EntityId);
+        }
+    }
+
+    private void CancelRespawnTimer(long entityId)
+    {
+        if (respawnTimers.TryRemove(entityId, out var timer))
+        {
+            timer.Cancel();
         }
     }
 
@@ -83,6 +117,7 @@ public class NpcScript : EntityScriptBase
         {
             timer.Cancel();
         }
+        CancelRespawnTimer(entity.EntityId);
         randoms.TryRemove(entity.EntityId, out _);
         baseXs.TryRemove(entity.EntityId, out _);
     }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Shared.Messages;
@@ -159,15 +159,23 @@ namespace Battle.Handlers
                     Battle.BattleServerApp.StartEntityMigration(msg.ClientSessionId, msg.TargetNodeId);
                 });
 
-            // ==== 实体远程调用（EntityCall：91001 入 / 91002 回执，经 Center 中继） ====
-            // 远程调用入（Center 中继的 91001）：本地执行，非 0 CallId 回 91002 到 Center
+            // 迁移路由完成（Center 广播 91005）：更新调用方路由缓存，指向实体新所在节点（对标 ET Location）
+            dispatcher.RegisterSync<Framework.Protocol.Generated.EntityMigrateRouted>(
+                (ctx, msg) =>
+                {
+                    Battle.BattleServerApp.OnEntityMigratedRouted(msg.ClientSessionId, msg.NewNodeId);
+                });
+
+            // ==== 实体远程调用（EntityCall：91001 入 / 91002 回执） ====
+            // 远程调用入（Center 中继或 Battle 直达的 91001）：本地执行，非 0 CallId 回 91002 到来源会话
+            // （Center 中继来的 → 回 Center 回源；Battle 直达会话来的 → 直接回目标 Battle）
             dispatcher.RegisterSync<Framework.Protocol.Generated.EntityRemoteCall>(
                 (ctx, msg) =>
                 {
                     var result = Battle.BattleServerApp.HandleEntityRemoteCallIn(msg);
                     if (result != null)
                     {
-                        Battle.BattleServerApp.SendEntityRemoteCallResult(result);
+                        Battle.BattleServerApp.SendEntityRemoteCallResult(result, ((BattleSessionContext)ctx).GatewaySession);
                     }
                 });
 
@@ -176,6 +184,13 @@ namespace Battle.Handlers
                 (ctx, msg) =>
                 {
                     Framework.Entity.EntityCallHubRegistry.Default.HandleResult(msg);
+                });
+
+            // 实体位置查询响应（Center 回 91010）：更新路由缓存；直达开启时预热直连会话
+            dispatcher.RegisterSync<Framework.Protocol.Generated.EntityLocateResponse>(
+                (ctx, msg) =>
+                {
+                    Battle.BattleServerApp.HandleEntityLocationResponse(msg);
                 });
 
             // 创建场景（Center 内部消息 90003，迁移自旧 JSON 路由）：回 90004 到 Center

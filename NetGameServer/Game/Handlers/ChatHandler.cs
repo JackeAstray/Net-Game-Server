@@ -109,7 +109,6 @@ namespace Game.Handlers
             }
 
             int actualSenderId = realSenderId;
-            string actualSenderUid = string.IsNullOrWhiteSpace(realSenderUid) ? (request.SenderUniqueId ?? string.Empty) : realSenderUid;
 
             // 安全加固：频道/内容/频率校验。
             // 非法频道值若不做校验会落入下方默认分支导致"世界广播"（无效枚举即全员可见）。
@@ -193,20 +192,26 @@ namespace Game.Handlers
                     return;
                 }
 
-                // 私聊好友校验：仅当发送者好友列表已加载（缓存 warm）时强制互为好友，防止向任意玩家私聊；
-                // 缓存未加载（冷启动/刚登录）时不强制拦截，避免误伤。
-                if (targetUserId > 0
-                    && Game.Handlers.FriendHandler.IsFriendListLoaded(actualSenderId)
-                    && !Game.Handlers.FriendHandler.IsFriend(actualSenderId, targetUserId))
+                // H1 修复：私聊好友校验 fail-closed。好友列表未加载（冷启动/刚登录/预热被延迟/预热失败）
+                // 时无法确认好友关系，拒绝投递而非放行——此前"缓存未加载不强制拦截"导致可向任意在线玩家私聊。
+                if (targetUserId > 0 && !Game.Handlers.FriendHandler.IsFriendListLoaded(actualSenderId))
+                {
+                    SendChatError(session, "好友关系校验中，请稍后重试。");
+                    return;
+                }
+                if (targetUserId > 0 && !Game.Handlers.FriendHandler.IsFriend(actualSenderId, targetUserId))
                 {
                     SendChatError(session, "只能向好友发送私聊消息。");
                     return;
                 }
             }
 
-            var senderName = string.IsNullOrWhiteSpace(request.SenderName)
+            // H2 修复：发送者身份服务器权威化。昵称/UID 一律取会话绑定值，绝不采用客户端字段，
+            // 防止伪造 SenderName（如"系统公告"/"GM"）与 SenderUniqueId 进行身份冒用。
+            string actualSenderUid = realSenderUid ?? string.Empty;
+            var senderName = string.IsNullOrWhiteSpace(actualSenderUid)
                 ? $"Player_{actualSenderId}"
-                : request.SenderName.Trim();
+                : actualSenderUid;
 
             var notification = new ReceiveChatNotification
             {

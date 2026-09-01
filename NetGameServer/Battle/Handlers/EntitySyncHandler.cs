@@ -31,6 +31,18 @@ namespace Battle.Handlers
         /// <summary>单次坐标同步的最大位移（世界单位），可由配置 MaxEntityMoveDistancePerSync 覆盖。</summary>
         private const float DefaultMaxMoveDistancePerSync = 20f;
 
+        /// <summary>默认移动速度预算（世界单位/秒），可由配置 MaxEntityMoveSpeedPerSecond 覆盖。</summary>
+        private const float DefaultMaxMoveSpeedPerSecond = 120f;
+
+        /// <summary>默认网络抖动容差倍数（速度预算 = maxSpeed × Δt × 容差），可由配置 MaxEntityMoveTolerance 覆盖。</summary>
+        private const float DefaultMoveTolerance = 1.8f;
+
+        /// <summary>每次同步的最小位移允许量（世界单位），覆盖极小 Δt 时预算趋零的抖动。</summary>
+        private const float MinMoveDistancePerSync = 2f;
+
+        /// <summary>每客户端移动同步消息速率上限（次/秒），可由配置 MaxEntityMoveSyncPerSecond 覆盖。</summary>
+        private const int DefaultMaxMoveSyncPerSecond = 60;
+
         private static float MaxMoveDistancePerSync
         {
             get
@@ -40,8 +52,45 @@ namespace Battle.Handlers
             }
         }
 
-        /// <summary>拒绝 NaN/Inf，并按单次最大位移钳制移动（服务端权威，防瞬移/加速）。</summary>
-        private static Float3 SanitizeAndClampMovement(Float3 from, Float3 to)
+        private static float MaxMoveSpeedPerSecond
+        {
+            get
+            {
+                float cfg = Shared.ConfigHelper.GetConfig<float>("MaxEntityMoveSpeedPerSecond");
+                return cfg > 0 ? cfg : DefaultMaxMoveSpeedPerSecond;
+            }
+        }
+
+        private static float MoveTolerance
+        {
+            get
+            {
+                float cfg = Shared.ConfigHelper.GetConfig<float>("MaxEntityMoveTolerance");
+                return cfg > 0 ? cfg : DefaultMoveTolerance;
+            }
+        }
+
+        private static int MaxMoveSyncPerSecond
+        {
+            get
+            {
+                int cfg = Shared.ConfigHelper.GetConfig<int>("MaxEntityMoveSyncPerSecond");
+                return cfg > 0 ? cfg : DefaultMaxMoveSyncPerSecond;
+            }
+        }
+
+        /// <summary>每玩家移动同步跟踪（速度预算 + 洪泛配额）。</summary>
+        private sealed class MovementTrack
+        {
+            public long LastSyncMs;
+            public long WindowStartMs;
+            public int SyncCount;
+        }
+
+        private readonly ConcurrentDictionary<long, MovementTrack> moveTracks = new();
+
+        /// <summary>拒绝 NaN/Inf，并按速度预算（maxSpeed×Δt×容差 + 下限）钳制移动（服务端权威，防瞬移/加速）。</summary>
+        private static Float3 SanitizeAndClampMovement(Float3 from, Float3 to, float maxDist)
         {
             if (float.IsNaN(to.X) || float.IsNaN(to.Y) || float.IsNaN(to.Z) ||
                 float.IsInfinity(to.X) || float.IsInfinity(to.Y) || float.IsInfinity(to.Z))
@@ -49,7 +98,6 @@ namespace Battle.Handlers
                 return from; // 非法输入：保持服务端已知位置
             }
 
-            float maxDist = MaxMoveDistancePerSync;
             float dx = to.X - from.X;
             float dy = to.Y - from.Y;
             float dz = to.Z - from.Z;
@@ -73,6 +121,28 @@ namespace Battle.Handlers
             return new Float3(x, y, z);
         }
 
+        /// <summary>可选的节点级地图边界钳制：配置 WorldBoundsMinX/Y/Z 与 WorldBoundsMaxX/Y/Z 后生效；未配置则不做边界限制。</summary>
+        private static Float3 ClampToWorldBounds(Float3 pos)
+        {
+            bool enabled = Shared.ConfigHelper.GetConfig<bool>("WorldBoundsEnabled");
+            if (!enabled) return pos;
+            float minX = Shared.ConfigHelper.GetConfig<float>("WorldBoundsMinX");
+            float maxX = Shared.ConfigHelper.GetConfig<float>("WorldBoundsMaxX");
+            float minY = Shared.ConfigHelper.GetConfig<float>("WorldBoundsMinY");
+            float maxY = Shared.ConfigHelper.GetConfig<float>("WorldBoundsMaxY");
+            float minZ = Shared.ConfigHelper.GetConfig<float>("WorldBoundsMinZ");
+            float maxZ = Shared.ConfigHelper.GetConfig<float>("WorldBoundsMaxZ");
+            // 仅当 min<max 才生效，避免配置不完整时把坐标钳成 0。
+            if (maxX > minX && maxY > minY && maxZ > minZ)
+            {
+                return new Float3(
+                    Math.Clamp(pos.X, minX, maxX),
+                    Math.Clamp(pos.Y, minY, maxY),
+                    Math.Clamp(pos.Z, minZ, maxZ));
+            }
+            return pos;
+        }
+
         /// <summary>
         /// 处理来自客户端的坐标/朝向同步请求。
         /// 更新实体属性并广播脏属性增量（仅变化字段，对标 KBE volatile 增量同步）。
@@ -91,11 +161,37 @@ namespace Battle.Handlers
 
             // 服务端权威移动校验（防瞬移/加速/坐标注入）：
             // - 拒绝 NaN/Inf 坐标（保持服务端已知位置）；
-            // - 按单次同步最大位移钳制（网络抖动可接受范围内），超距移动被拉回。
-            var oldPos = entity.Get<Float3>("Position");
-            var newPos = SanitizeAndClampMovement(oldPos,
-                new Float3(request.Position?.X ?? 0, request.Position?.Y ?? 0, request.Position?.Z ?? 0));
-            entity.Set("Position", newPos);
+            // - 每客户端移动同步速率配额（防洪泛用极多小步长消息突破位移钳制）；
+            // - 按速度预算 maxSpeed×Δt×容差 钳制位移（时间窗感知），并受单次硬上限约束；
+            // - 显式 null Position 不再被改写为 (0,0,0)（仅跳过位移，旋转仍更新）。
+            var track = moveTracks.GetOrAdd(sessionId, _ => new MovementTrack { LastSyncMs = Environment.TickCount64, WindowStartMs = Environment.TickCount64 });
+            long nowMs = Environment.TickCount64;
+            if (nowMs - track.WindowStartMs >= 1000)
+            {
+                track.WindowStartMs = nowMs;
+                track.SyncCount = 0;
+            }
+            if (++track.SyncCount > MaxMoveSyncPerSecond)
+            {
+                // 超速洪泛：丢弃本次同步（不更新位置），已超过每客户端配额
+                return Task.CompletedTask;
+            }
+
+            if (request.Position != null)
+            {
+                long elapsedMs = Math.Max(0, nowMs - track.LastSyncMs);
+                track.LastSyncMs = nowMs;
+
+                // 速度预算：elapsed 越小允许位移越小（高频发包只会被钳得更紧），
+                // 叠加每客户端速率配额后，最大可达速度 = maxSpeed×容差（受单次硬上限约束）。
+                float budget = MaxMoveSpeedPerSecond * (elapsedMs / 1000f) * MoveTolerance + MinMoveDistancePerSync;
+                float allowed = Math.Clamp(budget, MinMoveDistancePerSync, MaxMoveDistancePerSync);
+
+                var oldPos = ClampToWorldBounds(entity.Get<Float3>("Position"));
+                var newPos = ClampToWorldBounds(SanitizeAndClampMovement(oldPos,
+                    new Float3(request.Position.X, request.Position.Y, request.Position.Z), allowed));
+                entity.Set("Position", newPos);
+            }
             entity.Set("Rotation", SanitizeVector(
                 new Float3(request.Rotation?.X ?? 0, request.Rotation?.Y ?? 0, request.Rotation?.Z ?? 0)));
 
@@ -342,6 +438,9 @@ namespace Battle.Handlers
         /// <summary>玩家离开场景：移除实体与 AOI，通知周边玩家。</summary>
         public void OnPlayerLeave(long sessionId, Network.ISession gatewaySession)
         {
+            // P3 加固：清理该玩家的移动跟踪（速度预算/洪泛配额），防只增不减。
+            moveTracks.TryRemove(sessionId, out _);
+
             var scene = sceneManager.GetSceneByPlayer(sessionId);
             if (scene == null) return;
 

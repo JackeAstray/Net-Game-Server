@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Net.Sockets;
 
 using Network.Routing;
@@ -13,6 +13,14 @@ namespace Network.Tcp;
 public class TcpServer : INetworkServer
 {
     private TcpListener? tcpListener;
+    private int activeConnections;
+    private int maxConnections = -1;
+
+    /// <summary>
+    /// 最大并发连接数（连接数上限：拒绝资源耗尽 DoS）。
+    /// 未显式设置（≤0）时在 StartAsync 从配置 <c>MaxConnections</c> 读取，默认 10000，钳制 [32, 200000]。
+    /// </summary>
+    public int MaxConnections { get; set; } = -1;
 
     public event SessionConnectedHandler? OnSessionConnected;
     public event DataReceivedHandler? OnDataReceived;
@@ -22,6 +30,17 @@ public class TcpServer : INetworkServer
     {
         try
         {
+            if (maxConnections <= 0)
+            {
+                maxConnections = Shared.ConfigHelper.GetConfig<int>("MaxConnections");
+                if (maxConnections <= 0)
+                {
+                    maxConnections = 10000;
+                }
+                maxConnections = Math.Clamp(maxConnections, 32, 200000);
+            }
+            Shared.Log.Info($"[TcpServer] 启动监听 Port:{port} MaxConnections:{maxConnections}");
+
             tcpListener = new TcpListener(IPAddress.Any, port);
             tcpListener.Start();
             Shared.Log.Info($"[TcpServer] 启动成功，监听端口:{port}");
@@ -42,7 +61,8 @@ public class TcpServer : INetworkServer
     /// 异步接受传入的 TCP 客户端连接，并为每个连接启动独立的处理任务。
     /// </summary>
     /// <remarks>对每个接入的 TcpClient 调用 HandleClientAsync 且不等待其完成（以后台方式运行）。当 tcpListener 被释放时捕获
-    /// ObjectDisposedException 并退出循环；确保 tcpListener 在使用期间已正确初始化并在停止时释放。</remarks>
+    /// ObjectDisposedException 并退出循环；确保 tcpListener 在使用期间已正确初始化并在停止时释放。
+    /// 连接数上限：超过 MaxConnections 的连接立即关闭，拒绝资源耗尽。</remarks>
     /// <returns>表示接受循环完成的异步任务；当底层侦听器被释放或停止时完成。</returns>
     private async Task AcceptClientsAsync()
     {
@@ -51,6 +71,13 @@ public class TcpServer : INetworkServer
             try
             {
                 var client = await tcpListener.AcceptTcpClientAsync();
+                if (Interlocked.Increment(ref activeConnections) > maxConnections)
+                {
+                    Interlocked.Decrement(ref activeConnections);
+                    Shared.Log.Warning($"[TcpServer] 连接数已达上限({maxConnections})，拒绝新连接 Remote:{client.Client.RemoteEndPoint}");
+                    client.Close();
+                    continue;
+                }
                 Shared.Log.Info($"[TcpServer] 接收到新连接 Remote:{client.Client.RemoteEndPoint}");
                 // 接受到新的客户端后，启动异步处理任务
                 _ = HandleClientAsync(client);
@@ -70,54 +97,62 @@ public class TcpServer : INetworkServer
     /// 异步处理已连接的 TcpClient，按长度前缀解析数据包并在接收数据或会话状态变化时触发相应事件。
     /// </summary>
     /// <remarks>在处理期间会触发 OnSessionConnected、OnDataReceived 和 OnSessionDisconnected。使用
-    /// LengthPrefixedPacketReader 解析数据包；在发生异常或对端关闭连接时会触发断开事件并释放 TcpClient。</remarks>
+    /// LengthPrefixedPacketReader 解析数据包；在发生异常或对端关闭连接时会触发断开事件并释放 TcpClient。
+    /// finally 中递减活动连接计数（与 accept 处的递增配对）。</remarks>
     /// <param name="client">要处理的已连接 TcpClient 实例。</param>
     /// <returns>表示会话处理完成的异步任务。</returns>
     private async Task HandleClientAsync(TcpClient client)
     {
-        var session = new TcpSession(client);
-        var packetReader = new LengthPrefixedPacketReader();
-
-        using (client)
+        try
         {
-            var stream = client.GetStream();
-            var buffer = new byte[4096];
-            Shared.Log.Info($"[TcpServer] 会话建立 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
-            OnSessionConnected?.Invoke(session);
+            var session = new TcpSession(client);
+            var packetReader = new LengthPrefixedPacketReader();
 
-            try
+            using (client)
             {
-                while (client.Connected)
+                var stream = client.GetStream();
+                var buffer = new byte[4096];
+                Shared.Log.Info($"[TcpServer] 会话建立 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                OnSessionConnected?.Invoke(session);
+
+                try
                 {
-                    int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-                    if (bytesRead == 0) break;
-
-                    session.LastActivityTime = DateTime.UtcNow; // 心跳/空闲超时检测用
-                    Shared.Log.Debug($"[TcpServer] 接收原始字节 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Bytes:{bytesRead}");
-                    packetReader.Append(buffer.AsSpan(0, bytesRead));
-                    int packetCount = 0;
-                    while (packetReader.TryReadPacket(out var packet))
+                    while (client.Connected)
                     {
-                        packetCount++;
-                        Shared.Log.Debug($"[TcpServer] 完整分包 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} PacketLength:{packet.Length}");
-                        OnDataReceived?.Invoke(session, packet);
-                    }
+                        int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+                        if (bytesRead == 0) break;
 
-                    if (packetCount == 0)
-                    {
-                        Shared.Log.Debug($"[TcpServer] 当前读取未形成完整包 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                        session.LastActivityTime = DateTime.UtcNow; // 心跳/空闲超时检测用
+                        Shared.Log.Debug($"[TcpServer] 接收原始字节 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Bytes:{bytesRead}");
+                        packetReader.Append(buffer.AsSpan(0, bytesRead));
+                        int packetCount = 0;
+                        while (packetReader.TryReadPacket(out var packet))
+                        {
+                            packetCount++;
+                            Shared.Log.Debug($"[TcpServer] 完整分包 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} PacketLength:{packet.Length}");
+                            OnDataReceived?.Invoke(session, packet);
+                        }
+
+                        if (packetCount == 0)
+                        {
+                            Shared.Log.Debug($"[TcpServer] 当前读取未形成完整包 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                        }
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                Shared.Log.Warning($"[TcpServer] 会话异常断开 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Exception:{ex}");
-                OnSessionDisconnected?.Invoke(session, ex.Message);
-                return;
-            }
+                catch (Exception ex)
+                {
+                    Shared.Log.Warning($"[TcpServer] 会话异常断开 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Exception:{ex}");
+                    OnSessionDisconnected?.Invoke(session, ex.Message);
+                    return;
+                }
 
-            Shared.Log.Info($"[TcpServer] 会话正常关闭 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
-            OnSessionDisconnected?.Invoke(session, "客户端主动关闭了连接。");
+                Shared.Log.Info($"[TcpServer] 会话正常关闭 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                OnSessionDisconnected?.Invoke(session, "客户端主动关闭了连接。");
+            }
+        }
+        finally
+        {
+            Interlocked.Decrement(ref activeConnections);
         }
     }
 

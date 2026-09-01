@@ -25,6 +25,7 @@
     <ProjectReference Include="..\Network\Network.csproj" />
     <ProjectReference Include="..\Shared\Shared.csproj" />
     <ProjectReference Include="..\Framework\Framework.Entity\Framework.Entity.csproj" />
+    <ProjectReference Include="..\Framework\Framework.Persistence\Framework.Persistence.csproj" />
     <ProjectReference Include="..\Framework\Framework.Tick\Framework.Tick.csproj" />
     <ProjectReference Include="..\Framework\Framework.Protocol\Framework.Protocol.csproj" />
     <ProjectReference Include="..\Framework\Framework.Scripting\Framework.Scripting.csproj" />

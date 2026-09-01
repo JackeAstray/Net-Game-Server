@@ -1,4 +1,4 @@
-﻿using Shared;
+using Shared;
 using Log = Shared.Log;
 
 namespace Center
@@ -27,7 +27,17 @@ namespace Center
             Log.Info("中心服务器(Center Server)正在启动...");
 
             await CenterServerApp.StartNetworkAsync();
-            await CenterHttpServer.StartAsync(args);
+            // 管理台 HTTP 服务（Kestrel 阻塞运行；NodeLifecycle 关闭钩子会优雅停止它）
+            var httpTask = CenterHttpServer.StartAsync(args);
+
+            // 健康检查 + 优雅关闭（迭代 21）
+            int healthPort = ConfigHelper.GetConfig<int>("HealthPort") == 0 ? 31306 + 10000 : ConfigHelper.GetConfig<int>("HealthPort");
+            HealthServer.Start(healthPort, nodeId);
+            NodeLifecycle.Default.RegisterShutdownHook(CenterHttpServer.StopAsync);
+            await NodeLifecycle.Default.WaitForShutdownAsync();
+            await NodeLifecycle.Default.RunShutdownAsync();
+            // 等 Kestrel 停止后 StartAsync 返回（优雅停服）
+            await httpTask;
         }
     }
 }

@@ -22,7 +22,14 @@ namespace Login
     /// </summary>
     public static class LoginServerApp
     {
-        public static readonly System.Collections.Concurrent.ConcurrentDictionary<long, TaskCompletionSource<byte[]>> PendingRequests = new System.Collections.Concurrent.ConcurrentDictionary<long, TaskCompletionSource<byte[]>>();
+        /// <summary>待处理的 DB 请求（P3 加固：附带期望的响应 msgid，接收端校验不符即拒绝，防类型混淆/错误调用者完成）。</summary>
+        public sealed class PendingDbRequest
+        {
+            public required System.Threading.Tasks.TaskCompletionSource<byte[]> Tcs { get; init; }
+            public required int ResponseMsgId { get; init; }
+        }
+
+        public static readonly System.Collections.Concurrent.ConcurrentDictionary<long, PendingDbRequest> PendingRequests = new System.Collections.Concurrent.ConcurrentDictionary<long, PendingDbRequest>();
         private static System.Threading.CancellationTokenSource? centerHeartbeatCts;
         private static readonly object sharedLoginSync = new object();
         private static TcpClientWrapper? sharedDbClient;
@@ -396,16 +403,26 @@ namespace Login
                 byte[] payload = data.Slice(4).ToArray();
 
                 if (Shared.RouteMetadata.TryExtractRequestId(payload, out long requestId, out var cleanPayload)
-                    && PendingRequests.TryRemove(requestId, out var tcs))
+                    && PendingRequests.TryGetValue(requestId, out var pending))
                 {
-                    try
+                    // P3 加固：响应 msgid 必须与请求期望一致（防类型混淆/错误调用者完成）。
+                    // 不符则拒绝完成该待处理请求，交由请求方超时清理；被攻破/异常的 DB 无法用错误 msgid 完成他人请求。
+                    if (pending.ResponseMsgId != msgId)
                     {
-                        Shared.Log.Debug("Login <- DB 命中待处理请求 RequestId:{RequestId} MsgId:{MsgId} PayloadLength:{PayloadLength}", requestId, msgId, cleanPayload.Length);
-                        tcs.TrySetResult(cleanPayload);
+                        Shared.Log.Warning($"Login <- DB 响应 MsgId:{msgId} 与请求期望 {pending.ResponseMsgId} 不符，RequestId:{requestId}，已拒绝");
+                        return;
                     }
-                    catch (Exception ex)
+                    if (PendingRequests.TryRemove(requestId, out pending))
                     {
-                        Shared.Log.Error($"反序列化响应异常: {ex}");
+                        try
+                        {
+                            Shared.Log.Debug("Login <- DB 命中待处理请求 RequestId:{RequestId} MsgId:{MsgId} PayloadLength:{PayloadLength}", requestId, msgId, cleanPayload.Length);
+                            pending.Tcs.TrySetResult(cleanPayload);
+                        }
+                        catch (Exception ex)
+                        {
+                            Shared.Log.Error($"反序列化响应异常: {ex}");
+                        }
                     }
                     return;
                 }

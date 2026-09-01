@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Security.Cryptography;
 using System.Text;
@@ -492,6 +492,27 @@ namespace Center.Handlers
                 }
             };
 
+            // 客户端断线（网关 PlayerDisconnectNotif）：把断线玩家从所有房间与匹配队列移除，
+            // 防止断线玩家成为房间幽灵成员/永久占用匹配队列（此前 Center 不处理断线）。
+            handlers[MessageIds.PlayerDisconnectNotif] = async (payload, session, clientSessionId) =>
+            {
+                try
+                {
+                    if (clientSessionId <= 0)
+                    {
+                        return;
+                    }
+                    // 解除客户端→网关路由绑定（防 clientGatewayRoutes 无界增长；绑定本身不可信，断线即失效）
+                    NodeManager.Instance.UnbindClientGatewayRoute(clientSessionId);
+                    await matchHandler.HandleClientDisconnectAsync(clientSessionId, session, SendToGateway, SendToGateway, SendToGateway);
+                    Shared.Log.Info($"Center 处理客户端断线，已从房间/匹配队列移除 ClientSessionId:{clientSessionId}");
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error($"PlayerDisconnectNotif 处理异常 ClientSessionId:{clientSessionId} Exception:{ex}");
+                }
+            };
+
             handlers[MessageIds.CenterRegisterNodeReq] = (payload, session, clientSessionId) =>
             {
                 try
@@ -502,6 +523,16 @@ namespace Center.Handlers
                         if (!VerifyRegisterSignature(req))
                         {
                             Shared.Log.Warning($"CenterRegisterNodeReq 签名校验失败，NodeId:{req.NodeId}");
+                            return Task.CompletedTask;
+                        }
+
+                        // P3 加固：注册身份必须与内部认证握手的身份一致（防伪造节点注册/接管）。
+                        // 仅持有共享密钥还不够——握手声明的 NodeId 必须与注册的 NodeId 相同。
+                        if (!TryGetAuthenticatedNodeId(session, out string? authenticatedNodeId)
+                            || string.IsNullOrWhiteSpace(authenticatedNodeId)
+                            || !string.Equals(authenticatedNodeId, req.NodeId, StringComparison.Ordinal))
+                        {
+                            Shared.Log.Warning($"CenterRegisterNodeReq 注册身份与握手身份不一致，已拒绝 NodeId:{req.NodeId} 握手身份:{authenticatedNodeId ?? "(none)"} SessionId:{session.SessionId}");
                             return Task.CompletedTask;
                         }
 
@@ -534,6 +565,14 @@ namespace Center.Handlers
                             return Task.CompletedTask;
                         }
 
+                        // P3 加固：负载/心跳上报必须来自该节点已注册的会话（防跨连接伪造负载/心跳/保持假节点新鲜）。
+                        string? boundNodeId = NodeManager.Instance.GetNodeIdBySession(session);
+                        if (boundNodeId == null || !string.Equals(boundNodeId, req.NodeId, StringComparison.Ordinal))
+                        {
+                            Shared.Log.Warning($"CenterNodeStatusReq 节点不匹配，已拒绝 请求 NodeId:{req.NodeId} 该连接已注册:{(boundNodeId ?? "(none)")} SessionId:{session.SessionId}");
+                            return Task.CompletedTask;
+                        }
+
                         NodeManager.Instance.UpdateLoad(req.NodeId, req.CurrentLoad);
                     }
                     else
@@ -549,6 +588,18 @@ namespace Center.Handlers
             };
 
             return handlers;
+        }
+
+        /// <summary>读取会话的握手认证身份（P3 加固）。未登记认证过滤器或未通过握手时返回 false。</summary>
+        private static bool TryGetAuthenticatedNodeId(Network.ISession session, out string? authenticatedNodeId)
+        {
+            authenticatedNodeId = null;
+            if (!NodeAuthFilters.Registry.TryGetValue(session.SessionId, out var filter) || filter == null || !filter.IsAuthenticated)
+            {
+                return false;
+            }
+            authenticatedNodeId = filter.AuthenticatedNodeId;
+            return true;
         }
 
         /// <summary>

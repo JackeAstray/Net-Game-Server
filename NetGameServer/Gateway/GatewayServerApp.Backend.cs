@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
@@ -24,6 +24,28 @@ namespace Gateway
     /// </summary>
     public static partial class GatewayServerApp
     {
+        /// <summary>出站（后端→客户端）帧最大字节数（P3 加固）：msgid 4 + 64KB 负载 + 元数据余量，防止后端推送超大帧造成客户端内存/带宽 DoS。</summary>
+        private const int MaxGatewayOutboundFrame = 4 + 64 * 1024 + 4 * 1024;
+
+        /// <summary>
+        /// 出站客户端消息校验（P3 加固，配合内部信任边界）：只允许"客户端可见区间"的非内部消息转发给客户端。
+        /// 拒绝内部消息（1000-1119 / 90000+ / 客户端区间内标 Internal 者）与越界 msgid 注入，
+        /// 防止被攻破/恶意的后端节点向客户端伪造服务器消息（如假登录结果、内部控制消息、越界任意消息）。
+        /// </summary>
+        private static bool IsClientVisibleOutboundMsgId(int msgId)
+        {
+            bool inRange = (msgId >= 10000 && msgId < 30000)
+                        || (msgId >= 30000 && msgId < 40000)
+                        || (msgId >= 40000 && msgId < 50000)
+                        || (msgId >= 50000 && msgId < 70000);
+            if (!inRange) return false;
+            if (Framework.Protocol.Generated.RouterTable.Routes.TryGetValue(msgId, out var route) && route.IsInternal)
+            {
+                return false;
+            }
+            return true;
+        }
+
         /// <summary>
         /// 建立并返回到后端 Login, Game, Center, Battle 服务器的 TCP 客户端包装器。
         /// - 读取配置的 Host/Port（支持默认值）。
@@ -37,10 +59,13 @@ namespace Gateway
             string gatewayHost = ConfigHelper.GetConfig<string>("GatewayHost") ?? "127.0.0.1";
             int gatewayPort = ConfigHelper.GetConfig<int>("GatewayPort") == 0 ? 31300 : ConfigHelper.GetConfig<int>("GatewayPort");
             string gatewayNodeId = $"Gateway-{gatewayHost}:{gatewayPort}";
+            // P3 加固：Center 连接的握手身份必须与注册身份同源（与 AttachCenterNodeLifecycle 的 nodeId 一致），
+            // 否则 Center 会因"注册身份 ≠ 握手身份"拒绝注册。
+            string centerRegisterNodeId = ConfigHelper.GetConfig<string>("NodeId") ?? gatewayNodeId;
 
-            void SendAuthHandshake(TcpClientWrapper client)
+            void SendAuthHandshake(TcpClientWrapper client, string? nodeIdOverride = null)
             {
-                var authFilter = new Framework.Core.Security.InternalAuthFilter(sharedSecret, gatewayNodeId);
+                var authFilter = new Framework.Core.Security.InternalAuthFilter(sharedSecret, nodeIdOverride ?? gatewayNodeId);
                 byte[] authPacket = authFilter.BuildAuthPacket();
                 Shared.Log.Info($"Gateway 向后端发送内部认证握手 Length:{authPacket.Length}");
                 // 帧长度修复（P1）：auth 包为裸 [MsgId][payload]，显式加长度头再发送，避免长度启发式误判
@@ -79,6 +104,13 @@ namespace Gateway
                     int payloadLength = data.Length - 4;
                     Shared.Log.Debug("Gateway <- Login 收到回包 MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} Remote:{Remote}", msgId, data.Length, payloadLength, session.RemoteEndPoint!);
                     byte[] payload = data.Slice(4).ToArray();
+
+                    // P3 加固：出站客户端消息校验（仅客户端可见区间的非内部消息）+ 大小上限。
+                    if (!IsClientVisibleOutboundMsgId(msgId) || data.Length > MaxGatewayOutboundFrame)
+                    {
+                        Shared.Log.Warning($"Gateway 拒绝转发非客户端可见的 Login 回包 MsgId:{msgId} Length:{data.Length}");
+                        return;
+                    }
 
                     if (!Shared.RouteMetadata.TryExtractClientSessionId(payload, out long clientSessionId, out var cleanPayload))
                     {
@@ -174,6 +206,13 @@ namespace Gateway
                 Shared.Log.Debug("Gateway <- Game 收到回包 MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} Remote:{Remote}", msgId, data.Length, payloadLength, session.RemoteEndPoint!);
                 byte[] payload = data.Slice(4).ToArray();
 
+                // P3 加固：出站客户端消息校验（仅客户端可见区间的非内部消息）+ 大小上限。
+                if (!IsClientVisibleOutboundMsgId(msgId) || data.Length > MaxGatewayOutboundFrame)
+                {
+                    Shared.Log.Warning($"Gateway 拒绝转发非客户端可见的 Game 回包 MsgId:{msgId} Length:{data.Length}");
+                    return;
+                }
+
                 bool broadcast = Shared.RouteMetadata.TryExtractBroadcast(payload, out bool broadcastFlag, out var payloadAfterBroadcast) && broadcastFlag;
                 if (broadcast)
                 {
@@ -224,7 +263,7 @@ namespace Gateway
             centerClient.OnConnected += session =>
             {
                 Shared.Log.Info($"已连接到 Center 服务器 (Host:{centerHost} Port:{centerPort})");
-                SendAuthHandshake(centerClient);
+                SendAuthHandshake(centerClient, centerRegisterNodeId);
             };
             centerClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"与 Center 服务器断开连接: {reason}");
             centerClient.OnDataReceived += delegate (Network.ISession session, ReadOnlyMemory<byte> data)
@@ -247,7 +286,9 @@ namespace Gateway
                     try
                     {
                         var routed = MemoryPackSerializer.Deserialize<Framework.Protocol.Generated.EntityMigrateRouted>(payload.AsSpan());
-                        if (routed != null && routed.ClientSessionId > 0 && !string.IsNullOrWhiteSpace(routed.NewNodeId))
+                        // 会话 ID 是任意 64 位值（生成器掩符号位后非负），仅 0 表示未设置/无效；
+                        // 不得用 > 0 判定，否则负数会话 ID（旧版生成器）会导致迁移绑定被静默丢弃。
+                        if (routed != null && routed.ClientSessionId != 0 && !string.IsNullOrWhiteSpace(routed.NewNodeId))
                         {
                             clientBattleNodeBindings[routed.ClientSessionId] = routed.NewNodeId;
                             Shared.Log.Info($"Gateway 实体迁移更新玩家 Battle 绑定 ClientSessionId:{routed.ClientSessionId} -> {routed.NewNodeId}");
@@ -257,6 +298,14 @@ namespace Gateway
                     {
                         Shared.Log.Warning($"Gateway 解析 EntityMigrateRouted 失败: {ex.Message}");
                     }
+                    return;
+                }
+
+                // P3 加固：出站客户端消息校验（仅客户端可见区间的非内部消息）+ 大小上限。
+                // 注意：EntityMigrateRouted 等内部控制消息已在上方单独处理，不经过此处。
+                if (!IsClientVisibleOutboundMsgId(msgId) || data.Length > MaxGatewayOutboundFrame)
+                {
+                    Shared.Log.Warning($"Gateway 拒绝转发非客户端可见的 Center 回包 MsgId:{msgId} Length:{data.Length}");
                     return;
                 }
 
@@ -389,6 +438,13 @@ namespace Gateway
             int payloadLength = data.Length - 4;
             Shared.Log.Debug("Gateway <- Battle 收到回包 MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} Remote:{Remote}", msgId, data.Length, payloadLength, session.RemoteEndPoint!);
             byte[] payload = data.Slice(4).ToArray();
+
+            // P3 加固：出站客户端消息校验（仅客户端可见区间的非内部消息）+ 大小上限。
+            if (!IsClientVisibleOutboundMsgId(msgId) || data.Length > MaxGatewayOutboundFrame)
+            {
+                Shared.Log.Warning($"Gateway 拒绝转发非客户端可见的 Battle 回包 MsgId:{msgId} Length:{data.Length}");
+                return;
+            }
 
             bool broadcast = Shared.RouteMetadata.TryExtractBroadcast(payload, out bool broadcastFlag, out var payloadAfterBroadcast) && broadcastFlag;
             if (broadcast)

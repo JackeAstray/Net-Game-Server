@@ -1,4 +1,4 @@
-﻿using Framework.Protocol;
+using Framework.Protocol;
 using Framework.Protocol.Generated;
 using Framework.Core.Security;
 using System.Text;
@@ -391,8 +391,9 @@ long asyncCallId = asyncCall.CallAsync("AddScore", new object?[] { 10 }, (succes
     ackCount++;
     ackValue = value;
 }, timeoutMs: 5000);
-Console.WriteLine($"EntityCall 异步调用: callId={asyncCallId} pending={Framework.Entity.EntityCallHubRegistry.Default.PendingCount} sent={receivedCalls.Count} (期望 >0/1/1)");
-if (asyncCallId <= 0 || receivedCalls.Count != 1 || Framework.Entity.EntityCallHubRegistry.Default.PendingCount != 1) return 1;
+Console.WriteLine($"EntityCall 异步调用: callId={asyncCallId} pending={Framework.Entity.EntityCallHubRegistry.Default.PendingCount} sent={receivedCalls.Count} (期望 !=0/1/1)");
+// 修复 flaky 断言：callId 为 opaque 关联号（seed ^ 随机 mask），负值为合法值；仅拒绝 0（0 表示 fire-and-forget 无需回执）。
+if (asyncCallId == 0 || receivedCalls.Count != 1 || Framework.Entity.EntityCallHubRegistry.Default.PendingCount != 1) return 1;
 
 // 模拟跨进程送达并执行，构造携带同一 CallId 的回执
 var deliveredCall = receivedCalls[0];
@@ -414,8 +415,9 @@ long timeoutCallId = asyncCall.CallAsync("AddScore", new object?[] { 100 }, (suc
     timeoutSuccess = success;
 }, timeoutMs: 50);
 int expired = Framework.Entity.EntityCallHubRegistry.Default.SweepExpired(DateTime.UtcNow.AddMilliseconds(200));
-Console.WriteLine($"EntityCall 超时: callId={timeoutCallId} expired={expired} timeoutCount={timeoutCount} timeoutSuccess={timeoutSuccess} pending={Framework.Entity.EntityCallHubRegistry.Default.PendingCount} (期望 >0/1/1/False/0)");
-if (timeoutCallId <= 0 || expired != 1 || timeoutCount != 1 || timeoutSuccess || Framework.Entity.EntityCallHubRegistry.Default.PendingCount != 0) return 1;
+Console.WriteLine($"EntityCall 超时: callId={timeoutCallId} expired={expired} timeoutCount={timeoutCount} timeoutSuccess={timeoutSuccess} pending={Framework.Entity.EntityCallHubRegistry.Default.PendingCount} (期望 !=0/1/1/False/0)");
+// 修复 flaky 断言：callId 允许为负（opaque 关联号），仅拒绝 0。
+if (timeoutCallId == 0 || expired != 1 || timeoutCount != 1 || timeoutSuccess || Framework.Entity.EntityCallHubRegistry.Default.PendingCount != 0) return 1;
 
 // fire-and-forget（CallId=0）：不注册待回执、接收方无需回执
 var fireAndForget = Framework.Entity.EntityCall.Remote("Battle-test", 9001, call => receivedCalls.Add(call));
@@ -709,7 +711,8 @@ Directory.Delete(persistDir, recursive: true);
     dummyEntity.AttachMailbox(remoteMailbox); // 显式挂 Remote（覆盖 EntityManager 自动挂的 Local）
     long cid = dummyEntity.Mailbox.CallAsync("Echo", new object?[] { "hello" }, (ok, res) => { remoteOk = ok; remoteResult = res; }, timeoutMs: 5000);
     capturedCallId = captured.Count > 0 ? captured[0].CallId : 0;
-    bool remoteSent = captured.Count == 1 && capturedCallId == cid && cid > 0 && captured[0].MethodName == "Echo";
+    // 修复 flaky 断言：callId 为 opaque 关联号（seed ^ 随机 mask），负值为合法；仅要求非 0 且与返回的 cid 一致。
+    bool remoteSent = captured.Count == 1 && capturedCallId == cid && cid != 0 && captured[0].MethodName == "Echo";
     // 喂回执
     Framework.Entity.EntityCallHubRegistry.Default.HandleResult(new Framework.Protocol.Generated.EntityRemoteCallResult
     {
@@ -743,6 +746,168 @@ Directory.Delete(persistDir, recursive: true);
     bool keepRemoteCheck = !migrateSrc.Mailbox.IsLocal && migrateSrc.Mailbox.IsRemote;
     Console.WriteLine($"AttachMailboxIfAbsent 不覆盖: IsLocal={migrateSrc.Mailbox.IsLocal} IsRemote={migrateSrc.Mailbox.IsRemote} (期望 False/True)");
     if (!keepRemoteCheck) return 1;
+}
+
+// ===== 15.8 实体位置服务 + 路由缓存（迭代 21，对标 ET Location：迁移后修正 stale 路由） =====
+{
+    // 位置服务（Center 侧）：登记/查询/注销
+    var locSvc = new Center.Handlers.EntityLocationService();
+    locSvc.Register(777, "Battle-A");
+    locSvc.Register(9001, "Battle-B");
+    string? locA = locSvc.Locate(777);
+    string? locB = locSvc.Locate(9001);
+    Console.WriteLine($"位置服务登记/查询: 777={locA} 9001={locB} 总数={locSvc.Count} (期望 Battle-A/Battle-B/2)");
+    if (locA != "Battle-A" || locB != "Battle-B" || locSvc.Count != 2) return 1;
+    bool unreg = locSvc.Unregister(777) && locSvc.Locate(777) == null;
+    Console.WriteLine($"位置服务注销: 注销后 Locate(777)=null (期望 True/null)");
+    if (!unreg) return 1;
+
+    // 路由缓存：新鲜缓存覆盖 stale hint（迁移后修正）→ 无缓存回退 hint → Invalidate 失效
+    var router = new Framework.Entity.EntityCallRouter();
+    router.CacheTtlTicks = TimeSpan.FromSeconds(30).Ticks;
+    router.Update(555, "Battle-B");
+    string resolved = router.Resolve(555, "Battle-A") ?? "";
+    Console.WriteLine($"路由缓存覆盖 stale hint: {resolved} (期望 Battle-B)");
+    if (resolved != "Battle-B") return 1;
+    string fallback = router.Resolve(999, "Battle-C") ?? "";
+    if (fallback != "Battle-C") return 1;
+    router.Invalidate(555);
+    string afterInvalidate = router.Resolve(555, "Battle-D") ?? "";
+    Console.WriteLine($"路由缓存 Invalidate: 失效后回退 hint={afterInvalidate} (期望 Battle-D)");
+    if (afterInvalidate != "Battle-D") return 1;
+
+    // 位置消息 round-trip（MemoryPack）：登记/查询/响应
+    var locReg = new Framework.Protocol.Generated.EntityLocationRegister { EntityId = 123, NodeId = "Battle-X" };
+    byte[] locRegBytes = locReg.Serialize();
+    var locRegBack = Framework.Protocol.ProtocolCodec.Decode<Framework.Protocol.Generated.EntityLocationRegister>(locRegBytes);
+    bool regOk = locRegBack != null && locRegBack.EntityId == 123 && locRegBack.NodeId == "Battle-X";
+    Console.WriteLine($"位置登记消息 round-trip: EntityId={locRegBack?.EntityId} NodeId={locRegBack?.NodeId} (期望 123/Battle-X)");
+    if (!regOk) return 1;
+
+    var locReq = new Framework.Protocol.Generated.EntityLocateRequest { EntityId = 123 };
+    byte[] locReqBytes = locReq.Serialize();
+    var locReqBack = Framework.Protocol.ProtocolCodec.Decode<Framework.Protocol.Generated.EntityLocateRequest>(locReqBytes);
+    Console.WriteLine($"位置查询消息 round-trip: EntityId={locReqBack?.EntityId} (期望 123)");
+    if (locReqBack?.EntityId != 123) return 1;
+
+    var locResp = new Framework.Protocol.Generated.EntityLocateResponse
+    {
+        EntityId = 123,
+        Found = true,
+        NodeId = "Battle-X",
+        Host = "127.0.0.1",
+        Port = 31308
+    };
+    byte[] locRespBytes = locResp.Serialize();
+    var locRespBack = Framework.Protocol.ProtocolCodec.Decode<Framework.Protocol.Generated.EntityLocateResponse>(locRespBytes);
+    bool respOk = locRespBack?.Found == true && locRespBack.NodeId == "Battle-X"
+        && locRespBack.Host == "127.0.0.1" && locRespBack.Port == 31308;
+    Console.WriteLine($"位置响应消息 round-trip: Found={locRespBack?.Found} Node={locRespBack?.NodeId} Host={locRespBack?.Host}:{locRespBack?.Port} (期望 True/Battle-X/127.0.0.1:31308)");
+    if (!respOk) return 1;
+}
+
+// ===== 15.9 AOI 九宫格压测（迭代 21：视野半径可配 + 一致性 vs 暴力枚举 + 性能） =====
+{
+    // diff 正确性（单实体大跳远，新旧视野不相交，结果可精确判定）
+    var aoi1 = new Battle.Handlers.GridAoiManager(gridSize: 50.0f, viewRadius: 1);
+    var def1 = new Framework.Entity.EntityDef { Name = "D" }.Add("Position", Framework.Entity.EntityPropertyType.Float3);
+    // a=1@(0,0)grid(0,0), b=3@(75,0)grid(1,0), c=5@(6000,0)grid(120,0), d=4@(5050,0)grid(101,0)
+    void Put(long id, float x, float z)
+    {
+        var e = def1.CreateEntity(id);
+        e.Set("Position", new Framework.Entity.Float3(x, 0, z));
+        aoi1.AddOrUpdateEntity(id, e, out _, out _);
+    }
+    Put(1, 0, 0); Put(3, 75, 0); Put(5, 6000, 0); Put(4, 5050, 0);
+    var aMoved = def1.CreateEntity(1);
+    aMoved.Set("Position", new Framework.Entity.Float3(5000, 0, 0)); // a -> grid(100,0)
+    aoi1.AddOrUpdateEntity(1, aMoved, out var oldG1, out var newG1);
+    aoi1.CalculateGridDiff(oldG1, newG1, out var enter1, out var leave1);
+    var enterSet1 = new HashSet<long>(enter1);
+    var leaveSet1 = new HashSet<long>(leave1);
+    bool diffOk = enterSet1.SetEquals(new long[] { 1, 4 }) && leaveSet1.SetEquals(new long[] { 3 });
+    Console.WriteLine($"AOI diff 单实体: enter=[{string.Join(",", enter1)}] leave=[{string.Join(",", leave1)}] (期望 enter=[1,4] leave=[3])");
+    if (!diffOk) return 1;
+
+    // 批量压测：2000 实体随机布点，视野半径 2（5x5），移动 + 查询 + 一致性校验
+    var aoi = new Battle.Handlers.GridAoiManager(gridSize: 50.0f, viewRadius: 2);
+    var def = new Framework.Entity.EntityDef { Name = "AoiBot" }.Add("Position", Framework.Entity.EntityPropertyType.Float3);
+    const int count = 2000;
+    var rand = new Random(42);
+    var positions = new (float x, float z)[count];
+    var entityGrids = new Dictionary<long, (int, int)>();
+    for (int i = 0; i < count; i++)
+    {
+        positions[i] = ((float)rand.NextDouble() * 4000 - 2000, (float)rand.NextDouble() * 4000 - 2000);
+        var e = def.CreateEntity(10000 + i);
+        e.Set("Position", new Framework.Entity.Float3(positions[i].x, 0, positions[i].z));
+        aoi.AddOrUpdateEntity(e.EntityId, e, out _, out _);
+        entityGrids[e.EntityId] = aoi.GetGridCoordinate(e.Get<Framework.Entity.Float3>("Position"));
+    }
+    Console.WriteLine($"AOI 压测 生成 {count} 实体: EntityCount={aoi.EntityCount} GridCount={aoi.GridCount} (期望 {count})");
+    if (aoi.EntityCount != count) return 1;
+
+    // 一致性（生成后）：九宫格查询 vs 暴力枚举（Chebyshev 距离 <= 半径）
+    bool consistent = true;
+    int samples = 200;
+    for (int s = 0; s < samples; s++)
+    {
+        int id = 10000 + rand.Next(count);
+        var (gx, gz) = entityGrids[id];
+        var actualSet = new HashSet<long>(aoi.GetSurroundingEntities(gx, gz));
+        var expected = new HashSet<long>();
+        foreach (var kv in entityGrids)
+        {
+            if (Math.Abs(kv.Value.Item1 - gx) <= 2 && Math.Abs(kv.Value.Item2 - gz) <= 2)
+                expected.Add(kv.Key);
+        }
+        if (!actualSet.SetEquals(expected)) { consistent = false; Console.WriteLine($"AOI 一致性失败: 采样 {id} grid=({gx},{gz}) actual={actualSet.Count} expected={expected.Count}"); break; }
+    }
+    Console.WriteLine($"AOI 一致性（九宫格 vs 暴力枚举，{samples} 采样）: {(consistent ? "一致" : "不一致")} (期望 一致)");
+    if (!consistent) return 1;
+
+    // 性能：全量随机小幅移动 + 全量视野查询
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    for (int i = 0; i < count; i++)
+    {
+        int id = 10000 + i;
+        float dx = (float)(rand.NextDouble() * 400 - 200);
+        float dz = (float)(rand.NextDouble() * 400 - 200);
+        var e = def.CreateEntity(id);
+        e.Set("Position", new Framework.Entity.Float3(positions[i].x + dx, 0, positions[i].z + dz));
+        aoi.AddOrUpdateEntity(id, e, out _, out _);
+        positions[i] = (positions[i].x + dx, positions[i].z + dz);
+        entityGrids[id] = aoi.GetGridCoordinate(e.Get<Framework.Entity.Float3>("Position"));
+    }
+    sw.Stop();
+    long moveMs = sw.ElapsedMilliseconds;
+    sw.Restart();
+    for (int i = 0; i < count; i++)
+    {
+        var (gx, gz) = entityGrids[10000 + i];
+        aoi.GetSurroundingEntities(gx, gz);
+    }
+    sw.Stop();
+    long queryMs = sw.ElapsedMilliseconds;
+    Console.WriteLine($"AOI 性能: {count} 次跨格移动 {moveMs}ms, {count} 次视野查询 {queryMs}ms (总实体 {aoi.EntityCount} 网格 {aoi.GridCount})");
+
+    // 移动后最终一致性复检（300 采样）
+    bool consistentAfter = true;
+    for (int s = 0; s < 300; s++)
+    {
+        int id = 10000 + rand.Next(count);
+        var (gx, gz) = entityGrids[id];
+        var actualSet = new HashSet<long>(aoi.GetSurroundingEntities(gx, gz));
+        var expected = new HashSet<long>();
+        foreach (var kv in entityGrids)
+        {
+            if (Math.Abs(kv.Value.Item1 - gx) <= 2 && Math.Abs(kv.Value.Item2 - gz) <= 2)
+                expected.Add(kv.Key);
+        }
+        if (!actualSet.SetEquals(expected)) { consistentAfter = false; break; }
+    }
+    Console.WriteLine($"AOI 移动后一致性（300 采样）: {(consistentAfter ? "一致" : "不一致")} (期望 一致)");
+    if (!consistentAfter) return 1;
 }
 
 // ===== 16. Center 配置化分发集成验证（MatchHandler 真实链路） =====

@@ -1,0 +1,154 @@
+# =====================================================================
+# Net-Game-Server 一键集群（docker compose）
+#
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#   docker compose -f deploy/docker-compose.yml ps
+#   curl http://127.0.0.1:41306/healthz   # Center 存活
+#   curl http://127.0.0.1:41307/readyz    # Battle 就绪（/readyz 在关服排空时返回 503）
+#
+# 拓扑（迭代 21 六节点微服务）：
+#   Gateway 31300 / Login 31302 / Game 31304 / DB 31305 / Center 31306 / Battle 31307
+#   MySQL 3306 + Redis 6379（DB 节点业务库）；PostgreSQL 5432 默认不启动（profile: postgres）。
+# 默认共享密钥：可在 .env 中设置 CenterNodeSharedSecret 覆盖，生产务必更换。
+# =====================================================================
+
+name: netgame-cluster
+
+x-common-node: &common-node
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  environment: &common-env
+    CenterNodeSharedSecret: "${CenterNodeSharedSecret:-netgame-dev-shared-secret-change-me}"
+    Logging__MinimumLevel: "Information"
+    # 跨节点主机名：compose 服务名即容器 DNS 名，节点间用服务名互连
+    GatewayHost: "gateway"
+    LoginHost: "login"
+    GameHost: "game"
+    DBHost: "db"
+    CenterHost: "center"
+    BattleHost: "battle"
+    RedisConnectionString: "redis:6379,abortConnect=false"
+  depends_on:
+    center:
+      condition: service_started
+  restart: unless-stopped
+  networks: [cluster]
+
+services:
+  # ---------- 基础设施 ----------
+  mysql:
+    image: mysql:8.0
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:-rootpass-change-me}"
+      MYSQL_DATABASE: "GameDB"
+      MYSQL_USER: "Ycs"
+      MYSQL_PASSWORD: "Ycs982109683"
+    ports: ["3306:3306"]
+    volumes: [mysql-data:/var/lib/mysql]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uYcs", "-pYcs982109683"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    networks: [cluster]
+
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    networks: [cluster]
+
+  # 可选：实体持久化 PostgreSQL 后端验证（默认不启动；需要时 docker compose --profile postgres up -d）
+  postgres:
+    image: postgres:16
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: "Ycs"
+      POSTGRES_PASSWORD: "Ycs982109683"
+      POSTGRES_DB: "GameDB"
+    ports: ["5432:5432"]
+    volumes: [pg-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U Ycs"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    networks: [cluster]
+
+  # ---------- 业务节点（同镜像，working_dir + command 指定启动哪个） ----------
+  db:
+    <<: *common-node
+    working_dir: /app/DB
+    command: ["dotnet", "DB.dll", "--host", "db", "--port", "31305", "--node-id", "DB-db:31305"]
+    environment:
+      <<: *common-env
+      ConnectionStrings__MySqlConnection: "Server=mysql;Port=3306;Database=GameDB;Uid=Ycs;Pwd=Ycs982109683;"
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    ports: ["31305:31305", "41305:41305"]
+
+  center:
+    <<: *common-node
+    working_dir: /app/Center
+    command: ["dotnet", "Center.dll", "--host", "center", "--port", "31306", "--node-id", "Center-center:31306"]
+    environment:
+      <<: *common-env
+      CenterHttpPort: "31316"
+    ports: ["31306:31306", "31316:31316", "41306:41306"]
+
+  gateway:
+    <<: *common-node
+    working_dir: /app/Gateway
+    command: ["dotnet", "Gateway.dll", "--host", "gateway", "--port", "31300", "--center-host", "center", "--center-port", "31306", "--node-id", "Gateway-gateway:31300"]
+    ports: ["31300:31300", "41300:41300"]
+
+  login:
+    <<: *common-node
+    working_dir: /app/Login
+    command: ["dotnet", "Login.dll", "--host", "login", "--port", "31302", "--center-host", "center", "--center-port", "31306", "--node-id", "Login-login:31302"]
+    ports: ["31302:31302", "41302:41302"]
+
+  game:
+    <<: *common-node
+    working_dir: /app/Game
+    command: ["dotnet", "Game.dll", "--host", "game", "--port", "31304", "--center-host", "center", "--center-port", "31306", "--node-id", "Game-game:31304"]
+    ports: ["31304:31304", "41304:41304"]
+
+  battle:
+    <<: *common-node
+    working_dir: /app/Battle
+    command: ["dotnet", "Battle.dll", "--host", "battle", "--port", "31307", "--center-host", "center", "--center-port", "31306", "--node-id", "Battle-battle:31307"]
+    environment:
+      <<: *common-env
+      # 实体持久化后端（迭代 21 可插拔存储）：默认走 MySQL 实现实时验证；
+      # 想用文件存储改为 Provider=File（无需 MySQL）；Redis/Postgres 同理：
+      #   EntityPersistence__Provider: "Redis"
+      #   EntityPersistence__ConnectionString: "redis:6379,abortConnect=false"
+      #   EntityPersistence__Provider: "PostgreSql"
+      #   EntityPersistence__ConnectionString: "Server=postgres;Port=5432;Database=GameDB;Uid=Ycs;Pwd=Ycs982109683;"
+      EntityPersistence__Provider: "MySql"
+      EntityPersistence__ConnectionString: "Server=mysql;Port=3306;Database=GameDB;Uid=Ycs;Pwd=Ycs982109683;"
+      EntityPersistence__FlushIntervalMs: "5000"
+      EntityPersistence__FlushBatchSize: "256"
+      # 跨 Battle 实体调用直达（迭代 21）：默认关闭（Center 中继）；多 Battle 场景开启可降 Center 热点
+      EntityCallDirectRouting: "false"
+      EntityCallLocationCacheTtlMs: "30000"
+    ports: ["31307:31307", "41307:41307"]
+
+volumes:
+  mysql-data:
+  pg-data:
+
+networks:
+  cluster:
+    driver: bridge

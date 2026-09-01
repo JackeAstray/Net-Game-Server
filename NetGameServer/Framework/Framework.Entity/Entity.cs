@@ -1,4 +1,4 @@
-﻿using Framework.Core;
+using Framework.Core;
 
 namespace Framework.Entity;
 
@@ -15,6 +15,11 @@ public sealed class Entity
     private readonly HashSet<string> dirty = new(StringComparer.Ordinal);
     private readonly Dictionary<string, EntityMethodHandler> methods = new(StringComparer.Ordinal);
 
+    // 持久化脏标记（对标 GeekServer State 透明持久化）：
+    // 任何属性实际变更（Entity.Set 值变化）都会置位，由 EntityPersistenceService 周期批量落库后 MarkPersisted 清除。
+    // 与 dirty（客户端增量同步）分离——持久化关心"所有服务端属性变化"，dirty 只关心 SyncToClient 属性。
+    private bool persistDirty;
+
     /// <summary>实体唯一 ID（场景内/节点内）。</summary>
     public long EntityId { get; }
 
@@ -26,6 +31,30 @@ public sealed class Entity
 
     /// <summary>当前是否有未同步的脏属性。</summary>
     public bool IsDirty => dirty.Count > 0;
+
+    /// <summary>是否有未落库的属性变更（持久化周期批量落库用，对标 GeekServer 脏状态自动保存）。</summary>
+    public bool IsPersistDirty => persistDirty;
+
+    /// <summary>清除持久化脏标记（批量落库完成快照后调用；随后发生的属性变更会重新置位）。</summary>
+    public void MarkPersisted()
+    {
+        lock (dirty)
+        {
+            persistDirty = false;
+        }
+    }
+
+    /// <summary>
+    /// 重新置位持久化脏标记（P3 加固：批量落库/异步落库写入失败后调用）。
+    /// 保证"已快照但写入失败"的变更不会被静默丢弃——下个落库周期会重试。
+    /// </summary>
+    public void ForcePersistDirty()
+    {
+        lock (dirty)
+        {
+            persistDirty = true;
+        }
+    }
 
     /// <summary>
     /// 所属客户端会话 ID（0 = 无属主）。
@@ -121,6 +150,9 @@ public sealed class Entity
             {
                 dirty.Add(name);
             }
+
+            // 持久化脏标记：任何属性变更都需周期落库（与客户端增量 dirty 分离）。
+            persistDirty = true;
 
             // 属性变更事件（脚本层 OnPropertyChanged 回调，对标 KBE onPropertyChange）
             PropertyChanged?.Invoke(name, old, value);

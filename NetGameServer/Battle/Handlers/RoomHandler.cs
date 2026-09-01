@@ -36,6 +36,29 @@ namespace Battle.Handlers
                 // 统一用局部非空变量，避免在 `?.` 后编译器把属性标记为可空而触发下游可空告警。
                 string roomId = request.RoomId ?? string.Empty;
 
+                // P3 加固：加入幂等 + 防双房。
+                // 已在同房间：幂等返回成功，不重复创建玩家实体/玩法实体（此前重复加入会无限
+                // 生成 Skill/Item 实体并泄漏计时器，造成实体/备份/CPU 无界增长）。
+                // 已在其他房间：拒绝，防止同一玩家双房间双实体（"幽灵"，旧房间仍广播其化身）。
+                var existingScene = sceneManager.GetSceneByPlayer(clientSessionId);
+                if (existingScene != null)
+                {
+                    if (string.Equals(existingScene.SceneId, roomId, StringComparison.Ordinal))
+                    {
+                        return Task.FromResult(new BattleJoinResponse { Success = true, Message = "已在房间中" });
+                    }
+                    return Task.FromResult(new BattleJoinResponse { Success = false, Message = "已在其他房间中，请先离开当前房间" });
+                }
+
+                // P3 加固：单节点场景数上限（防客户端用唯一 RoomId 洪泛创建无限场景，
+                // 每场景会生成玩法实体、注册脚本/备份/持久化服务并进入每 tick 扫描）。
+                const int MaxScenesPerNode = 500;
+                if (sceneManager.GetSceneCount() >= MaxScenesPerNode)
+                {
+                    Shared.Log.Warning($"Battle 场景数已达上限({MaxScenesPerNode})，拒绝加入 RoomId:{roomId}");
+                    return Task.FromResult(new BattleJoinResponse { Success = false, Message = "房间数量已达上限" });
+                }
+
                 // 获取请求的类型，这里默认客户端在加入请求时通过 SceneType 或是默认根据包含 World 处理，也可以像 Center 时带入 CategoryId
                 bool isWorldMap = roomId.Contains("World");
                 string templateId = string.IsNullOrEmpty(request.SceneType) ? (isWorldMap ? "World" : "PVP") : request.SceneType;

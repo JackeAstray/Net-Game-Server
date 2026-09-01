@@ -1,4 +1,4 @@
-﻿using Framework.Protocol;
+using Framework.Protocol;
 using Framework.Protocol.Generated;
 using Shared.Messages.Center;
 using ISession = Network.ISession;
@@ -362,6 +362,14 @@ public static class CenterDispatcher
         // 中继 91003：源 Battle -> 目标 Battle（目标恢复实体后回 91004）
         dispatcher.Register<EntityMigrateRequest>(async (ctx, msg) =>
         {
+            // 发送方绑定（B7 收敛）：SourceNodeId 一律从认证会话推导，不信任消息体字段，
+            // 防止任意持密钥节点伪造 SourceNodeId 制造"在途迁移"状态。
+            var originNodeId = NodeManager.Instance.GetNodeIdBySession(((CenterSessionContext)ctx).GatewaySession);
+            if (string.IsNullOrEmpty(originNodeId))
+            {
+                Shared.Log.Warning($"实体迁移中继拒绝：发送方不是已注册节点（无法推导来源）ClientSessionId:{msg.ClientSessionId} EntityId:{msg.EntityId}");
+                return;
+            }
             var target = NodeManager.Instance.GetNode(msg.TargetNodeId ?? string.Empty);
             if (target?.Session == null || !target.Session.IsConnected)
             {
@@ -381,7 +389,8 @@ public static class CenterDispatcher
             {
                 pendingMigrationSource[msg.ClientSessionId] = new PendingRoute
                 {
-                    SourceNodeId = msg.SourceNodeId ?? string.Empty,
+                    SourceNodeId = originNodeId,
+                    TargetNodeId = msg.TargetNodeId ?? string.Empty,
                     CreatedTicks = DateTime.UtcNow.Ticks
                 };
             }
@@ -392,6 +401,34 @@ public static class CenterDispatcher
         // 回源 91004：目标 Battle -> 源 Battle（成功则源节点移除本地实体）；成功时同步通知 Gateway 切换绑定
         dispatcher.Register<EntityMigrateResult>(async (ctx, msg) =>
         {
+            var cctx = (CenterSessionContext)ctx;
+            var senderNodeId = NodeManager.Instance.GetNodeIdBySession(cctx.GatewaySession);
+
+            // 回源校验（B7 收敛）：91004 必须来自"本次迁移的目标 Battle 节点"（pending.TargetNodeId），
+            // 且成功回执必须存在在途迁移记录，否则视为伪造迁移结果（可强制删除他人实体/重绑会话）拒绝。
+            if (msg.Success)
+            {
+                if (!pendingMigrationSource.TryGetValue(msg.ClientSessionId, out var pendingSuccess)
+                    || string.IsNullOrEmpty(pendingSuccess.TargetNodeId))
+                {
+                    Shared.Log.Warning($"实体迁移成功回执无在途迁移记录，拒绝 ClientSessionId:{msg.ClientSessionId} 发送方:{senderNodeId}");
+                    return;
+                }
+                if (!string.Equals(pendingSuccess.TargetNodeId, senderNodeId, StringComparison.Ordinal))
+                {
+                    Shared.Log.Warning($"实体迁移回执来源不匹配，拒绝 ClientSessionId:{msg.ClientSessionId} 期望目标:{pendingSuccess.TargetNodeId} 实际发送方:{senderNodeId}");
+                    return;
+                }
+            }
+            else if (pendingMigrationSource.TryGetValue(msg.ClientSessionId, out var pendingFail)
+                && !string.IsNullOrEmpty(pendingFail.TargetNodeId)
+                && !string.Equals(pendingFail.TargetNodeId, senderNodeId, StringComparison.Ordinal))
+            {
+                // 失败回执也要求来自目标节点（防伪造失败误导源节点/重绑状态）。
+                Shared.Log.Warning($"实体迁移失败回执来源不匹配，拒绝 ClientSessionId:{msg.ClientSessionId} 期望目标:{pendingFail.TargetNodeId} 实际发送方:{senderNodeId}");
+                return;
+            }
+
             if (msg.Success)
             {
                 // 多网关场景：优先通知玩家所属网关（按客户端会话路由）；路由缺失时广播全部网关
@@ -484,13 +521,69 @@ public static class CenterDispatcher
             Shared.Log.Warning($"实体远程调用回源失败：源节点不可用或未记录 CallId:{msg.CallId}");
         });
 
+        // ==== 实体位置服务（91007 登记 / 91008 注销 / 91009 查询，对标 ET Location 代理，迭代 21） ====
+        dispatcher.Register<EntityLocationRegister>(async (ctx, msg) =>
+        {
+            // 登记方绑定：登记的 NodeId 必须等于发送方认证会话身份，防位置注册表投毒
+            // （任意持密钥节点为受害实体登记到自身/任意节点，劫持跨节点调用与迁移）。
+            var senderNodeId = NodeManager.Instance.GetNodeIdBySession(((CenterSessionContext)ctx).GatewaySession);
+            if (string.IsNullOrEmpty(senderNodeId)
+                || !string.Equals(senderNodeId, msg.NodeId ?? string.Empty, StringComparison.Ordinal))
+            {
+                Shared.Log.Warning($"实体位置登记拒绝：发送方节点身份({senderNodeId})与登记 NodeId({msg.NodeId})不一致 EntityId:{msg.EntityId}");
+                return;
+            }
+            EntityLocationService.Instance.Register(msg.EntityId, msg.NodeId ?? string.Empty);
+        });
+        dispatcher.Register<EntityLocationUnregister>(async (ctx, msg) =>
+        {
+            // 注销方绑定：仅实体当前所在节点可注销（防他人清空位置表）。
+            var senderNodeId = NodeManager.Instance.GetNodeIdBySession(((CenterSessionContext)ctx).GatewaySession);
+            var current = EntityLocationService.Instance.Locate(msg.EntityId);
+            if (string.IsNullOrEmpty(senderNodeId)
+                || (current != null && !string.Equals(current, senderNodeId, StringComparison.Ordinal)))
+            {
+                Shared.Log.Warning($"实体位置注销拒绝：发送方节点身份({senderNodeId})与实体当前所在节点({current})不一致 EntityId:{msg.EntityId}");
+                return;
+            }
+            EntityLocationService.Instance.Unregister(msg.EntityId);
+        });
+        dispatcher.Register<EntityLocateRequest>(async (ctx, msg) =>
+        {
+            string? nodeId = EntityLocationService.Instance.Locate(msg.EntityId);
+            var response = new EntityLocateResponse
+            {
+                EntityId = msg.EntityId,
+                Found = !string.IsNullOrEmpty(nodeId),
+                NodeId = nodeId ?? string.Empty
+            };
+            if (!string.IsNullOrEmpty(nodeId))
+            {
+                // 附带目标节点直连地址（host/port），供调用方建立 Battle↔Battle 直达链路
+                var node = NodeManager.Instance.GetNode(nodeId);
+                if (node != null)
+                {
+                    response.Host = node.Host;
+                    response.Port = node.Port;
+                }
+            }
+            var origin = ((CenterSessionContext)ctx).GatewaySession;
+            if (origin != null && origin.IsConnected)
+            {
+                SendPacketToNode(origin, MessageIds.EntityLocateResponse, response);
+            }
+        });
+
         return dispatcher;
     }
 
     /// <summary>进行中的待回源路由（带时间戳，供超时清扫防无界增长）。</summary>
     private sealed class PendingRoute
     {
+        /// <summary>源节点（迁移 91003 由认证会话推导 / 实体调用 91001 由认证会话推导），不信任消息体字段。</summary>
         public required string SourceNodeId;
+        /// <summary>目标节点（迁移 91004 回源前校验发送方身份 == TargetNodeId，防伪造迁移结果）。</summary>
+        public string TargetNodeId = string.Empty;
         public long CreatedTicks;
     }
 

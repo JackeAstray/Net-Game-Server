@@ -29,6 +29,12 @@ public class KcpServer : INetworkServer
     private readonly ConcurrentDictionary<IPAddress, int> sessionsPerIp = new();
     private readonly TimeSpan sessionTimeout = TimeSpan.FromMinutes(5);
     private DateTime nextCleanupAt = DateTime.UtcNow.AddSeconds(30);
+    // P2 加固：接收循环告警限频（防止恶意洪泛触发日志风暴）。
+    private readonly object warnGate = new();
+    private DateTime lastShortWarnUtc = DateTime.MinValue;
+    private DateTime lastSessionCapWarnUtc = DateTime.MinValue;
+    private DateTime lastPerIpCapWarnUtc = DateTime.MinValue;
+    private DateTime lastInputErrorWarnUtc = DateTime.MinValue;
 
     public event SessionConnectedHandler? OnSessionConnected;
     public event DataReceivedHandler? OnDataReceived;
@@ -64,7 +70,8 @@ public class KcpServer : INetworkServer
                 // KCP 每个分段的包头首 4 字节即 conv，据此区分连接
                 if (result.Buffer.Length < 4)
                 {
-                    Shared.Log.Warning($"[KcpServer] 数据报过短(<4 字节)，丢弃 Remote:{result.RemoteEndPoint}");
+                    if (ShouldLogWarning(ref lastShortWarnUtc))
+                        Shared.Log.Warning($"[KcpServer] 数据报过短(<4 字节)，丢弃 Remote:{result.RemoteEndPoint}");
                     continue;
                 }
                 uint conv = BinaryPrimitives.ReadUInt32LittleEndian(result.Buffer);
@@ -75,14 +82,16 @@ public class KcpServer : INetworkServer
                     // 洪水防护：未认证数据报只允许建立有界数量的会话
                     if (sessions.Count >= MaxSessions)
                     {
-                        Shared.Log.Warning($"[KcpServer] 会话数已达上限({MaxSessions})，拒绝新会话 Remote:{result.RemoteEndPoint}");
+                        if (ShouldLogWarning(ref lastSessionCapWarnUtc))
+                            Shared.Log.Warning($"[KcpServer] 会话数已达上限({MaxSessions})，拒绝新会话 Remote:{result.RemoteEndPoint}");
                         continue;
                     }
                     // P3 修复：O(1) 查 per-IP 计数（原实现遍历全部会话统计，洪泛时 O(n²)）。
                     int perIp = sessionsPerIp.TryGetValue(result.RemoteEndPoint.Address, out int c) ? c : 0;
                     if (perIp >= MaxSessionsPerIp)
                     {
-                        Shared.Log.Warning($"[KcpServer] 每 IP 会话数已达上限({MaxSessionsPerIp})，拒绝新会话 Remote:{result.RemoteEndPoint}");
+                        if (ShouldLogWarning(ref lastPerIpCapWarnUtc))
+                            Shared.Log.Warning($"[KcpServer] 每 IP 会话数已达上限({MaxSessionsPerIp})，拒绝新会话 Remote:{result.RemoteEndPoint}");
                         continue;
                     }
 
@@ -100,7 +109,23 @@ public class KcpServer : INetworkServer
                 }
                 catch (Exception ex)
                 {
-                    Shared.Log.Warning($"[KcpServer] 会话数据处理异常 SessionId:{session.SessionId} Exception:{ex.Message}");
+                    // P2 加固：协议异常（如 frg>=128 分片毒化）逐包抛异常；限频告警并把会话标记为待关闭，
+                    // 既防日志风暴，又防止攻击者不断重放异常分片驱动无限处理。
+                    if (ShouldLogWarning(ref lastInputErrorWarnUtc))
+                        Shared.Log.Warning($"[KcpServer] 会话数据处理异常 SessionId:{session.SessionId} Exception:{ex.Message}");
+                    session.MarkedForClose = true;
+                }
+
+                // P2 加固：会话被标记为待关闭（超大消息/协议异常）时立即移除并关闭，防止死链路残留。
+                if (session.MarkedForClose)
+                {
+                    if (sessions.TryRemove(key, out _))
+                    {
+                        DecrementPerIp(key.EndPoint.Address);
+                    }
+                    try { session.Close(); } catch { /* 关闭异常忽略 */ }
+                    Shared.Log.Warning($"[KcpServer] 移除异常/超大消息会话 SessionId:{session.SessionId} Remote:{key.EndPoint}");
+                    OnSessionDisconnected?.Invoke(session, "KCP protocol violation.");
                 }
 
                 CleanupIfNeeded();
@@ -172,6 +197,18 @@ public class KcpServer : INetworkServer
         else
         {
             sessionsPerIp.TryUpdate(address, v - 1, v);
+        }
+    }
+
+    /// <summary>接收循环告警限频（P2 加固）：同类告警每 <paramref name="minIntervalSeconds"/> 秒最多输出一次。</summary>
+    private bool ShouldLogWarning(ref DateTime lastUtc, int minIntervalSeconds = 5)
+    {
+        lock (warnGate)
+        {
+            var now = DateTime.UtcNow;
+            if ((now - lastUtc).TotalSeconds < minIntervalSeconds) return false;
+            lastUtc = now;
+            return true;
         }
     }
 

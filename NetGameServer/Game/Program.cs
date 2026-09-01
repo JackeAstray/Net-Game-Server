@@ -1,4 +1,4 @@
-﻿using Network;
+using Network;
 using Network.Tcp;
 using Shared;
 
@@ -28,7 +28,17 @@ namespace Game
             GameServerApp.ConnectToDatabase();
 
             Log.Info("服务器启动流程完成。按 Ctrl+C 退出。");
-            await Task.Delay(Timeout.Infinite);
+
+            // 健康检查 + 优雅关闭（迭代 21）
+            int healthPort = ConfigHelper.GetConfig<int>("HealthPort") == 0 ? 31304 + 10000 : ConfigHelper.GetConfig<int>("HealthPort");
+            Shared.HealthServer.Start(healthPort, nodeId);
+            NodeLifecycle.Default.RegisterShutdownHook(() =>
+            {
+                Log.Info("Game 优雅关闭：断开后端连接（心跳超时自动摘除注册）。");
+                return Task.CompletedTask;
+            });
+            await NodeLifecycle.Default.WaitForShutdownAsync();
+            await NodeLifecycle.Default.RunShutdownAsync();
         }
     }
 }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
@@ -114,6 +114,27 @@ namespace Gateway
                     // 收到数据包：刷新最近活动时间
                     Gateway.Managers.GatewaySessionManager.Instance.TouchSession(session.SessionId);
 
+                    // P2 加固：统一入站包大小上限（msgid 4 字节 + 64KB 负载，与后端 LengthPrefixedPacketReader 一致）。
+                    // KCP/UDP 直通不经过 LengthPrefixedPacketReader 的 64KB 上限，超大帧若转发到后端共享连接
+                    // 会触发 InvalidDataException 导致该网关所有客户端集体断线（DoS）；此处兜底拒绝并关闭连接。
+                    const int MaxGatewayInboundPacket = 4 + 64 * 1024;
+                    if (data.Length > MaxGatewayInboundPacket)
+                    {
+                        Shared.Log.Warning($"Gateway 拒绝超大入站包 Length:{data.Length} 上限:{MaxGatewayInboundPacket} SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                        try { session.Close(); } catch { /* 关闭异常吞掉 */ }
+                        return;
+                    }
+
+                    // P6 加固：每会话入站消息速率上限（防客户端洪泛打满共享后端队列/多节点）。
+                    // 超限关闭连接——滥用者被隔离，合法客户端不受影响。
+                    var gm = Gateway.Managers.GatewaySessionManager.Instance;
+                    if (!gm.TryConsumeInboundRate(session.SessionId, gm.GetInboundRateLimit()))
+                    {
+                        Shared.Log.Warning($"Gateway 会话入站消息超速，关闭连接 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                        try { session.Close(); } catch { /* 关闭异常吞掉 */ }
+                        return;
+                    }
+
                     if (data.Length >= 4)
                     {
                         int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
@@ -143,6 +164,18 @@ namespace Gateway
                             payload, session.SessionId, boundUserId > 0 ? boundUserId : (int?)null, boundUid, boundNickname);
 
                         byte[] wrapperMsg = Network.Routing.PacketBuilder.BuildPacket(msgId, routedPayload, out int routedLength);
+                        // C3 加固修复：转发帧整体上限。客户端原始载荷被入站上限(4+64KB)放行，但网关附加路由
+                        // 元数据后，转发帧的长度前缀会超过后端 LengthPrefixedPacketReader(64KB) 上限，后端抛
+                        // InvalidDataException 关闭网关↔后端共享连接，导致该网关全部客户端集体掉后端（C3 DoS 的绕过路径）。
+                        // 此处对"实际转发帧"（含元数据）整体设上限：超限丢弃，绝不把超限帧发往后端。
+                        // 说明：routedLength=4(前缀)+innerLength，后端 reader 校验的是前缀值 innerLength ≤ 65536。
+                        const int MaxForwardedFrameTotalBytes = 4 + 64 * 1024;
+                        if (routedLength > MaxForwardedFrameTotalBytes)
+                        {
+                            Shared.Log.Warning($"Gateway 转发帧超上限（含路由元数据后 {routedLength} 字节 > {MaxForwardedFrameTotalBytes}）丢弃 MsgId:{msgId} SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                            System.Buffers.ArrayPool<byte>.Shared.Return(wrapperMsg);
+                            return;
+                        }
                         byte[] outbound = wrapperMsg.AsSpan(0, routedLength).ToArray();
                         System.Buffers.ArrayPool<byte>.Shared.Return(wrapperMsg);
 
@@ -290,12 +323,15 @@ namespace Gateway
                             }
                         }
 
-                        // TCP 空闲超时踢线（无任何收发超过阈值的连接）
+                        // TCP/WebSocket 空闲超时踢线（无任何收发超过阈值的连接）。
+                        // 此前仅覆盖 TcpSession，WS 静默连接永远不会被清理（资源泄漏向量）；
+                        // WS 接收循环已刷新 LastActivityTime，可安全复用同一阈值。
                         foreach (var session in Gateway.Managers.GatewaySessionManager.Instance.GetAllSessions())
                         {
-                            if (session is Network.Tcp.TcpSession && now - session.LastActivityTime > TimeSpan.FromSeconds(tcpTimeoutSeconds))
+                            if ((session is Network.Tcp.TcpSession || session is Network.WebSockets.WebSocketSession)
+                                && now - session.LastActivityTime > TimeSpan.FromSeconds(tcpTimeoutSeconds))
                             {
-                                Shared.Log.Warning($"Gateway TCP 会话空闲超时，断开 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} 超时:{tcpTimeoutSeconds}s");
+                                Shared.Log.Warning($"Gateway 连接空闲超时，断开 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} 类型:{session.GetType().Name} 超时:{tcpTimeoutSeconds}s");
                                 session.Close();
                             }
                         }

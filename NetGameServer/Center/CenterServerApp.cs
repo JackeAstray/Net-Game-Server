@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Shared;
@@ -58,7 +58,8 @@ namespace Center
             // 重启窗口修复：周期持久化防重放状态，重启不重置握手重放窗口
             Framework.Core.Security.InternalAuthFilter.ConfigureReplayPersistence(
                 System.IO.Path.Combine(AppContext.BaseDirectory, "data", "replay_state.bin"));
-            var nodeAuthFilters = new System.Collections.Concurrent.ConcurrentDictionary<long, Framework.Core.Security.InternalAuthFilter>();
+            // P3 加固：认证过滤器注册表（供注册/状态处理器读取握手身份）。
+            var nodeAuthFilters = Center.Handlers.NodeAuthFilters.Registry;
 
             tcpServer.OnSessionConnected += session =>
             {
@@ -267,6 +268,8 @@ namespace Center
                         }
                         // P2 修复：清扫超时未回执的实体调用/迁移待回源路由（防 pending 表无界增长）
                         Center.Handlers.CenterDispatcher.SweepPending(TimeSpan.FromSeconds(30));
+                        // 迭代 21：清扫实体位置服务过期条目（防迁移异常导致位置泄漏）
+                        Center.Handlers.EntityLocationService.Instance.SweepExpired(DateTime.UtcNow);
                     }
                     catch (Exception ex)
                     {

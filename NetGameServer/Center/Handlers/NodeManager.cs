@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Linq;
 using Shared;
@@ -136,6 +136,19 @@ namespace Center.Handlers
             }
 
             clientGatewayRoutes[clientSessionId] = gatewaySession;
+        }
+
+        /// <summary>
+        /// 解除指定客户端会话的网关路由绑定（客户端断线时调用），防止 clientGatewayRoutes 随客户端
+        /// 累计增长无界（此前只有网关进程断开才清理整批路由）。
+        /// </summary>
+        public void UnbindClientGatewayRoute(long clientSessionId)
+        {
+            if (clientSessionId <= 0)
+            {
+                return;
+            }
+            clientGatewayRoutes.TryRemove(clientSessionId, out _);
         }
 
         /// <summary>

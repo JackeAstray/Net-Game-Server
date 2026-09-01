@@ -45,6 +45,14 @@ namespace Login.Handlers
             this.dbClient = dbClient;
             // 无状态签名 Token 服务：密钥从配置读取，缺省时使用随机密钥（重启后旧 Token 失效，保证安全性）。
             string secret = Shared.ConfigHelper.GetConfig<string>("TokenSecret") ?? Guid.NewGuid().ToString("N");
+            // 安全修复：占位符/示例密钥（含 .env.example 的 CHANGE_ME_* 模板值）拒绝上线，避免公开常量作为
+            // 令牌签名密钥导致任意伪造 token；缺失时仍随机回退（快速启动可用），但配置了占位符/过短密钥
+            // 直接启动失败（fail-closed），杜绝"部署即静默失守"。
+            Framework.Core.Security.SecretConfig.RejectPlaceholder(secret, "TokenSecret");
+            if (secret.Length < 16)
+            {
+                throw new InvalidOperationException("TokenSecret 长度过短（<16 字符）：请配置强随机 TokenSecret（建议 ≥32 字符），禁止使用弱密钥。");
+            }
             tokenService = new Framework.Core.Security.TokenService(secret);
         }
 

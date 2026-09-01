@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
@@ -35,6 +35,22 @@ public sealed class FrameSyncManager
     /// <summary>单帧聚合输入数量上限（超出丢弃，防洪泛）。</summary>
     private const int MaxInputsPerFrame = 256;
 
+    /// <summary>单客户端每帧输入配额上限（P3 加固：防单客户端填满整帧导致他人输入被丢弃）。</summary>
+    private const int MaxInputsPerClientPerFrame = 8;
+
+    /// <summary>每场景输入队列总长度上限（P3 加固：防输入队列无界增长耗尽内存）。</summary>
+    private const int MaxQueuedInputsPerScene = 512;
+
+    /// <summary>每客户端帧状态（FrameId 防重放/乱序）。</summary>
+    private sealed class ClientFrameState
+    {
+        public int LastFrameId;
+        public long LastWarnMs;
+    }
+
+    /// <summary>场景+客户端 -> 最近接受的 FrameId（用于去重/防重放）。</summary>
+    private readonly ConcurrentDictionary<(string SceneId, long ClientId), ClientFrameState> clientFrameStates = new();
+
     public FrameSyncManager(SceneManager sceneManager, TickEngine tickEngine)
     {
         this.sceneManager = sceneManager;
@@ -53,6 +69,23 @@ public sealed class FrameSyncManager
             return;
         }
 
+        // P3 加固：帧输入防重放/乱序 —— 同一客户端的 FrameId 必须严格递增。
+        // 此前 FrameId 完全被忽略，作弊客户端可对同一帧反复提交不同输入（能力/开火作弊），
+        // 也可乱序回放旧帧。现在 < 上次（乱序/回放）或 == 上次（重复提交）一律丢弃。
+        var key = (scene.SceneId, clientSessionId);
+        var state = clientFrameStates.GetOrAdd(key, _ => new ClientFrameState { LastFrameId = request.FrameId });
+        if (request.FrameId <= state.LastFrameId)
+        {
+            long nowMs = Environment.TickCount64;
+            if (nowMs - state.LastWarnMs > 5000)
+            {
+                state.LastWarnMs = nowMs;
+                Shared.Log.Warning($"帧同步 FrameId 非法被丢弃（重放/乱序/重复）SessionId:{clientSessionId} FrameId:{request.FrameId} LastSeen:{state.LastFrameId}");
+            }
+            return;
+        }
+        state.LastFrameId = request.FrameId;
+
         var inputs = request.Inputs;
         if (inputs == null || inputs.Count == 0)
         {
@@ -67,6 +100,11 @@ public sealed class FrameSyncManager
         }
 
         var queue = inputQueues.GetOrAdd(scene.SceneId, _ => new ConcurrentQueue<(long, PlayerInput)>());
+        // P3 加固：队列总长度上限（防洪泛填满队列耗尽内存）。
+        if (queue.Count >= MaxQueuedInputsPerScene)
+        {
+            return;
+        }
         for (int i = 0; i < count; i++)
         {
             var input = inputs[i];
@@ -101,13 +139,20 @@ public sealed class FrameSyncManager
             var inputs = new List<PlayerInput>();
             if (inputQueues.TryGetValue(scene.SceneId, out var queue))
             {
+                // P3 加固：每客户端每帧输入配额（防单客户端洪泛填满整帧导致他人输入被丢弃）。
+                var perClient = new Dictionary<long, int>();
                 while (queue.TryDequeue(out var entry))
                 {
                     if (sessionIds.Length == 0) continue; // 无玩家：丢弃过期输入
+                    if (perClient.TryGetValue(entry.sessionId, out var contributed))
+                    {
+                        if (contributed >= MaxInputsPerClientPerFrame) continue; // 该客户端已达单帧配额
+                    }
+                    if (inputs.Count >= MaxInputsPerFrame) break; // 帧满
                     var input = entry.input;
                     input.InputId = entry.sessionId; // 用玩家会话ID标识输入来源（long 全量，不截断）
-                    if (inputs.Count >= MaxInputsPerFrame) continue; // 聚合上限，丢弃超量输入
                     inputs.Add(input);
+                    perClient[entry.sessionId] = contributed + 1;
                 }
             }
 
@@ -163,5 +208,13 @@ public sealed class FrameSyncManager
     {
         inputQueues.TryRemove(sceneId, out _);
         sceneFrames.TryRemove(sceneId, out _);
+        // P3 加固：清理该场景下所有客户端的帧状态（防字典无界增长 + 防换房后旧 FrameId 状态误拒新输入）。
+        foreach (var kvp in clientFrameStates)
+        {
+            if (string.Equals(kvp.Key.SceneId, sceneId, StringComparison.Ordinal))
+            {
+                clientFrameStates.TryRemove(kvp.Key, out _);
+            }
+        }
     }
 }

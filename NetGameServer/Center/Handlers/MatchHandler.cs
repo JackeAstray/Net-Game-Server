@@ -35,6 +35,9 @@ namespace Center.Handlers
         private readonly ConcurrentDictionary<long, DateTime> queuedAt = new();
         private static readonly TimeSpan MatchQueueTimeout = TimeSpan.FromSeconds(60);
 
+        /// <summary>房间容量上限（与 Battle 侧容量钳制 200 对齐；防止客户端传超大门槛绕过容量门限/广播放大）。</summary>
+        public const int MaxRoomCapacity = 200;
+
         // P1 修复：按匹配分类的互斥锁，串行化"入队→人数判定→出队"，防止多网关并发重复建房/二次匹配。
         private readonly ConcurrentDictionary<string, object> categoryLocks = new();
 
@@ -290,7 +293,8 @@ namespace Center.Handlers
 
             string roomId = "Room_" + Guid.NewGuid().ToString("N");
             string roomName = string.IsNullOrWhiteSpace(request.RoomName) ? $"{request.SceneType}_Room" : request.RoomName.Trim();
-            int maxPlayers = request.MaxPlayers <= 0 ? 4 : request.MaxPlayers;
+            // 容量钳制 [1, MaxRoomCapacity]：防客户端传超大 MaxPlayers 绕过容量门限（与 Battle 侧钳制对齐）。
+            int maxPlayers = Math.Clamp(request.MaxPlayers <= 0 ? 4 : request.MaxPlayers, 1, MaxRoomCapacity);
             bool hasPassword = !string.IsNullOrWhiteSpace(request.Password);
             bool isPrivate = request.IsPrivate || hasPassword;
 
@@ -368,6 +372,71 @@ namespace Center.Handlers
                 Message = $"已找到 {roomList.Length} 个房间",
                 Rooms = roomList
             });
+        }
+
+        /// <summary>
+        /// 客户端断线处理（网关 PlayerDisconnectNotif）：
+        /// 1) 从匹配队列/去重表/时间戳表移除，防止断线玩家永久占用匹配队列；
+        /// 2) 从所有房间成员表移除（复用离房逻辑：房主转移/空房销毁/成员列表广播），
+        ///    防止断线玩家成为房间幽灵成员与广播目标。
+        /// </summary>
+        public async Task HandleClientDisconnectAsync(long clientSessionId, Network.ISession gatewaySession,
+            Action<Network.ISession, long, int, RoomClosedNotification> sendClosedToGatewayFunc,
+            Action<Network.ISession, long, int, RoomMemberListChangedNotification> sendMemberListToGatewayFunc,
+            Action<Network.ISession, long, int, RoomOwnerChangedNotification> sendOwnerChangedToGatewayFunc)
+        {
+            RemoveFromMatchPools(clientSessionId);
+
+            foreach (var room in rooms.ToArray())
+            {
+                if (room.Value.MemberStates.ContainsKey(clientSessionId))
+                {
+                    try
+                    {
+                        await HandleLeaveRoomRequestAsync(clientSessionId,
+                            new CenterLeaveRoomRequest { RoomId = room.Value.Info.RoomId },
+                            gatewaySession, sendClosedToGatewayFunc, sendMemberListToGatewayFunc, sendOwnerChangedToGatewayFunc);
+                    }
+                    catch (Exception ex)
+                    {
+                        Shared.Log.Warning($"客户端断线离房失败 ClientSessionId:{clientSessionId} RoomId:{room.Value.Info.RoomId} Exception:{ex}");
+                    }
+                }
+            }
+        }
+
+        /// <summary>把会话从所有匹配分类的队列/去重表/时间戳表移除（断线清理；每分类加锁与匹配段串行化一致）。</summary>
+        private void RemoveFromMatchPools(long clientSessionId)
+        {
+            queuedAt.TryRemove(clientSessionId, out _);
+
+            foreach (var pair in matchPools.ToArray())
+            {
+                lock (GetCategoryLock(pair.Key))
+                {
+                    var remaining = new ConcurrentQueue<long>();
+                    while (pair.Value.TryDequeue(out var sid))
+                    {
+                        if (sid != clientSessionId)
+                        {
+                            remaining.Enqueue(sid);
+                        }
+                    }
+                    matchPools[pair.Key] = remaining;
+                }
+            }
+
+            foreach (var pair in queuedPlayers.ToArray())
+            {
+                lock (GetCategoryLock(pair.Key))
+                {
+                    pair.Value.TryRemove(clientSessionId, out _);
+                    if (pair.Value.Count == 0)
+                    {
+                        queuedPlayers.TryRemove(pair.Key, out _);
+                    }
+                }
+            }
         }
     }
 }

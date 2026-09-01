@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using Game.Network;
 using Shared;
@@ -148,16 +148,24 @@ namespace Game.Handlers
         /// <summary>
         /// 确定发送者是否被指定目标用户屏蔽。
         /// </summary>
-        /// <remarks>依赖 BlacklistCache 的内容，假定被屏蔽用户以键集合表示。匹配前要求两个 ID 均为正数。</remarks>
+        /// <remarks>M5 修复：改为 fail-closed——目标用户黑名单缓存未加载（未登录/预热被延迟/预热失败）时
+        /// 无法确认"未被拉黑"，按"可能被拉黑"处理（返回 true），防止缓存冷时被拉黑者绕过屏蔽
+        /// （此前缓存缺失返回 false 放行，构成隐私判定绕过）。匹配前要求两个 ID 均为正数。</remarks>
         /// <param name="targetUserId">目标用户的 ID，应为正整数，用于在黑名单缓存中查找。</param>
         /// <param name="senderUserId">发送者用户的 ID，应为正整数，用于在目标用户的黑名单中查找。</param>
-        /// <returns>若目标用户的黑名单包含发送者用户则返回 true；否则返回 false。</returns>
+        /// <returns>目标用户的黑名单包含发送者用户或目标黑名单状态未知时返回 true；否则返回 false。</returns>
         public static bool IsBlockedByTarget(int targetUserId, int senderUserId)
         {
-            return targetUserId > 0
-                && senderUserId > 0
-                && BlacklistCache.TryGetValue(targetUserId, out var blockedUsers)
-                && blockedUsers.ContainsKey(senderUserId);
+            if (targetUserId <= 0 || senderUserId <= 0)
+            {
+                return false;
+            }
+            // fail-closed：缓存缺失（未知）按"被拉黑"处理。
+            if (!BlacklistCache.TryGetValue(targetUserId, out var blockedUsers))
+            {
+                return true;
+            }
+            return blockedUsers.ContainsKey(senderUserId);
         }
 
         /// <summary>

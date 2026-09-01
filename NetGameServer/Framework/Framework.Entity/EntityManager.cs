@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
@@ -26,6 +26,12 @@ namespace Framework.Entity
         /// <summary>集合变更版本号（Add/Remove 自增）。</summary>
         public long Version => System.Threading.Interlocked.Read(ref version);
 
+        /// <summary>实体新增/更新事件（外部建立反索引用，如 SceneManager 的 entityId→sceneId 路由表）。</summary>
+        public event Action<long, Entity>? EntityAdded;
+
+        /// <summary>实体移除事件（外部维护反索引用）。</summary>
+        public event Action<long, string>? EntityRemoved;
+
         /// <summary>添加或更新实体。</summary>
         public void AddOrUpdateEntity(long entityId, Entity entity)
         {
@@ -36,6 +42,7 @@ namespace Framework.Entity
             var byType = entitiesByType.GetOrAdd(entity.TypeName, _ => new ConcurrentDictionary<long, Entity>());
             byType[entityId] = entity;
             System.Threading.Interlocked.Increment(ref version);
+            EntityAdded?.Invoke(entityId, entity);
         }
 
         /// <summary>移除实体。</summary>
@@ -50,6 +57,7 @@ namespace Framework.Entity
                 byType.TryRemove(entityId, out _);
             }
             System.Threading.Interlocked.Increment(ref version);
+            EntityRemoved?.Invoke(entityId, entity.TypeName);
         }
 
         /// <summary>获取实体；不存在返回 null。</summary>

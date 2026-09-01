@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -11,6 +11,33 @@ namespace Center;
 
 internal static class CenterHttpServer
 {
+    /// <summary>当前运行的 WebApplication 实例（优雅关闭 StopAsync 用，迭代 21）。</summary>
+    private static WebApplication? currentApp;
+
+    /// <summary>
+    /// 优雅停止管理台 HTTP 服务（NodeLifecycle 关闭钩子调用）。
+    /// 停止 Kestrel 后，StartAsync 中的 app.RunAsync() 返回。
+    /// </summary>
+    public static async Task StopAsync()
+    {
+        var app = currentApp;
+        if (app == null)
+        {
+            return;
+        }
+        Shared.Log.Info("Center HTTP 管理台正在停止...");
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await app.StopAsync(cts.Token);
+        }
+        catch (Exception ex)
+        {
+            Shared.Log.Error(ex, "Center HTTP 管理台停止异常");
+        }
+        currentApp = null;
+    }
+
     /// <summary>
     /// 启动并运行中心服务器的 ASP.NET Core Web 应用；配置 Kestrel 在配置的 HTTP 端口（默认 31316）监听，启用 Serilog，注册并映射控制器。
     /// </summary>
@@ -20,17 +47,37 @@ internal static class CenterHttpServer
     public static async Task StartAsync(string[] args)
     {
         int httpPort = ConfigHelper.GetConfig<int>("CenterHttpPort") == 0 ? 31316 : ConfigHelper.GetConfig<int>("CenterHttpPort");
+        string bindAddress = ConfigHelper.GetConfig<string>("CenterHttpListenAddress") ?? "0.0.0.0";
 
         var builder = WebApplication.CreateBuilder(args);
         builder.WebHost.ConfigureKestrel(options =>
         {
-            options.ListenAnyIP(httpPort);
+            // P3 加固：管理面绑定地址可配置（CenterHttpListenAddress，默认 0.0.0.0 保持兼容）。
+            // 生产建议绑回环(127.0.0.1)或经 TLS/防火墙保护；明文 HTTP 上承载 X-Api-Key 有被嗅探风险。
+            if (string.Equals(bindAddress, "0.0.0.0", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(bindAddress, "*", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(bindAddress, "::", StringComparison.OrdinalIgnoreCase))
+            {
+                options.ListenAnyIP(httpPort);
+            }
+            else
+            {
+                options.Listen(System.Net.IPAddress.Parse(bindAddress), httpPort);
+            }
         });
+
+        if (!string.Equals(bindAddress, "127.0.0.1", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(bindAddress, "localhost", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(bindAddress, "::1", StringComparison.OrdinalIgnoreCase))
+        {
+            Shared.Log.Warning($"Center HTTP 管理面以明文监听在 {bindAddress}:{httpPort}（X-Api-Key 经明文 HTTP 传输有被嗅探风险）。生产建议绑定 127.0.0.1 或启用 TLS/防火墙。");
+        }
 
         builder.Host.UseSerilog();
         builder.Services.AddControllers();
 
         var app = builder.Build();
+        currentApp = app;
 
         // Center 管理接口全部需要 API Key 鉴权（节点/房间/集群视图都是敏感信息）。
         // 配置项 CenterHttpApiKeys: 每行一个 Key（或逗号分隔）。

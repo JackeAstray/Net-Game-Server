@@ -1,4 +1,4 @@
-﻿using System.Security.Cryptography;
+using System.Security.Cryptography;
 
 namespace Framework.Core.Security;
 
@@ -26,11 +26,15 @@ public static class SessionIdGenerator
     /// <summary>
     /// 生成一个全局唯一且不可预测的会话 ID。
     /// 单调计数器保证并发下的唯一性，splitmix64 混淆保证不可预测。
+    /// 掩掉符号位保证结果为非负：全代码库以 <c>&gt; 0</c> 作为"会话有效"判定
+    /// （如 MatchHandler 人数统计、Gateway 迁移绑定、Friend 回包投递等），
+    /// 若输出为负会导致这些判定静默失效（实测 91005 迁移绑定约 50% 概率被丢弃）。
+    /// 63 位 splitmix64 双射仍保持进程内唯一、相邻样本不可反推、跨进程碰撞可忽略。
     /// </summary>
     public static long Next()
     {
         long seq = Interlocked.Increment(ref counter);
-        return (long)SplitMix64((ulong)seq + Seed);
+        return (long)(SplitMix64((ulong)seq + Seed) & 0x7FFF_FFFF_FFFF_FFFFUL);
     }
 
     private static ulong SplitMix64(ulong x)

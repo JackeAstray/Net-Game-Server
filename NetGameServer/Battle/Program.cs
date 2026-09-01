@@ -1,4 +1,4 @@
-﻿using Shared;
+using Shared;
 using Log = Shared.Log;
 
 namespace Battle
@@ -34,7 +34,12 @@ namespace Battle
 
             Log.Info("战斗服务器启动完成...");
 
-            await Task.Delay(-1);
+            // 健康检查 + 优雅关闭（迭代 21）：/healthz 存活、/readyz 就绪，关服时 flush 实体持久化
+            int healthPort = ConfigHelper.GetConfig<int>("HealthPort") == 0 ? 31307 + 10000 : ConfigHelper.GetConfig<int>("HealthPort");
+            HealthServer.Start(healthPort, nodeId);
+            NodeLifecycle.Default.RegisterShutdownHook(BattleServerApp.ShutdownAsync);
+            await NodeLifecycle.Default.WaitForShutdownAsync();
+            await NodeLifecycle.Default.RunShutdownAsync();
         }
     }
 }

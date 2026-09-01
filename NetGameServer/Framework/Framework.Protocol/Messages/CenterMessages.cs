@@ -1,4 +1,4 @@
-﻿using Framework.Protocol;
+using Framework.Protocol;
 using MemoryPack;
 
 // ============================================================
@@ -513,5 +513,48 @@ public partial class EntityMigrateCommand
 {
     public long ClientSessionId { get; set; } = new();
     public string TargetNodeId { get; set; } = string.Empty;
+}
+
+// ===== 实体位置服务（迭代 21，对标 ET Location 代理）=====
+// 目标：解决"EntityCall 硬编码 TargetNodeId，实体迁移后路由变旧"的问题，
+// 并提供实体→节点的路由缓存（降低 Center 重复解析热点的负担）。
+// 语义：Battle 在实体生成/绑定/迁移完成时向 Center 登记位置，离开/销毁/迁出时注销；
+// 调用方拿不到/拿不准目标节点时可向 Center 查询（91009），Center 回 91010（含节点 host/port 供直达）。
+
+/// <summary>实体位置登记（Battle → Center）：entityId 现在位于 nodeId 节点。</summary>
+[MemoryPackable]
+[GameMessage(91007, Target = "Center", Internal = true)]
+public partial class EntityLocationRegister
+{
+    public long EntityId { get; set; } = new();
+    public string NodeId { get; set; } = string.Empty;
+}
+
+/// <summary>实体位置注销（Battle → Center）：entityId 已离开当前节点。</summary>
+[MemoryPackable]
+[GameMessage(91008, Target = "Center", Internal = true)]
+public partial class EntityLocationUnregister
+{
+    public long EntityId { get; set; } = new();
+}
+
+/// <summary>实体位置查询（Battle → Center）：entityId 现在在哪个节点。</summary>
+[MemoryPackable]
+[GameMessage(91009, Target = "Center", Internal = true)]
+public partial class EntityLocateRequest
+{
+    public long EntityId { get; set; } = new();
+}
+
+/// <summary>实体位置查询响应（Center → Battle）：携带节点 id 与直连地址（host/port）。</summary>
+[MemoryPackable]
+[GameMessage(91010, Target = "All", Internal = true)]
+public partial class EntityLocateResponse
+{
+    public long EntityId { get; set; } = new();
+    public bool Found { get; set; }
+    public string NodeId { get; set; } = string.Empty;
+    public string Host { get; set; } = string.Empty;
+    public int Port { get; set; }
 }
 

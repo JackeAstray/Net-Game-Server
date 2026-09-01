@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 
 namespace Battle.Handlers
 {
@@ -25,6 +25,9 @@ namespace Battle.Handlers
 
         // 网格尺寸（开启 AOI 时有效）
         public float GridSize { get; set; } = 50.0f;
+
+        // AOI 视野半径（以网格为单位的九宫格半径，1=3x3 九宫格，2=5x5，3=7x7...）
+        public int AoiViewRadius { get; set; } = 1;
 
         // 扩展规则字典：存储局内特有规则
         // 例如：{"WinCondition" : "DestroyBase", "TimeLimit" : "3600", "CanRespawn" : "true"}

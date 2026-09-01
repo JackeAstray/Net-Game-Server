@@ -6,6 +6,7 @@
     "MaxPlayers": 1000,
     "UseAoi": true,
     "GridSize": 20.0,
+    "AoiViewRadius": 2,
     "CustomRules": {}
   },
   {

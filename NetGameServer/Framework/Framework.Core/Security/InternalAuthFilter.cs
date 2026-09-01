@@ -10,15 +10,54 @@ namespace Framework.Core.Security;
 /// </summary>
 public static class SecretConfig
 {
-    /// <summary>已知的占位符/默认密钥集合（黑名单）。</summary>
-    private static readonly string[] PlaceholderSecrets = new[]
+    /// <summary>占位符/示例密钥的精确匹配集合（大小写不敏感整串）。</summary>
+    private static readonly string[] PlaceholderExact = new[]
     {
-        "change-this-secret",
-        "change-me",
-        "default",
-        "secret",
-        ""
+        "default", "secret", "changeme", "change-me", "change_me", "change-this-secret"
     };
+
+    /// <summary>占位符/示例密钥的特征子串（大小写不敏感包含匹配）。
+    /// 用于拦截 .env.example 之类的模板占位值：它们是长、大写、带下划线的公开常量
+    /// （如 CHANGE_ME_SHARED_SECRET_AT_LEAST_16_CHARS），长度虽达标但仍属占位符，
+    /// 仅靠整串精确匹配会全部漏过。</summary>
+    private static readonly string[] PlaceholderPatterns = new[]
+    {
+        "changeme", "change-me", "change_me", "placeholder", "replace", "example",
+        "dummy", "test-key", "demo", "sample"
+    };
+
+    /// <summary>判断值是否为占位符/示例密钥（空值也视为占位）。</summary>
+    public static bool IsPlaceholder(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return true;
+        foreach (var p in PlaceholderExact)
+        {
+            if (string.Equals(value, p, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        foreach (var p in PlaceholderPatterns)
+        {
+            if (value.IndexOf(p, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 校验值不是占位符/示例密钥；是则抛异常（fail-closed），返回原值便于链式调用。
+    /// 缺失/为空时直接放行，由调用方决策（Require 会拒绝缺失；回退路径自行处理）。
+    /// 测试模式（AllowPlaceholderSecretsInTests）放行。
+    /// </summary>
+    public static string RejectPlaceholder(string value, string configKey)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return value;
+        if (AllowPlaceholderSecrets) return value;
+        if (IsPlaceholder(value))
+        {
+            throw new InvalidOperationException(
+                $"{configKey} 使用了占位符/示例密钥（可能来自 .env.example 的 CHANGE_ME_* 模板）：'{value}'。" +
+                "请配置强随机密钥，禁止把模板占位值直接上线。");
+        }
+        return value;
+    }
 
     /// <summary>
     /// 读取必需的共享密钥：缺失、为空或命中占位符时抛异常。
@@ -46,16 +85,7 @@ public static class SecretConfig
         {
             return value;
         }
-        foreach (var placeholder in PlaceholderSecrets)
-        {
-            if (string.Equals(value, placeholder, StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException(
-                    $"{configKey} 不能使用占位符密钥 '{placeholder}'。请配置为强随机密钥。" +
-                    "（测试场景可调用 SecretConfig.AllowPlaceholderSecretsInTests() 临时绕过。）");
-            }
-        }
-        return value;
+        return RejectPlaceholder(value, configKey);
     }
 
     /// <summary>
@@ -98,7 +128,7 @@ public static class SecretConfig
     {
         var value = Resolve(configKey);
         if (!string.IsNullOrWhiteSpace(value) &&
-            !Array.Exists(PlaceholderSecrets, p => p == value) &&
+            !IsPlaceholder(value) &&
             value.Length >= 16)
         {
             return value;
@@ -131,6 +161,9 @@ public sealed class InternalAuthFilter
 
     /// <summary>当前连接是否已通过认证</summary>
     public bool IsAuthenticated { get; private set; }
+
+    /// <summary>握手声明的远端节点 ID（P3 加固：注册/状态处理器据此校验身份一致性，防伪造节点注册/接管）。</summary>
+    public string? AuthenticatedNodeId { get; private set; }
 
     /// <summary>
     /// 防重放缓存：nodeId|nonce -> 接受时刻（Ticks）。
@@ -231,6 +264,7 @@ public sealed class InternalAuthFilter
         MaybePersistReplayState();
 
         IsAuthenticated = true;
+        AuthenticatedNodeId = remoteNodeId;
         return true;
     }
 
