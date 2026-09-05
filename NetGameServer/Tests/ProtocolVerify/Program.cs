@@ -1039,10 +1039,34 @@ lbManager.RemoveNodeBySession(lbSessionB);
 
 // ===== 18. DB 配置化分发验证（DbDispatcher 全量注册 + 双格式 + RequestId 路由） =====
 
-// 18.1 全量注册：DB 服务器 20 条请求消息全部迁移到强类型分发
+// 18.1 全量注册：DB 服务器 28 条请求消息全部迁移到强类型分发（20 好友/账号 + 8 公会）
 var dbDispatcher = DB.Handlers.DbDispatcher.BuildDispatcher();
-Console.WriteLine($"DB Dispatcher 注册消息数: {dbDispatcher.RegisteredCount} (期望 20)");
-if (dbDispatcher.RegisteredCount != 20) return 1;
+Console.WriteLine($"DB Dispatcher 注册消息数: {dbDispatcher.RegisteredCount} (期望 28)");
+if (dbDispatcher.RegisteredCount != 28) return 1;
+
+// 18.1b 公会消息 round-trip（Guild 段：字段与 MemoryPack 序列化对齐）
+var guildCreate = new Framework.Protocol.Generated.DbGuildCreate { UserId = 7, Name = "Alpha", Declaration = "hi" };
+var gcBody = MemoryPack.MemoryPackSerializer.Serialize(guildCreate);
+var gcBack = MemoryPack.MemoryPackSerializer.Deserialize<Framework.Protocol.Generated.DbGuildCreate>(gcBody);
+bool guildCreateOk = gcBack != null && gcBack.UserId == 7 && gcBack.Name == "Alpha" && gcBack.Declaration == "hi";
+var guildMy = new Framework.Protocol.Generated.DbGuildMyResult
+{
+    Success = true,
+    GuildId = 3,
+    Name = "Alpha",
+    OwnerUserId = 7,
+    Declaration = "hi",
+    Members = new System.Collections.Generic.List<Framework.Protocol.Generated.DbGuildMemberInfo>
+    {
+        new Framework.Protocol.Generated.DbGuildMemberInfo { UserId = 7, Nickname = "A", Role = "Owner" },
+        new Framework.Protocol.Generated.DbGuildMemberInfo { UserId = 8, Nickname = "B", Role = "Member" }
+    }
+};
+var gmBody = MemoryPack.MemoryPackSerializer.Serialize(guildMy);
+var gmBack = MemoryPack.MemoryPackSerializer.Deserialize<Framework.Protocol.Generated.DbGuildMyResult>(gmBody);
+bool guildMyOk = gmBack != null && gmBack.GuildId == 3 && gmBack.Members.Count == 2 && gmBack.Members[1].Role == "Member";
+Console.WriteLine($"DB 公会 round-trip: Create={guildCreateOk} MyMembers={(gmBack?.Members.Count ?? -1)} (期望 True/2)");
+if (!guildCreateOk || !guildMyOk) return 1;
 
 // 18.2 生成类字段对齐 round-trip（defs 与旧协议对齐：FriendUniqueId/TargetUniqueId/UserId）
 var dbAddFriend = new Framework.Protocol.Generated.DbFriendAdd { UserId = 7, FriendUniqueId = "100000008", Remark = "hi" };

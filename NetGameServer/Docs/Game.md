@@ -1,14 +1,14 @@
 # Game 业务节点
 
-> 通用业务层：社交（好友/聊天/黑名单）、背包等非战斗业务（公会模块规划中，尚未实现）。
+> 通用业务层：社交（好友/聊天/黑名单）、公会、背包等非战斗业务。
 > 强类型消息分发（`GameDispatcher` + MemoryPack/JSON 双格式），
-> 业务方法按业务域拆 partial（`FriendHandler` / `ChatHandler` / ...）。
+> 业务方法按业务域拆 partial（`FriendHandler` / `ChatHandler` / `GuildHandler`）。
 >
 > 项目总览见 [README.md](../../README.md)，编码规范见 [Code-Style.md](Code-Style.md)。
 
 ## 职责边界
 
-- ✅ 账号创建后的业务数据管理（背包/好友/聊天等）
+- ✅ 账号创建后的业务数据管理（背包/好友/公会/聊天等）
 - ✅ 业务消息强类型分发（`RegisterAsync<TReq, TRes>`）
 - ✅ 跨业务协调（业务 A 调业务 B 的方法，**同节点内**直接方法调用，**跨节点**走 EntityCall）
 - ✅ 与 Battle 节点通过 `clientSessionId` 协作（Battle 持主实体/场景，Game 持业务/持久化）
@@ -30,6 +30,7 @@
 | `Game/Handlers/GameDispatcher.cs` | 强类型消息分发（注册业务方法） |
 | `Game/Handlers/FriendHandler.cs` | 好友系统（partial 拆 6 文件，迭代 12） |
 | `Game/Handlers/ChatHandler.cs` | 聊天 |
+| `Game/Handlers/GuildHandler.cs` / `.DbResponse.cs` | 公会（创建/我的/加入/退出/解散/踢人/转让/宣言，partial 拆 2 文件） |
 | `Game/Network/ClientSessionWrapper.cs` | 客户端会话包装（注入 `RoutedUserId/uid/nickname`） |
 | `Game/Managers/PlayerSessionManager.cs` | 玩家会话表 |
 

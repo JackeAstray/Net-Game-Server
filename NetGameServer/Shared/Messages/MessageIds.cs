@@ -60,6 +60,24 @@ namespace Shared.Messages
         public const int DbGetFriendApplyListRes = 1118;
         public const int DbHandleFriendApplyRes = 1119;
 
+        // === DB 公会存取 (1020-1027 请求 / 1120-1127 响应，响应 = 请求 + 100) ===
+        public const int DbGuildCreateReq = 1020;
+        public const int DbGuildCreateRes = 1120;
+        public const int DbGuildMyReq = 1021;
+        public const int DbGuildMyRes = 1121;
+        public const int DbGuildJoinReq = 1022;
+        public const int DbGuildJoinRes = 1122;
+        public const int DbGuildLeaveReq = 1023;
+        public const int DbGuildLeaveRes = 1123;
+        public const int DbGuildDisbandReq = 1024;
+        public const int DbGuildDisbandRes = 1124;
+        public const int DbGuildKickReq = 1025;
+        public const int DbGuildKickRes = 1125;
+        public const int DbGuildTransferReq = 1026;
+        public const int DbGuildTransferRes = 1126;
+        public const int DbGuildUpdateDeclReq = 1027;
+        public const int DbGuildUpdateDeclRes = 1127;
+
         // === 登录服务器客户端通信 (10000-19999 网关转发过来) ===
         public const int PlayerDisconnectNotif = 10000;
 
@@ -188,5 +206,24 @@ namespace Shared.Messages
         public const int InviteGameAckReq = 50026;
         public const int InviteGameAckRes = 50027;
         public const int InviteGameAckNotif = 50028;
+
+        // === 公会功能通信 (51001-51099 网关转发过来) ===
+        public const int GuildCreateReq = 51001;
+        public const int GuildCreateRes = 51002;
+        public const int GuildMyReq = 51003;
+        public const int GuildMyRes = 51004;
+        public const int GuildJoinReq = 51005;
+        public const int GuildJoinRes = 51006;
+        public const int GuildLeaveReq = 51007;
+        public const int GuildLeaveRes = 51008;
+        public const int GuildDisbandReq = 51009;
+        public const int GuildDisbandRes = 51010;
+        public const int GuildKickReq = 51011;
+        public const int GuildKickRes = 51012;
+        public const int GuildTransferReq = 51013;
+        public const int GuildTransferRes = 51014;
+        public const int GuildUpdateDeclReq = 51015;
+        public const int GuildUpdateDeclRes = 51016;
+        public const int GuildChangedNotif = 51017;
     }
 }

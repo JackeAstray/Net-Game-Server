@@ -37,11 +37,21 @@ namespace DB
 
             modelBuilder.Entity<FriendRequest>()
                 .HasIndex(r => new { r.RequesterUserId, r.ReceiverUserId, r.Status });
+
+            modelBuilder.Entity<Guild>()
+                .HasIndex(g => g.Name)
+                .IsUnique();
+
+            modelBuilder.Entity<GuildMember>()
+                .HasIndex(m => new { m.GuildId, m.UserId })
+                .IsUnique();
         }
 
         public DbSet<User> Users { get; set; }
         public DbSet<Friend> Friends { get; set; }
         public DbSet<Blacklist> Blacklists { get; set; }
         public DbSet<FriendRequest> FriendRequests { get; set; }
+        public DbSet<Guild> Guilds { get; set; }
+        public DbSet<GuildMember> GuildMembers { get; set; }
     }
 }

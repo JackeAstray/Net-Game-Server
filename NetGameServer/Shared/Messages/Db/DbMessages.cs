@@ -296,4 +296,113 @@ namespace Shared.Messages.Db
         public int RequesterUserId { get; set; }
         public int ReceiverUserId { get; set; }
     }
+
+    // ===== 公会存取（Game ↔ DB，对应协议 1020-1027 / 1120-1127）=====
+
+    public class DbGuildMemberItem
+    {
+        public int UserId { get; set; }
+        public string Nickname { get; set; } = string.Empty;
+        public string Role { get; set; } = string.Empty;
+    }
+
+    public class DbGuildCreateRequest
+    {
+        public int UserId { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public string Declaration { get; set; } = string.Empty;
+    }
+
+    public class DbGuildCreateResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+        public int GuildId { get; set; }
+    }
+
+    public class DbGuildMyRequest
+    {
+        public int UserId { get; set; }
+    }
+
+    public class DbGuildMyResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+        public int GuildId { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public int OwnerUserId { get; set; }
+        public string Declaration { get; set; } = string.Empty;
+        public List<DbGuildMemberItem> Members { get; set; } = new();
+    }
+
+    public class DbGuildJoinRequest
+    {
+        public int UserId { get; set; }
+        public int GuildId { get; set; }
+    }
+
+    public class DbGuildJoinResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+    }
+
+    public class DbGuildLeaveRequest
+    {
+        public int UserId { get; set; }
+    }
+
+    public class DbGuildLeaveResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+    }
+
+    public class DbGuildDisbandRequest
+    {
+        public int UserId { get; set; }
+    }
+
+    public class DbGuildDisbandResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+    }
+
+    public class DbGuildKickRequest
+    {
+        public int OperatorUserId { get; set; }
+        public int TargetUserId { get; set; }
+    }
+
+    public class DbGuildKickResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+    }
+
+    public class DbGuildTransferRequest
+    {
+        public int OperatorUserId { get; set; }
+        public int TargetUserId { get; set; }
+    }
+
+    public class DbGuildTransferResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+    }
+
+    public class DbGuildUpdateDeclRequest
+    {
+        public int UserId { get; set; }
+        public string Declaration { get; set; } = string.Empty;
+    }
+
+    public class DbGuildUpdateDeclResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+    }
 }

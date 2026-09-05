@@ -306,6 +306,92 @@ namespace DB.Handlers
                 }, requestId > 0 ? requestId : null);
             }, jsonFallback: true);
 
+            // 公会：创建
+            dispatcher.Register<DbGuildCreate>(async (ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                await DbQueryHandler.HandleGuildCreateRequest(session, new DbGuildCreateRequest
+                {
+                    UserId = msg.UserId,
+                    Name = msg.Name,
+                    Declaration = msg.Declaration
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
+            // 公会：我的公会（含成员列表）
+            dispatcher.Register<DbGuildMy>(async (ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                await DbQueryHandler.HandleGuildMyRequest(session, new DbGuildMyRequest
+                {
+                    UserId = msg.UserId
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
+            // 公会：加入
+            dispatcher.Register<DbGuildJoin>(async (ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                await DbQueryHandler.HandleGuildJoinRequest(session, new DbGuildJoinRequest
+                {
+                    UserId = msg.UserId,
+                    GuildId = msg.GuildId
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
+            // 公会：退出
+            dispatcher.Register<DbGuildLeave>(async (ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                await DbQueryHandler.HandleGuildLeaveRequest(session, new DbGuildLeaveRequest
+                {
+                    UserId = msg.UserId
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
+            // 公会：解散（仅会长）
+            dispatcher.Register<DbGuildDisband>(async (ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                await DbQueryHandler.HandleGuildDisbandRequest(session, new DbGuildDisbandRequest
+                {
+                    UserId = msg.UserId
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
+            // 公会：踢出成员（仅会长）
+            dispatcher.Register<DbGuildKick>(async (ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                await DbQueryHandler.HandleGuildKickRequest(session, new DbGuildKickRequest
+                {
+                    OperatorUserId = msg.OperatorUserId,
+                    TargetUserId = msg.TargetUserId
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
+            // 公会：转让会长（仅会长）
+            dispatcher.Register<DbGuildTransfer>(async (ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                await DbQueryHandler.HandleGuildTransferRequest(session, new DbGuildTransferRequest
+                {
+                    OperatorUserId = msg.OperatorUserId,
+                    TargetUserId = msg.TargetUserId
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
+            // 公会：修改宣言（仅会长）
+            dispatcher.Register<DbGuildUpdateDecl>(async (ctx, msg) =>
+            {
+                var session = Routed(ctx, out long requestId);
+                await DbQueryHandler.HandleGuildUpdateDeclRequest(session, new DbGuildUpdateDeclRequest
+                {
+                    UserId = msg.UserId,
+                    Declaration = msg.Declaration
+                }, requestId > 0 ? requestId : null);
+            }, jsonFallback: true);
+
             return dispatcher;
         }
     }

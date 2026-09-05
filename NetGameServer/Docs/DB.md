@@ -9,7 +9,7 @@
 ## 职责边界
 
 - ✅ 账号/角色/好友/聊天/邮件/统计等业务数据的存取
-- ✅ 强类型消息分发（`DbDispatcher` 注册 40 条消息：1000~1019 请求 + 1100~1119 响应）
+- ✅ 强类型消息分发（`DbDispatcher` 注册 48 条消息：1000~1027 请求 + 1100~1127 响应，含好友/账号/公会）
 - ✅ 实体持久化服务（`EntityPersistenceService`）：按 EntityType 分目录、单条加载 O(1)
 - ✅ 请求-响应匹配（`__requestId` 尾部元数据关联）
 - ❌ 不做业务校验（业务节点负责）
@@ -27,7 +27,7 @@
 |---|---|
 | `DB/Program.cs` | 启动入口 |
 | `DB/DbServerApp.cs` | 节点主类（partial） |
-| `DB/Handlers/DbDispatcher.cs` | 强类型消息分发（注册 40 条 DB 请求/响应） |
+| `DB/Handlers/DbDispatcher.cs` | 强类型消息分发（注册 48 条 DB 请求/响应） |
 | `DB/Handlers/DbQueryHandler.cs` | 业务方法：`(ClientSessionWrapper, XxxRequest?)` 签名，无二次序列化（迭代 13 D1 化） |
 | `DB/Routing/RequestContextSession.cs` | DB 链路 `__requestId` 关联上下文 |
 | `Framework/Framework.Entity/EntityPersistenceService.cs` | 实体持久化（按 EntityType 分目录文件） |

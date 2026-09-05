@@ -128,6 +128,8 @@ namespace Game
 
             // 注册好友处理器
             Handlers.FriendHandler.Register(router);
+            // 注册公会处理器
+            Handlers.GuildHandler.Register(router);
 
             // 当客户端建立连接时记录信息（可在此处加入鉴权或会话初始化逻辑）
             tcpServer.OnSessionConnected += session =>
@@ -402,6 +404,10 @@ namespace Game
                     Log.Debug("Game <- DB 收到消息 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint!, msgId, data.Length, payload.Length);
 
                     bool handled = Handlers.FriendHandler.TryHandleDbResponse(session, msgId, payload);
+                    if (!handled)
+                    {
+                        handled = Handlers.GuildHandler.TryHandleDbResponse(session, msgId, payload);
+                    }
                     if (!handled)
                     {
                         Log.Warning($"Game 未处理的 DB 响应消息 MsgId:{msgId} SessionId:{session.SessionId}");

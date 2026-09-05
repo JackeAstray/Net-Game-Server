@@ -379,3 +379,149 @@ public partial class DbFriendApplyHandleResult
     public string Message { get; set; } = string.Empty;
 }
 
+// ============================================================
+// Guild（公会）存取协议（1020-1027 请求 / 1120-1127 响应）
+// 请求类字段与 Shared.Messages.Db 业务 DTO 保持一致（JSON 兼容回退）。
+// ============================================================
+
+[MemoryPackable]
+[GameStruct]
+public partial class DbGuildMemberInfo
+{
+    public int UserId { get; set; } = new();
+    public string Nickname { get; set; } = string.Empty;
+    public string Role { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+[GameMessage(1020, Target = "Db", Reply = "DbGuildCreateResult", Internal = true)]
+public partial class DbGuildCreate
+{
+    public int UserId { get; set; } = new();
+    public string Name { get; set; } = string.Empty;
+    public string Declaration { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+[GameMessage(1120, Target = "Db", Internal = true)]
+public partial class DbGuildCreateResult
+{
+    public bool Success { get; set; } = new();
+    public string Message { get; set; } = string.Empty;
+    public int GuildId { get; set; } = new();
+}
+
+[MemoryPackable]
+[GameMessage(1021, Target = "Db", Reply = "DbGuildMyResult", Internal = true)]
+public partial class DbGuildMy
+{
+    public int UserId { get; set; } = new();
+}
+
+[MemoryPackable]
+[GameMessage(1121, Target = "Db", Internal = true)]
+public partial class DbGuildMyResult
+{
+    public bool Success { get; set; } = new();
+    public string Message { get; set; } = string.Empty;
+    public int GuildId { get; set; } = new();
+    public string Name { get; set; } = string.Empty;
+    public int OwnerUserId { get; set; } = new();
+    public string Declaration { get; set; } = string.Empty;
+    public List<DbGuildMemberInfo> Members { get; set; } = new();
+}
+
+[MemoryPackable]
+[GameMessage(1022, Target = "Db", Reply = "DbGuildJoinResult", Internal = true)]
+public partial class DbGuildJoin
+{
+    public int UserId { get; set; } = new();
+    public int GuildId { get; set; } = new();
+}
+
+[MemoryPackable]
+[GameMessage(1122, Target = "Db", Internal = true)]
+public partial class DbGuildJoinResult
+{
+    public bool Success { get; set; } = new();
+    public string Message { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+[GameMessage(1023, Target = "Db", Reply = "DbGuildLeaveResult", Internal = true)]
+public partial class DbGuildLeave
+{
+    public int UserId { get; set; } = new();
+}
+
+[MemoryPackable]
+[GameMessage(1123, Target = "Db", Internal = true)]
+public partial class DbGuildLeaveResult
+{
+    public bool Success { get; set; } = new();
+    public string Message { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+[GameMessage(1024, Target = "Db", Reply = "DbGuildDisbandResult", Internal = true)]
+public partial class DbGuildDisband
+{
+    public int UserId { get; set; } = new();
+}
+
+[MemoryPackable]
+[GameMessage(1124, Target = "Db", Internal = true)]
+public partial class DbGuildDisbandResult
+{
+    public bool Success { get; set; } = new();
+    public string Message { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+[GameMessage(1025, Target = "Db", Reply = "DbGuildKickResult", Internal = true)]
+public partial class DbGuildKick
+{
+    public int OperatorUserId { get; set; } = new();
+    public int TargetUserId { get; set; } = new();
+}
+
+[MemoryPackable]
+[GameMessage(1125, Target = "Db", Internal = true)]
+public partial class DbGuildKickResult
+{
+    public bool Success { get; set; } = new();
+    public string Message { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+[GameMessage(1026, Target = "Db", Reply = "DbGuildTransferResult", Internal = true)]
+public partial class DbGuildTransfer
+{
+    public int OperatorUserId { get; set; } = new();
+    public int TargetUserId { get; set; } = new();
+}
+
+[MemoryPackable]
+[GameMessage(1126, Target = "Db", Internal = true)]
+public partial class DbGuildTransferResult
+{
+    public bool Success { get; set; } = new();
+    public string Message { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+[GameMessage(1027, Target = "Db", Reply = "DbGuildUpdateDeclResult", Internal = true)]
+public partial class DbGuildUpdateDecl
+{
+    public int UserId { get; set; } = new();
+    public string Declaration { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+[GameMessage(1127, Target = "Db", Internal = true)]
+public partial class DbGuildUpdateDeclResult
+{
+    public bool Success { get; set; } = new();
+    public string Message { get; set; } = string.Empty;
+}
+
