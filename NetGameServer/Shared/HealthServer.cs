@@ -130,6 +130,19 @@ public sealed class HealthServer : IDisposable
         }
     }
 
+    // ===== Prometheus /metrics（B2 监控）：节点可注册自定义 gauge，连同进程基础指标输出 =====
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string Help, Func<double> Value)> gauges = new();
+
+    /// <summary>注册一个自定义指标（name 须符合 Prometheus 命名：小写字母/数字/下划线）。重复注册覆盖。</summary>
+    public static void RegisterGauge(string name, string help, Func<double> value)
+    {
+        if (string.IsNullOrWhiteSpace(name) || value == null)
+        {
+            return;
+        }
+        gauges[name] = (help ?? string.Empty, value);
+    }
+
     private (int Status, string Body) BuildResponse(string path)
     {
         switch (path)
@@ -142,11 +155,42 @@ public sealed class HealthServer : IDisposable
                     return (503, "{\"status\":\"draining\",\"service\":\"readiness\",\"node\":\"" + JsonEscape(nodeId) + "\"}");
                 }
                 return (200, "{\"status\":\"ready\",\"service\":\"readiness\",\"node\":\"" + JsonEscape(nodeId) + "\"}");
+            case "/metrics":
+                return (200, BuildMetrics());
             case "/":
                 return (200, "{\"status\":\"ok\",\"service\":\"net-game-server\",\"node\":\"" + JsonEscape(nodeId) + "\",\"port\":" + Port + "}");
             default:
                 return (404, "{\"status\":\"not_found\"}");
         }
+    }
+
+    /// <summary>Prometheus 文本格式指标（进程/GC/线程 + 节点注册的 gauge）。</summary>
+    private string BuildMetrics()
+    {
+        var sb = new System.Text.StringBuilder(512);
+        sb.AppendLine("# HELP netgame_process_uptime_seconds 进程运行秒数（单调时钟）");
+        sb.AppendLine("# TYPE netgame_process_uptime_seconds gauge");
+        sb.AppendLine($"netgame_process_uptime_seconds {(Environment.TickCount64 / 1000.0):F0}");
+        sb.AppendLine("# HELP netgame_process_managed_memory_bytes 托管堆已分配字节");
+        sb.AppendLine("# TYPE netgame_process_managed_memory_bytes gauge");
+        sb.AppendLine($"netgame_process_managed_memory_bytes {GC.GetTotalMemory(false)}");
+        sb.AppendLine("# HELP netgame_process_threads 进程托管线程数");
+        sb.AppendLine("# TYPE netgame_process_threads gauge");
+        sb.AppendLine($"netgame_process_threads {System.Threading.ThreadPool.ThreadCount}");
+        foreach (var kv in gauges)
+        {
+            sb.AppendLine($"# HELP {kv.Key} {kv.Value.Help}");
+            sb.AppendLine($"# TYPE {kv.Key} gauge");
+            try
+            {
+                sb.AppendLine($"{kv.Key} {kv.Value.Value():R}");
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"# ERROR {kv.Key}: {ex.Message}");
+            }
+        }
+        return sb.ToString();
     }
 
     private static string JsonEscape(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"");

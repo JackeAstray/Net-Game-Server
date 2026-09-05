@@ -33,6 +33,7 @@ namespace Center
             // 健康检查 + 优雅关闭（迭代 21）
             int healthPort = ConfigHelper.GetConfig<int>("HealthPort") == 0 ? 31306 + 10000 : ConfigHelper.GetConfig<int>("HealthPort");
             HealthServer.Start(healthPort, nodeId);
+            HealthServer.RegisterGauge("netgame_center_nodes", "Center 注册节点数", () => Center.Handlers.NodeManager.Instance.GetNodeCount());
             NodeLifecycle.Default.RegisterShutdownHook(async () =>
             {
                 await CenterServerApp.ShutdownAsync();

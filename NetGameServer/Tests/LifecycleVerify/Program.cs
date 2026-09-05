@@ -77,6 +77,11 @@ var (s2, b2) = await HttpGetAsync(hp, "/readyz");
 Check(s2 == 200 && b2.Contains("\"status\":\"ready\""), $"GET /readyz = 200 ready（实际 {s2}）");
 var (s3, _) = await HttpGetAsync(hp, "/nope");
 Check(s3 == 404, $"GET /nope = 404（实际 {s3}）");
+var (s3b, b3b) = await HttpGetAsync(hp, "/metrics");
+Check(s3b == 200 && b3b.Contains("netgame_process_uptime_seconds") && b3b.Contains("# TYPE"), $"GET /metrics = 200 Prometheus 文本（实际 {s3b}）");
+HealthServer.RegisterGauge("netgame_test_gauge", "测试指标", () => 42.5);
+var (s3c, b3c) = await HttpGetAsync(hp, "/metrics");
+Check(s3c == 200 && b3c.Contains("netgame_test_gauge 42.5"), $"GET /metrics 含注册 gauge（实际 {s3c}）");
 
 // ---- 3. 优雅关闭（排空：/readyz 应转 503，钩子应执行且幂等） ----
 bool hookRan = false;

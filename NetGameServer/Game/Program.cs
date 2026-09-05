@@ -32,6 +32,7 @@ namespace Game
             // 健康检查 + 优雅关闭（迭代 21）
             int healthPort = ConfigHelper.GetConfig<int>("HealthPort") == 0 ? 31304 + 10000 : ConfigHelper.GetConfig<int>("HealthPort");
             Shared.HealthServer.Start(healthPort, nodeId);
+            Shared.HealthServer.RegisterGauge("netgame_game_online_players", "Game 在线玩家数", () => Game.Managers.PlayerSessionManager.Instance.GetOnlinePlayerCount());
             NodeLifecycle.Default.RegisterShutdownHook(() =>
             {
                 Log.Info("Game 优雅关闭：断开后端连接（心跳超时自动摘除注册）。");

@@ -32,6 +32,7 @@ namespace Gateway
             // 健康检查 + 优雅关闭（迭代 21）
             int healthPort = ConfigHelper.GetConfig<int>("HealthPort") == 0 ? 31300 + 10000 : ConfigHelper.GetConfig<int>("HealthPort");
             HealthServer.Start(healthPort, nodeId);
+            HealthServer.RegisterGauge("netgame_gateway_online_sessions", "Gateway 在线客户端会话数", () => Gateway.Managers.GatewaySessionManager.Instance.GetOnlineCount());
             NodeLifecycle.Default.RegisterShutdownHook(GatewayServerApp.ShutdownAsync);
             await NodeLifecycle.Default.WaitForShutdownAsync();
             await NodeLifecycle.Default.RunShutdownAsync();
