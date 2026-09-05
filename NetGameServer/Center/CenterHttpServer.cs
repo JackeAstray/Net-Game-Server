@@ -53,8 +53,8 @@ internal static class CenterHttpServer
         var builder = WebApplication.CreateBuilder(args);
         builder.WebHost.ConfigureKestrel(options =>
         {
-            // P3 加固：管理面绑定地址可配置（CenterHttpListenAddress，默认 0.0.0.0 保持兼容）。
-            // 生产建议绑回环(127.0.0.1)或经 TLS/防火墙保护；明文 HTTP 上承载 X-Api-Key 有被嗅探风险。
+            // P3 加固：管理面绑定地址可配置（CenterHttpListenAddress，默认 127.0.0.1 回环保持安全）。
+            // 需要从外部访问时设 0.0.0.0，但建议经 TLS/防火墙保护；明文 HTTP 上承载 X-Api-Key 有被嗅探风险。
             if (string.Equals(bindAddress, "0.0.0.0", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(bindAddress, "*", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(bindAddress, "::", StringComparison.OrdinalIgnoreCase))

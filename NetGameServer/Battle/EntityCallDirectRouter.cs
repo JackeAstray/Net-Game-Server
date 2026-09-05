@@ -49,7 +49,7 @@ public static class EntityCallDirectRouter
         {
             Framework.Core.Log.Warning($"实体远程调用直达发送失败（回退 Center）Node:{call.TargetNodeId} Err:{ex.Message}");
             peers.TryRemove(call.TargetNodeId, out _);
-            try { wrapper.Stop(); } catch { }
+            try { wrapper.Stop(); } catch { /* 停止失败无影响，连接池自动重连 */ }
             return false;
         }
     }
@@ -95,7 +95,8 @@ public static class EntityCallDirectRouter
         }
         else if (peers.TryGetValue(nodeId, out var w) && w != null && w.IsConnected)
         {
-            try { wrapper.Stop(); } catch { }
+            // 并发下已被其他线程建立成功，丢弃本次新建的 wrapper
+            try { wrapper.Stop(); } catch { /* 见上，静默即可 */ }
         }
     }
 

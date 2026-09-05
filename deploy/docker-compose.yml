@@ -21,6 +21,9 @@ x-common-node: &common-node
   environment: &common-env
     CenterNodeSharedSecret: "${CenterNodeSharedSecret:-netgame-dev-shared-secret-change-me}"
     Logging__MinimumLevel: "Information"
+    # 健康检查端口（业务端口+10000）供宿主机 curl 访问：容器内须监听 0.0.0.0，
+    # 否则 TcpListener 默认绑 127.0.0.1 无法被端口映射到达（生产可改回回环 + 探针走 exec）
+    HealthListenAddress: "0.0.0.0"
     # 跨节点主机名：compose 服务名即容器 DNS 名，节点间用服务名互连
     GatewayHost: "gateway"
     LoginHost: "login"

@@ -23,11 +23,26 @@ public sealed class HealthServer : IDisposable
     public int Port { get; }
     public bool IsDraining => NodeLifecycle.Default.IsDraining;
 
-    public HealthServer(int port, string nodeId)
+    public HealthServer(int port, string nodeId, string? listenAddress = null)
     {
         this.nodeId = nodeId;
         Port = port;
-        listener = new TcpListener(IPAddress.Loopback, port);
+        // 监听地址可配置（HealthListenAddress，默认回环保安全）：
+        // Docker/K8s 探针需从宿主机访问，设 0.0.0.0 开放（docker-compose 已默认开放）。解析失败回退回环。
+        IPAddress bind = IPAddress.Loopback;
+        string? addr = listenAddress ?? ConfigHelper.GetConfig<string>("HealthListenAddress");
+        if (!string.IsNullOrWhiteSpace(addr))
+        {
+            if (IPAddress.TryParse(addr, out var parsed))
+            {
+                bind = parsed;
+            }
+            else
+            {
+                Log.Warning($"健康检查监听地址无效: {addr}，回退 127.0.0.1");
+            }
+        }
+        listener = new TcpListener(bind, port);
         acceptLoop = Task.Run(AcceptLoopAsync);
     }
 
@@ -35,9 +50,9 @@ public sealed class HealthServer : IDisposable
     /// 启动健康检查服务（后台运行，不阻塞调用线程）。
     /// 配置优先：HealthPort；未配置时由调用方传默认端口（一般 = 业务端口 + 10000）。
     /// </summary>
-    public static HealthServer Start(int port, string nodeId)
+    public static HealthServer Start(int port, string nodeId, string? listenAddress = null)
     {
-        return new HealthServer(port, nodeId);
+        return new HealthServer(port, nodeId, listenAddress);
     }
 
     private async Task AcceptLoopAsync()

@@ -15,6 +15,8 @@
 | Postgres | 5432 | 可选（实体持久化 Postgres 后端验证，`--profile postgres`） |
 
 每个节点另开健康检查端口 = 节点端口 + 10000（如 Battle `41307/healthz`、`/readyz`）。
+compose 已统一注入 `HealthListenAddress=0.0.0.0`，使健康端口可从宿主机直接 curl
+（否则节点 `HealthServer` 默认只绑 `127.0.0.1`，端口映射将无法到达）；生产环境建议改回回环并用探针走 `docker exec`。
 
 ## 启动
 

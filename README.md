@@ -22,7 +22,7 @@
 | 在线迁移 | 玩家主实体 + 属主玩法实体（Skill/Item）同包随迁 | [Battle.md](NetGameServer/Docs/Battle.md) |
 | 实体位置路由 | 91007~91010 位置登记/查询 + EntityCallRouter 缓存，迁移后修正 stale 路由、支持 Battle 直达（对标 ET Location） | [Center.md](NetGameServer/Docs/Center.md) |
 | 可插拔持久化 | `IEntityPersistenceStore` 抽象 + File/MySQL/PostgreSQL/Redis 实现 + 批量落库（对标 GeekServer 脏状态自动保存） | [DB.md](NetGameServer/Docs/DB.md) |
-| 优雅关闭/健康检查 | 全节点 SIGINT/SIGTERM 排空 + 关服 flush，`/healthz` `/readyz` 健康端口（端口+10000） | [Shared.md](NetGameServer/Docs/Shared.md) |
+| 优雅关闭/健康检查 | 全节点 SIGINT/SIGTERM 排空 + 关服 flush，`/healthz` `/readyz` 健康端口（端口+10000），监听地址可配 `HealthListenAddress`（默认回环；Docker/K8s 探针设 `0.0.0.0`） | [Shared.md](NetGameServer/Docs/Shared.md) |
 | AOI 九宫格 | 视野半径可配（3x3/5x5/7x7）+ 2000 实体一致性压测（网格索引 vs 暴力枚举） | [Battle.md](NetGameServer/Docs/Battle.md) |
 | Docker 一键集群 | MySQL/Redis(+Postgres 可选) + 六节点 compose 编排，含实体持久化 SQL 后端实时验证 | [deploy/README-docker.md](deploy/README-docker.md) |
 | 单线程 tick | 固定频率主循环串行处理入站消息，状态只在 tick 线程读写 | [Code-Style.md](NetGameServer/Docs/Code-Style.md) |
