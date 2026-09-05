@@ -33,7 +33,11 @@ namespace Center
             // 健康检查 + 优雅关闭（迭代 21）
             int healthPort = ConfigHelper.GetConfig<int>("HealthPort") == 0 ? 31306 + 10000 : ConfigHelper.GetConfig<int>("HealthPort");
             HealthServer.Start(healthPort, nodeId);
-            NodeLifecycle.Default.RegisterShutdownHook(CenterHttpServer.StopAsync);
+            NodeLifecycle.Default.RegisterShutdownHook(async () =>
+            {
+                await CenterServerApp.ShutdownAsync();
+                await CenterHttpServer.StopAsync();
+            });
             await NodeLifecycle.Default.WaitForShutdownAsync();
             await NodeLifecycle.Default.RunShutdownAsync();
             // 等 Kestrel 停止后 StartAsync 返回（优雅停服）

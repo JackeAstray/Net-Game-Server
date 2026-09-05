@@ -32,11 +32,7 @@ namespace Login
             // 健康检查 + 优雅关闭（迭代 21）
             int healthPort = ConfigHelper.GetConfig<int>("HealthPort") == 0 ? 31302 + 10000 : ConfigHelper.GetConfig<int>("HealthPort");
             HealthServer.Start(healthPort, nodeId);
-            NodeLifecycle.Default.RegisterShutdownHook(() =>
-            {
-                Log.Info("Login 优雅关闭：断开登录连接（后端心跳超时自动摘除注册）。");
-                return Task.CompletedTask;
-            });
+            NodeLifecycle.Default.RegisterShutdownHook(LoginServerApp.ShutdownAsync);
             await NodeLifecycle.Default.WaitForShutdownAsync();
             await NodeLifecycle.Default.RunShutdownAsync();
         }

@@ -316,6 +316,33 @@ namespace Login.Handlers
         }
 
         /// <summary>
+        /// 带 Token 绑定的改密入口（HTTP 管理端点使用）：
+        /// Token 必须有效，且目标账户必须属于 Token 持有人本人。
+        /// </summary>
+        public async Task<(bool Allowed, string? Reason, ChangePasswordResponse? Response)> HandleChangePasswordWithTokenAsync(ChangePasswordRequest request, string? token)
+        {
+            var verified = VerifyToken(token);
+            if (verified == null)
+            {
+                return (false, "登录凭证无效或已过期，请重新登录", null);
+            }
+
+            int accountUserId = await GetUserIdByAccountAsync(request.Account ?? string.Empty);
+            if (accountUserId <= 0)
+            {
+                return (false, "账户不存在", null);
+            }
+            if (accountUserId != verified.Value.UserId)
+            {
+                Log.Warning($"修改密码越权被拒：TokenUserId:{verified.Value.UserId} 请求账户 UserId:{accountUserId}");
+                return (false, "无权限修改其他账户密码", null);
+            }
+
+            var response = await ChangePasswordCoreAsync(request, verified.Value.UserId);
+            return (true, null, response);
+        }
+
+        /// <summary>
         /// 处理更改密码的请求并返回操作结果。
         /// </summary>
         /// <remarks>封装 ChangePasswordCoreAsync 并以重试计数 0 发起请求。</remarks>

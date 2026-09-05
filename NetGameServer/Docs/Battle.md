@@ -14,7 +14,7 @@
 - ✅ 客户端 ScriptAction 路由到 csx 脚本（`Battle/Handlers/MessageRouter.cs`）
 - ✅ 玩法实体 ID 节点段防跨节点撞 ID（迭代 15）
 - ✅ 单线程 tick 引擎串行处理入站消息（`DrainInboundMessages`）
-- ❌ 不做账号/好友/公会（Game 节点）
+- ❌ 不做账号/好友等业务（Game 节点）
 - ❌ 不做控制平面协调（Center 节点）
 
 ## 入口与启动

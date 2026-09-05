@@ -31,6 +31,8 @@ namespace Login
 
         public static readonly System.Collections.Concurrent.ConcurrentDictionary<long, PendingDbRequest> PendingRequests = new System.Collections.Concurrent.ConcurrentDictionary<long, PendingDbRequest>();
         private static System.Threading.CancellationTokenSource? centerHeartbeatCts;
+        private static WebApplication? webApiApp;
+        private static Task? webApiRunTask;
         private static readonly object sharedLoginSync = new object();
         private static TcpClientWrapper? sharedDbClient;
         private static Login.Handlers.LoginHandler? sharedLoginHandler;
@@ -693,6 +695,7 @@ namespace Login
             };
 
             var app = builder.Build();
+            webApiApp = app;
 
             // 鉴权中间件必须在 MapControllers 之前
             app.UseMiddleware<ApiKeyAuthMiddleware>(apiKeyOptions);
@@ -715,7 +718,35 @@ namespace Login
             app.MapControllers();
 
             Shared.Log.Info($"ASP.NET API已启动，正在监听 HTTP 端口 {apiPort}{(httpsEnabled ? $", HTTPS 端口 {httpsPort}" : string.Empty)}");
-            _ = app.RunAsync();
+            webApiRunTask = app.RunAsync();
+        }
+
+        /// <summary>
+        /// 优雅关闭 Login 服务：停止 Center 心跳并停止 Web API。
+        /// </summary>
+        public static async Task ShutdownAsync()
+        {
+            centerHeartbeatCts?.Cancel();
+            centerHeartbeatCts?.Dispose();
+            centerHeartbeatCts = null;
+
+            var app = webApiApp;
+            if (app != null)
+            {
+                try
+                {
+                    using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await app.StopAsync(cts.Token);
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error(ex, "Login 停止 Web API 异常");
+                }
+                webApiApp = null;
+                webApiRunTask = null;
+            }
+
+            Shared.Log.Info("Login 优雅关闭完成。");
         }
     }
 }

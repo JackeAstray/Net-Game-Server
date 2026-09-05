@@ -35,7 +35,7 @@ Shared 是 **class library**，不直接启动；被 `Battle` / `Game` / `Center
 | `Shared/UUIDHelper.cs` | UUID 生成 |
 | `Shared/RedisHelper.cs` | Redis 客户端辅助（缓存 / 分布式限流计数器） |
 | `Shared/NodeLaunchArgs.cs` | 节点启动 args 通用解析（被 Machine / Supervisor / 各节点 Program.cs 共用） |
-| `Shared/Messages/MessageIds.cs` | 协议 MsgId 常量（`MessageIds.cs`，由 `Protocol/defs` + 协议生成器维护） |
+| `Shared/Messages/MessageIds.cs` | 协议 MsgId 常量（由 `Framework.Protocol.Generator` 从 `Framework.Protocol/Messages/*.cs` 的 `[GameMessage]` 声明编译期生成） |
 | `Shared/Messages/*` | 业务消息 DTO（按域分目录：Battle / Center / Chat / Db / Login / Social / Special） |
 | `Shared/Data/*` | 业务数据模型（User / Friend / Blacklist / FriendRequest / ChatMessage） |
 

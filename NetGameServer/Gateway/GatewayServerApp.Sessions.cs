@@ -29,13 +29,24 @@ namespace Gateway
             // HTTP 监听端口和后端 Login HTTP 地址（支持默认值）
             int httpPort = ConfigHelper.GetConfig<int>("GatewayHttpPort") == 0 ? 31301 : ConfigHelper.GetConfig<int>("GatewayHttpPort");
             string loginHttpUrl = ConfigHelper.GetConfig<string>("LoginHttpUrl") ?? "http://127.0.0.1:31303";
+            // 安全默认：仅监听回环地址，避免反代管理口默认暴露到公网。
+            string bindAddress = ConfigHelper.GetConfig<string>("GatewayHttpListenAddress") ?? "127.0.0.1";
 
             var builder = WebApplication.CreateBuilder(args);
 
             // 配置 Kestrel 显式监听指定端口，避免被 IISExpress 或其他默认配置干扰
             builder.WebHost.ConfigureKestrel(options =>
             {
-                options.ListenAnyIP(httpPort);
+                if (string.Equals(bindAddress, "0.0.0.0", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(bindAddress, "*", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(bindAddress, "::", StringComparison.OrdinalIgnoreCase))
+                {
+                    options.ListenAnyIP(httpPort);
+                }
+                else
+                {
+                    options.Listen(System.Net.IPAddress.Parse(bindAddress), httpPort);
+                }
             });
 
             builder.Host.UseSerilog();
@@ -74,10 +85,19 @@ namespace Gateway
                 );
 
             var app = builder.Build();
+            reverseProxyApp = app;
             app.MapReverseProxy();
 
-            Shared.Log.Info($"网关 HTTP API 反向代理已启动，监听端口: {httpPort} 并路由 /api 至 {loginHttpUrl}");
-            _ = app.RunAsync();
+            bool nonLoopback = !string.Equals(bindAddress, "127.0.0.1", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(bindAddress, "localhost", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(bindAddress, "::1", StringComparison.OrdinalIgnoreCase);
+            if (nonLoopback && loginHttpUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+            {
+                Shared.Log.Warning($"Gateway 反代以明文 HTTP 暴露在 {bindAddress}:{httpPort}，且上游目标为 {loginHttpUrl}。生产环境建议启用 HTTPS/TLS 或仅绑定回环地址。 ");
+            }
+
+            Shared.Log.Info($"网关 HTTP API 反向代理已启动，监听地址: {bindAddress}:{httpPort} 并路由 /api 至 {loginHttpUrl}");
+            reverseProxyRunTask = app.RunAsync();
         }
 
         /// <summary>
@@ -134,7 +154,32 @@ namespace Gateway
         /// </summary>
         public static async Task ShutdownAsync()
         {
-            Shared.Log.Info("Gateway 优雅关闭开始：断开全部客户端会话...");
+            Shared.Log.Info("Gateway 优雅关闭开始：停止后台循环与HTTP反代，并断开全部客户端会话...");
+
+            maintenanceLoopCts?.Cancel();
+            maintenanceLoopCts?.Dispose();
+            maintenanceLoopCts = null;
+
+            centerHeartbeatCts?.Cancel();
+            centerHeartbeatCts?.Dispose();
+            centerHeartbeatCts = null;
+
+            var app = reverseProxyApp;
+            if (app != null)
+            {
+                try
+                {
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await app.StopAsync(cts.Token);
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Error(ex, "Gateway 停止 HTTP 反代异常");
+                }
+                reverseProxyApp = null;
+                reverseProxyRunTask = null;
+            }
+
             int closed = 0;
             try
             {
@@ -145,9 +190,9 @@ namespace Gateway
                         session.Close();
                         closed++;
                     }
-                    catch
+                    catch (Exception ex)
                     {
-                        // 单会话关闭失败不阻塞整体
+                        Shared.Log.Warning($"Gateway 关闭会话失败 SessionId:{session.SessionId} Exception:{ex.Message}");
                     }
                 }
             }
@@ -156,7 +201,6 @@ namespace Gateway
                 Shared.Log.Error(ex, "Gateway 关闭客户端会话异常");
             }
             Shared.Log.Info($"Gateway 优雅关闭完成（已断开 {closed} 个客户端会话）。");
-            await Task.CompletedTask;
         }
     }
 }

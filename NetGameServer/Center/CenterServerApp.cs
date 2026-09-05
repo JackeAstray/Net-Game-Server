@@ -10,6 +10,7 @@ namespace Center
     public static class CenterServerApp
     {
         private static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>? handlers;
+        private static System.Threading.CancellationTokenSource? maintenanceLoopCts;
 
         /// <summary>匹配/房间处理器实例（管理台房间接口用）。</summary>
         public static Center.Handlers.MatchHandler? Match { get; private set; }
@@ -251,14 +252,19 @@ namespace Center
                 ?? Path.Combine(AppContext.BaseDirectory, "data", "node_snapshot.json");
             Center.Handlers.NodeManager.Instance.RestoreFromSnapshotFile(snapshotFile);
 
+            maintenanceLoopCts?.Cancel();
+            maintenanceLoopCts?.Dispose();
+            maintenanceLoopCts = new System.Threading.CancellationTokenSource();
+            var maintenanceToken = maintenanceLoopCts.Token;
+
             _ = Task.Run(async () =>
             {
                 TimeSpan timeout = TimeSpan.FromSeconds(Shared.NodeHeartbeatDefaults.CenterProbeTimeoutSeconds);
-                while (true)
+                while (!maintenanceToken.IsCancellationRequested)
                 {
                     try
                     {
-                        await Task.Delay(TimeSpan.FromSeconds(Shared.NodeHeartbeatDefaults.HeartbeatIntervalSeconds));
+                        await Task.Delay(TimeSpan.FromSeconds(Shared.NodeHeartbeatDefaults.HeartbeatIntervalSeconds), maintenanceToken);
                         // 周期保存注册表快照（节点注册/心跳变化后持久化）
                         Center.Handlers.NodeManager.Instance.SaveSnapshotToFile(snapshotFile);
                         int removedCount = Center.Handlers.NodeManager.Instance.RemoveInactiveNodes(timeout);
@@ -271,12 +277,28 @@ namespace Center
                         // 迭代 21：清扫实体位置服务过期条目（防迁移异常导致位置泄漏）
                         Center.Handlers.EntityLocationService.Instance.SweepExpired(DateTime.UtcNow);
                     }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
                     catch (Exception ex)
                     {
                         Log.Error($"Center 快照/超时清理循环异常（下轮继续重试）: {ex}");
                     }
                 }
-            });
+            }, maintenanceToken);
+        }
+
+        /// <summary>
+        /// 优雅关闭 Center 后台维护循环。
+        /// </summary>
+        public static Task ShutdownAsync()
+        {
+            maintenanceLoopCts?.Cancel();
+            maintenanceLoopCts?.Dispose();
+            maintenanceLoopCts = null;
+            Log.Info("Center 后台维护循环已停止。");
+            return Task.CompletedTask;
         }
     }
 }

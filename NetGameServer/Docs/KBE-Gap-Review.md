@@ -2,13 +2,13 @@
 
 > 现状快照 + 可优化路线。前 20 轮迭代已将原始核查的差距基本落地。
 >
-> 本版聚焦两件事：① 服务器 ↔ KBE 现状对比（迭代 20 全部 ✅）；
+> 本版聚焦两件事：① 服务器 ↔ KBE 现状对比（迭代 21 全部 ✅）；
 > ② 关键能力落地路径的可追溯索引（指向代码 / 文档）。
-> 涉及文件均给路径/行号，可直接据此迭代。最后更新：迭代 20。
+> 涉及文件均给路径/行号，可直接据此迭代。最后更新：迭代 21。
 
 ---
 
-## 一、服务器 ↔ KBE 现状对比（迭代 20）
+## 一、服务器 ↔ KBE 现状对比（迭代 21）
 
 > ✅ 对齐　◐ 部分对齐　✗ 未实现
 
@@ -35,9 +35,9 @@
 | Profile/告警 | tick 耗时 + 慢消息告警 | TickEngine 统计 + 慢 tick 告警（迭代5） | ✅ |
 | Bots 压测 | bots 多机器人跑分 | TCP/WS 协议 + RTT/P50/P95 + 时间同步 offset 分布 + ramp-up（迭代19 D8） | ✅ |
 | 运维 | 管理台 + 自动拉起 + 压测 | 仪表盘 + Supervisor + Machine（迭代6/20） | ✅ |
-| 工程 | 巨型类 + 强类型 + 测试 | 巨类全拆 partial（迭代10/12）；**六套件（新增 MachineVerify）+ 压测/热迁移/时间同步/Machine 化测试（迭代11/19/20）** | ✅ |
+| 工程 | 巨型类 + 强类型 + 测试 | 巨类全拆 partial（迭代10/12）；**八套件（新增 MachineVerify / LifecycleVerify / ClientGenVerify）+ 压测/热迁移/时间同步/Machine 化/持久化/客户端生成测试（迭代11/19/20/21）** | ✅ |
 
-**总览**：迭代 19 时 21 维对比中 1 项 ◐（machine 配置发现）；**迭代 20 后全部 21 项 ✅**。
+**总览**：迭代 19 时 21 维对比中 1 项 ◐（machine 配置发现）；**迭代 20 后全部 21 项 ✅**，迭代 21 补齐实体位置路由（对标 ET Location）与持久化/客户端生成验证。
 
 ### 迭代 20 增量（Machine 化落点）
 
@@ -46,9 +46,20 @@
 - `Shared/ConfigHelper.SetRuntimeOverride` 运行时覆盖（最高优先级内存配置源）
 - 协议扩展：`CenterRegisterNodeRequest` 增 `InstanceId/MachineId/SupervisedBy` 三字段（参与签名，验签路径已扩展）
 - `Center/Handlers/NodeManager.cs`：`ServerNodeInfo` 持久化 3 字段
-- `Center/Controllers/ClusterController.cs`：`/api/center/cluster` 按 MachineId 聚合
+- `Center/Controllers/CenterController.cs`：`/api/center/cluster` 按 MachineId 聚合（另含 `/health` `/nodes` `/summary` `/rooms`）
 - 管理台『机器/进程总览』页（前端）
 - `--emit-supervisor-config` 把 topology 渲染成 supervisor.json 保持老 Supervisor 路径可用
+
+### 迭代 21 增量（实体位置路由 + 持久化/客户端生成收口）
+
+- 实体位置服务（对标 ET Location）：Battle 实体生成/绑定/迁移完成发 `91007` 登记，销毁/迁出发 `91008` 注销；
+  `91009` 查询 → Center 回 `91010`（含目标节点 host/port 供 Battle 直达）；TTL 120s 周期清扫。
+  Battle 侧 `EntityCallRouter` 缓存 entityId→nodeId，迁移路由完成（91005）与位置响应（91010）刷新缓存；
+  `EntityCallDirectRouting=true` 时优先 `EntityCallDirectRouter` 直发，失败自动回退 Center 中继。
+- `Framework/Framework.Persistence/`（`PersistenceStoreFactory` + MySql / PostgreSql / Redis / File 四类实体存储）
+- `Tests/LifecycleVerify` 第七套件：可插拔持久化 / 批量落库 / 健康检查（`/healthz` `/readyz`，端口+10000）/ 优雅关闭
+- `Tools/ClientGen`（从 `ProtocolManifest.json` 生成 Unity C# / UE C++ codec）+ `Tests/ClientGenVerify` 第八套件（与服务器 MemoryPack 逐字节双向互验）
+- `Shared/HealthServer.cs` 全节点 `/healthz` `/readyz`；DB `SchemaDoctor/SchemaMigrator`；Center 主备 `LeaderElection.IsLeader`
 
 ---
 
@@ -58,8 +69,8 @@
 
 | # | 项 | 状态 | 代码定位 / 文档 |
 |---|---|---|---|
-| S1 | 脚本 Logger（`EntityScriptBase.Log` + Tag 过滤） | ✅ 迭代19 | `Framework/Framework.Scripting/EntityScriptBase.cs`；[GameLogic/scripts/README.md](../GameLogic/scripts/README.md) |
-| S2 | 脚本定时器（`AddTimer`） | ✅ 迭代19 | `EntityScriptBase.AddTimer`；`Battle/Handlers/Scripting/` 注入 TickEngine |
+| S1 | 脚本 Logger（`EntityScriptBase.Log` + Tag 过滤） | ✅ 迭代19 | `Framework/Framework.Scripting/IEntityScript.cs`（含 `EntityScriptBase`）；[GameLogic/scripts/README.md](../GameLogic/scripts/README.md) |
+| S2 | 脚本定时器（`AddTimer`） | ✅ 迭代19 | `EntityScriptBase.AddTimer`；`Battle/BattleServerApp.cs`（ScriptHost 创建 + tick 注入） |
 | S3 | 脚本边界钳制（`MathClampSet/Add`） | ✅ 迭代19 | `EntityScriptBase.MathClamp*` |
 | S4 | 热更新 OnReload + ScriptVersion | ✅ 迭代19 | `Framework.Scripting.IEntityScript.OnReload` + `ScriptVersion` |
 | D1 | FriendHandler 业务层强类型化 | ✅ 迭代13 | `Game/Handlers/FriendHandler.*.cs`（partial 6 段） |
@@ -69,7 +80,7 @@
 | D5 | 负载均衡升级 | ✅ 迭代14 | `Center/Handlers/NodeManager.cs:157`（SWRR） |
 | D6 | 客户端会话侧防重放 | ✅ 迭代16 | `Framework/Framework.Core/Security/SessionGuard.cs` + `TokenService.cs` + `NonceService.cs` |
 | D7 | 脚本层 entityMailbox 封装 | ✅ 迭代17 | `Framework/Framework.Entity/EntityMailbox.cs` + `Entity.Mailbox` 懒属性 |
-| D7' | 时间同步协议 | ✅ 迭代19 | `Protocol/defs/Battle.def`（40010/40011）+ `Battle/Handlers/TimeSyncManager.cs` |
+| D7' | 时间同步协议 | ✅ 迭代19 | `Framework/Framework.Protocol/Messages/BattleMessages.cs`（40010/40011）+ `Battle/Handlers/TimeSyncManager.cs` |
 | D8 | Bots 集成压测 | ✅ 迭代19 | `Bots/Program.cs`（TCP/WS + ramp-up + RTT 分布 + time sync offset） |
 | D9 | 配置模板/缓存 | ✅ 迭代19 | `Shared/ConfigHelper.cs`（节缓存 + `IConfigValidator` + `OnConfigChanged`） |
 
@@ -99,5 +110,6 @@
 | 18 | 规划 | Bots 集成压测（D8）、脚本层 entityMailbox 跨节点真实集成 |
 | 19 | S1-S4 + D7'/D8/D9 落地 | 脚本层结构化日志/定时器/边界/热更新钩子 + 客户端-服务端时间同步 + Bots 增强 + ConfigHelper 模板校验 |
 | 20 | KBE machine 化 | Tools/Machine + 节点注册协议 3 字段 + 管理台机器视图 + MachineVerify 第六套件 |
+| 21 | 实体位置路由 + 收口 | 91007~91010 位置登记/查询（对标 ET Location）+ EntityCallDirectRouter 直达/回退 + Framework.Persistence 四存储 + LifecycleVerify 第七套件 + ClientGen/ClientGenVerify 第八套件 |
 
 > 历史归档（含 P0~P3 阶段数据快照）见 [Refactor-Summary.md](Refactor-Summary.md)。

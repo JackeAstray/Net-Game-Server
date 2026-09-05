@@ -29,7 +29,7 @@
 **禁止**：
 
 - ❌ 顶级语句（`OutputType=Exe` 项目里也用 `class + static Main`，不要依赖 .NET 自动合成入口）
-- ❌ `internal static class Program` 同时被其他项目的验证套件通过 `XXX.Program.Main(...)` 跨项目调用 —— 跨项目被调用的工具入口必须是 `public static class Program` + `public static Main`（如 `Protogen` / `Tools/Supervisor` / `Tools/Machine`，分别被 `Protogen` / `Tests/SupervisorVerify` / `Tests/MachineVerify` 调用）
+- ❌ `internal static class Program` 同时被其他项目的验证套件通过 `XXX.Program.Main(...)` 跨项目调用 —— 跨项目被调用的工具入口必须是 `public static class Program` + `public static Main`（如 `Tools/Supervisor` / `Tools/Machine` / `Tools/ClientGen`，分别被 `Tests/SupervisorVerify` / `Tests/MachineVerify` / `Tests/ClientGenVerify` 调用）
 - ❌ 嵌套在 `Program` 内的 public DTO 类被外部依赖时仍藏在 `Program` 里（应抽到独立 `.cs`）
 
 ### 1.2 模板
@@ -113,11 +113,14 @@ internal static class Program
 
 ## 六、协议与序列化
 
-- **协议声明**：所有消息都在 `Protocol/defs/*.def`，**禁止**手改 `Framework.Protocol/Generated/*.g.cs`（构建时重生成）。
-- **新消息**：先改 def → 构建一次 → 用生成的 `MessageIds` / 类型。
+- **协议声明**：所有消息在 `Framework/Framework.Protocol/Messages/*.cs` 用 C# `[GameMessage]` / `[GameStruct]` 声明，
+  由 `Framework.Protocol.Generator`（Roslyn 源生成器）编译期产出 `MessageIds` / `RouterTable` / `IGameMessage` 管线 /
+  `ProtocolManifest.json`（供 ClientGen）。`Protocol/defs/*.def` 已迁移为 ID 段占位，**不要**在里面加消息。
+  **禁止**手改 `Framework.Protocol/Generated/*.g.cs`（构建时重生成）。
+- **新消息**：在 `Messages/*.cs` 写 `[GameMessage]` 类 → 构建一次 → 用生成的 `MessageIds` / 类型，并在目标节点 `Dispatcher` 注册。
 - **二进制序列化**：用 MemoryPack（`Serialize()` / `Deserialize()` 来自 `IGameMessage`），
   业务层**不要**手 `Json.SerializeToUtf8Bytes`——除非有兼容旧客户端的明确理由（`jsonFallback: true` 已在 MessageDispatcher 处理）。
-- **跨节点消息**：91001~91006 走 `internal="true"`，不接受客户端伪造（Gateway 拒绝）。
+- **跨节点消息**：90001~90010 / 90999 / 91001~91010 等走 `internal="true"`，不接受客户端伪造（Gateway 拒绝）。
 
 ---
 
@@ -134,8 +137,8 @@ internal static class Program
 
 1. 改代码 → 改对应文档（README / Docs/*.md）
 2. `dotnet build NetGameServer.slnx` → 0 错误
-3. 跑六套验证（命令见 [README.md](../../README.md) §快速开始）：
-   - ProtocolVerify / NetworkVerify / ScriptHostVerify / LoggerVerify / SupervisorVerify / MachineVerify
+3. 跑八套验证（命令见 [README.md](../../README.md) §快速开始）：
+   - ProtocolVerify / NetworkVerify / ScriptHostVerify / LoggerVerify / SupervisorVerify / MachineVerify / LifecycleVerify / ClientGenVerify
 4. 提交信息格式：`迭代N：<主题>` 或 `fix: <主题>` / `doc: <主题>` / `refactor: <主题>`
 5. 单 commit 单主题，避免大杂烩
 

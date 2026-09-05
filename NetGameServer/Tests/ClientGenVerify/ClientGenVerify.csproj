@@ -7,6 +7,8 @@
     <Nullable>enable</Nullable>
     <RootNamespace>ClientGenVerify</RootNamespace>
     <AssemblyName>ClientGenVerify</AssemblyName>
+    <IsTestProject>true</IsTestProject>
+    <GenerateProgramFile>false</GenerateProgramFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -19,8 +21,15 @@
     <Compile Include="..\..\Tools\ClientGen\Output\Unity\MessageIds.cs" Link="Gen\MessageIds.cs" />
     <Compile Include="..\..\Tools\ClientGen\Output\Unity\MemoryPackCodec.cs" Link="Gen\MemoryPackCodec.cs" />
     <Compile Include="..\..\Tools\ClientGen\Output\Unity\Messages.cs" Link="Gen\Messages.cs" />
-    <Compile Include="..\..\Tools\ClientGen\Output\Unity\NetClient.cs" Link="Gen\NetClient.cs" />
-    <Compile Include="..\..\Tools\ClientGen\Output\Unity\Demo.cs" Link="Gen\Demo.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
   </ItemGroup>
 
 </Project>

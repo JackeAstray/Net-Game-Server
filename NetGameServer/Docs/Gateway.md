@@ -40,7 +40,7 @@
   （10000~20000 → Login 等）；新增消息必须改 def 而非手改区间。
 - **会话时间窗**：所有客户端入包都过 `SessionGuard.IsSessionValid`，超 `MaxSessionLifetime`（2h）
   直接 `session.Close()` + 丢弃，不要注释掉这行。
-- **内部消息拒绝**：`route.IsInternal == true` 的消息（如 90999/91001~91006）直接拒绝并 Log.Warn，
+- **内部消息拒绝**：`route.IsInternal == true` 的消息（如 Center 内部 90001~90010 / 90999 / 91001~91010，DB 1000~1119，Login 10000/10014）直接拒绝并 Log.Warn，
   防止客户端伪造内部协议。
 - **断线重连（KBE 式）**：客户端断开时若有 userId 绑定，进入挂起队列，宽限期内重新登录可
   把新会话迁移到旧 ID（后端按旧 ID 续接实体）。

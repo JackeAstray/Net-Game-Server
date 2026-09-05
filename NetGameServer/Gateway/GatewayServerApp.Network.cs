@@ -304,13 +304,17 @@ namespace Gateway
 
             // TCP 空闲会话超时踢线 + 重连挂起清理（对标 KBE 心跳超时；UDP/KCP 已有各自 5 分钟超时）
             int tcpTimeoutSeconds = ConfigHelper.GetConfig<int>("GatewayTcpTimeoutSeconds") == 0 ? 300 : ConfigHelper.GetConfig<int>("GatewayTcpTimeoutSeconds");
+            maintenanceLoopCts?.Cancel();
+            maintenanceLoopCts?.Dispose();
+            maintenanceLoopCts = new CancellationTokenSource();
+            var maintenanceToken = maintenanceLoopCts.Token;
             _ = Task.Run(async () =>
             {
-                while (true)
+                while (!maintenanceToken.IsCancellationRequested)
                 {
                     try
                     {
-                        await Task.Delay(TimeSpan.FromSeconds(30));
+                        await Task.Delay(TimeSpan.FromSeconds(30), maintenanceToken);
                         var now = DateTime.UtcNow;
 
                         // 重连挂起过期清理
@@ -336,12 +340,16 @@ namespace Gateway
                             }
                         }
                     }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
                     catch (Exception ex)
                     {
                         Shared.Log.Error($"Gateway 空闲超时清理循环异常（下轮继续重试）: {ex}");
                     }
                 }
-            });
+            }, maintenanceToken);
 
             AttachCenterNodeLifecycle(centerClient, port);
         }

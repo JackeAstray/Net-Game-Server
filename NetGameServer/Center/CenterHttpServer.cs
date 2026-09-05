@@ -47,7 +47,8 @@ internal static class CenterHttpServer
     public static async Task StartAsync(string[] args)
     {
         int httpPort = ConfigHelper.GetConfig<int>("CenterHttpPort") == 0 ? 31316 : ConfigHelper.GetConfig<int>("CenterHttpPort");
-        string bindAddress = ConfigHelper.GetConfig<string>("CenterHttpListenAddress") ?? "0.0.0.0";
+        // 安全默认：管理面仅监听回环地址，避免默认公网暴露。
+        string bindAddress = ConfigHelper.GetConfig<string>("CenterHttpListenAddress") ?? "127.0.0.1";
 
         var builder = WebApplication.CreateBuilder(args);
         builder.WebHost.ConfigureKestrel(options =>

@@ -42,15 +42,21 @@ namespace Login.Controllers
         }
 
         /// <summary>
-        /// 修改密码接口
+        /// 修改密码接口。
+        /// 需要同时满足：有效 API Key + 有效登录 Token（X-Auth-Token）且仅允许修改本人账户。
         /// </summary>
         /// <param name="request"></param>
         /// <returns></returns>
         [HttpPost("change-password")]
         public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest request)
         {
-            var result = await loginHandler.HandleChangePasswordRequestAsync(request);
-            return Ok(result);
+            string? token = Request.Headers["X-Auth-Token"].FirstOrDefault();
+            var (allowed, reason, response) = await loginHandler.HandleChangePasswordWithTokenAsync(request, token);
+            if (!allowed || response == null)
+            {
+                return Unauthorized(new ChangePasswordResponse { Success = false, Message = reason ?? "未授权" });
+            }
+            return Ok(response);
         }
 
         /// <summary>

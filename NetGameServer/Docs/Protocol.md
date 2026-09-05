@@ -20,7 +20,7 @@
 | 客户端 ↔ Gateway | `[MsgId(4)][Payload]` | 4 字节长度帧 | — |
 | Gateway ↔ 后端（Login/Game/Center/Battle） | `[ClientSessionId(8)][MsgId(4)][Payload]` | 4 字节长度帧 | `ClientSessionId`：会话路由 |
 | 后端 ↔ DB | `[MsgId(4)][Payload(尾部附 __requestId 路由元数据)]` | 4 字节长度帧 | `__requestId`：请求-响应匹配 |
-| 后端 ↔ 后端（内部消息） | `[ClientSessionId(8)][MsgId(4)][Payload]` | 4 字节长度帧 | `internal="true"` 标记（91001~91006 等），Gateway 拒绝伪造 |
+| 后端 ↔ 后端（内部消息） | `[ClientSessionId(8)][MsgId(4)][Payload]` | 4 字节长度帧 | `internal="true"` 标记（90001~90010 / 90999 / 91001~91010 等），Gateway 拒绝伪造 |
 
 ---
 
@@ -28,7 +28,7 @@
 
 - 客户端 → 网关：`[MsgId(4)][Payload]`（外层使用长度帧）
 - 网关 → 客户端：`[MsgId(4)][Payload]`（外层使用长度帧）
-- `MsgId` 取自 `Shared/Messages/MessageIds.cs`（由 `Protocol/defs/*.def` 生成）
+- `MsgId` 取自 `Shared/Messages/MessageIds.cs`（由 `Framework.Protocol.Generator` 源生成器编译期生成）
 
 ## 2. Gateway ↔ 业务服务（Login/Game/Center/Battle）
 
@@ -50,7 +50,7 @@
 - 业务服务按 `MsgId` 常量进行显式路由分发（`MessageDispatcher` 配置化注册 + MemoryPack/JSON 双格式）
 - 登录链路典型请求：`10001`（登录）、`10003`（注册）
 - 响应消息应使用与请求对应的响应 `MsgId`
-- 新消息：先改 def → 构建一次 → 用生成的 `MessageIds` / 类型
+- 新消息：先在 `Framework/Framework.Protocol/Messages/*.cs` 写 `[GameMessage]` 类 → 构建一次 → 用生成的 `MessageIds` / 类型，并在目标节点 Dispatcher 注册
 
 ## 5. 代码统一入口
 

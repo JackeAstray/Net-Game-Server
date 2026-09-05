@@ -25,6 +25,9 @@ namespace Gateway
     public static partial class GatewayServerApp
     {
         private static CancellationTokenSource? centerHeartbeatCts;
+        private static CancellationTokenSource? maintenanceLoopCts;
+        private static WebApplication? reverseProxyApp;
+        private static Task? reverseProxyRunTask;
 
         /// <summary>断线重连挂起记录（客户端断线后宽限期内可恢复会话）。</summary>
         private sealed class PendingReconnect
