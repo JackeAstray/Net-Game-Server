@@ -35,8 +35,53 @@ namespace Game.Handlers
             /// <summary>期望的 DB 响应 msgid（= 请求 + 100），接收端校验不符即拒绝。</summary>
             public int DbResponseMsgId { get; set; }
             public global::Network.ISession? GatewaySession { get; set; }
-            public long CreatedAtTicks { get; set; } = DateTime.UtcNow.Ticks;
+            public long CreatedAtTicks { get; set; } = DateTime.UtcNow.Ticks;            /// <summary>登录预热：回包只写入公会成员缓存，不回发客户端。</summary>
+            public bool IsGuildMyWarmup { get; set; }
         }
+
+        // ===== 公会成员缓存（公会频道广播用）：userId -> 成员列表，TTL 60s =====
+        private static readonly ConcurrentDictionary<int, GuildMemberCacheEntry> guildMemberCache = new();
+        private static readonly TimeSpan GuildMemberCacheTtl = TimeSpan.FromSeconds(60);
+
+        private sealed class GuildMemberCacheEntry
+        {
+            public int[] MemberIds = Array.Empty<int>();
+            public DateTime LoadedAtUtc;
+        }
+
+        /// <summary>读取缓存的公会成员 UserId 列表（TTL 内；未加载/过期返回 null）。</summary>
+        public static int[]? GetCachedGuildMemberIds(int userId)
+        {
+            if (userId > 0 && guildMemberCache.TryGetValue(userId, out var entry))
+            {
+                if (DateTime.UtcNow - entry.LoadedAtUtc <= GuildMemberCacheTtl)
+                {
+                    return entry.MemberIds;
+                }
+                guildMemberCache.TryRemove(userId, out _);
+            }
+            return null;
+        }
+
+        /// <summary>使某用户的公会成员缓存失效（加入/退出/解散/踢/转让后调用）。</summary>
+        public static void InvalidateGuildCache(int userId)
+        {
+            if (userId > 0)
+            {
+                guildMemberCache.TryRemove(userId, out _);
+            }
+        }
+
+        /// <summary>登录预热：异步加载我的公会成员列表到缓存（回包仅写缓存，不回发客户端）。</summary>
+        public static void WarmupGuildCache(global::Network.ISession gatewaySession, long sessionId, int userId)
+        {
+            if (gatewaySession == null || sessionId <= 0 || userId <= 0)
+            {
+                return;
+            }
+            var wrapper = new Game.Network.ClientSessionWrapper(gatewaySession, sessionId);
+            TrySendDbRequest(MessageIds.DbGuildMyReq, wrapper, new DbGuildMyRequest { UserId = userId }, MessageIds.GuildMyRes,
+                configurePending: p => p.IsGuildMyWarmup = true);        }
 
         /// <summary>向 Game 的 MessageRouter 注册全部公会客户端消息。</summary>
         public static void Register(MessageRouter router)
@@ -205,7 +250,7 @@ namespace Game.Handlers
         }
 
         // ===== 发送 DB 请求 + 待处理注册 =====
-        private static void TrySendDbRequest<TRequest>(int dbMsgId, ClientSessionWrapper session, TRequest request, int responseMsgId)
+        private static void TrySendDbRequest<TRequest>(int dbMsgId, ClientSessionWrapper session, TRequest request, int responseMsgId, Action<PendingGuildRequest>? configurePending = null)
         {
             SweepExpiredPendingRequests();
 
@@ -233,13 +278,15 @@ namespace Game.Handlers
 
             try
             {
-                PendingGuildRequests[requestId] = new PendingGuildRequest
+                var pending = new PendingGuildRequest
                 {
                     SessionId = clientSessionId,
                     ResponseMsgId = responseMsgId,
                     DbResponseMsgId = dbMsgId + 100,
                     GatewaySession = session
                 };
+                configurePending?.Invoke(pending);
+                PendingGuildRequests[requestId] = pending;
                 dbClient.Send(packet.AsSpan(0, totalLength).ToArray());
             }
             catch (Exception ex)

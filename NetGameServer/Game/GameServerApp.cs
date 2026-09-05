@@ -283,6 +283,7 @@ namespace Game
                             if (firstBind)
                             {
                                 Game.Handlers.FriendHandler.WarmupSocialCache(session, originalSessionId, routedUserId);
+                                Game.Handlers.GuildHandler.WarmupGuildCache(session, originalSessionId, routedUserId);
                             }
                             cleanPayload = payloadWithoutUserId;
                         }

@@ -121,9 +121,17 @@ namespace Game.Handlers
             // V16 修复：Game 节点只有世界/好友频道有可用的投递目标（房间/匹配成员关系在 Center/Battle）。
             // 此前 Team 频道静默丢弃（却回"成功"），Room/Match 频道落入 else 分支被当作全员广播（隐私泄露）。
             // 现在对这些频道显式拒绝，绝不回退成世界广播。
-            if (request.Channel != ChatChannel.World && request.Channel != ChatChannel.Friend)
+            if (request.Channel != ChatChannel.World && request.Channel != ChatChannel.Friend && request.Channel != ChatChannel.Guild)
             {
-                SendChatError(session, "该频道暂不支持，请使用世界或好友频道。");
+                SendChatError(session, "该频道暂不支持，请使用世界、公会或好友频道。");
+                return;
+            }
+
+            // 公会频道预检：成员缓存未就绪时触发异步加载并拒绝本次投递（不回退其他频道，防串频）。
+            if (request.Channel == ChatChannel.Guild && GuildHandler.GetCachedGuildMemberIds(actualSenderId) == null)
+            {
+                GuildHandler.WarmupGuildCache(session, session.SessionId, actualSenderId);
+                SendChatError(session, "公会信息加载中，请稍后重试。");
                 return;
             }
 
@@ -276,8 +284,36 @@ namespace Game.Handlers
                     }
                 }
             }
-            else if (request.Channel == ChatChannel.Team)
+            else if (request.Channel == ChatChannel.Guild)
             {
+                // 公会频道：向同公会在线成员定向投递（各成员可能在不同网关，逐会话解析网关）。
+                var memberIds = Game.Handlers.GuildHandler.GetCachedGuildMemberIds(actualSenderId);
+                if (memberIds != null)
+                {
+                    foreach (var memberId in memberIds)
+                    {
+                        if (memberId <= 0 || memberId == actualSenderId)
+                        {
+                            continue; // 发送者已收 response 回执
+                        }
+                        long memberSessionId = Game.Managers.PlayerSessionManager.Instance.GetSessionIdByUserId(memberId);
+                        if (memberSessionId <= 0)
+                        {
+                            continue; // 成员不在线
+                        }
+                        var routedNotifPayload = Shared.RouteMetadata.AttachTargetSessionId(notifPayload, memberSessionId);
+                        var notifData = PacketBuilder.BuildPacket(MessageIds.ChatMessageNotif, routedNotifPayload, out int notifLength);
+                        try
+                        {
+                            var targetSession = GameServerApp.ResolveGatewayForClient(memberSessionId) ?? session;
+                            targetSession.Send(notifData.AsSpan(0, notifLength).ToArray());
+                        }
+                        finally
+                        {
+                            System.Buffers.ArrayPool<byte>.Shared.Return(notifData);
+                        }
+                    }
+                }
             }
             else
             {

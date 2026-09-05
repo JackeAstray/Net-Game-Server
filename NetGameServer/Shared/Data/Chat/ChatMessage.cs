@@ -10,7 +10,8 @@ namespace Shared.Data.Chat
         Friend = 3,
         Team = 4,   //对局队友聊天
         Match = 5,   //对局所有人聊天
-        Room = 6     //房间聊天
+        Room = 6,     //房间聊天
+        Guild = 7    //公会频道（广播给同公会在线成员）
     }
 
     /// <summary>

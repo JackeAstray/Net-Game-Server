@@ -55,24 +55,30 @@ namespace Game.Handlers
                 {
                     case MessageIds.DbGuildCreateRes:
                         SendJson<GuildCreateResponse>(pending, cleanPayload);
+                        InvalidateGuildCacheForPending(pending);
                         break;
                     case MessageIds.DbGuildMyRes:
                         SendGuildMyResponse(pending, cleanPayload);
                         break;
                     case MessageIds.DbGuildJoinRes:
                         SendJson<GuildJoinResponse>(pending, cleanPayload);
+                        InvalidateGuildCacheForPending(pending);
                         break;
                     case MessageIds.DbGuildLeaveRes:
                         SendJson<GuildLeaveResponse>(pending, cleanPayload);
+                        InvalidateGuildCacheForPending(pending);
                         break;
                     case MessageIds.DbGuildDisbandRes:
                         SendJson<GuildDisbandResponse>(pending, cleanPayload);
+                        InvalidateGuildCacheForPending(pending);
                         break;
                     case MessageIds.DbGuildKickRes:
                         SendJson<GuildKickResponse>(pending, cleanPayload);
+                        InvalidateGuildCacheForPending(pending);
                         break;
                     case MessageIds.DbGuildTransferRes:
                         SendJson<GuildTransferResponse>(pending, cleanPayload);
+                        InvalidateGuildCacheForPending(pending);
                         break;
                     case MessageIds.DbGuildUpdateDeclRes:
                         SendJson<GuildUpdateDeclResponse>(pending, cleanPayload);
@@ -106,6 +112,23 @@ namespace Game.Handlers
             {
                 return;
             }
+
+            // 写公会成员缓存（供公会频道广播；未加入公会时 GuildId==0 → 空成员列表）
+            int userId = Game.Managers.PlayerSessionManager.Instance.GetUserIdBySessionId(pending.SessionId);
+            if (userId > 0)
+            {
+                guildMemberCache[userId] = new GuildMemberCacheEntry
+                {
+                    MemberIds = (dbResp.Members ?? new System.Collections.Generic.List<DbGuildMemberItem>())
+                        .Select(m => m.UserId).Where(u => u > 0).ToArray(),
+                    LoadedAtUtc = DateTime.UtcNow
+                };
+            }
+            if (pending.IsGuildMyWarmup)
+            {
+                return; // 登录预热：只写缓存，不回发客户端
+            }
+
             var clientResp = new GuildMyResponse
             {
                 Success = dbResp.Success,
@@ -119,6 +142,16 @@ namespace Game.Handlers
                     .ToList()
             };
             SendResponseBySessionId(pending.GatewaySession!, pending.SessionId, pending.ResponseMsgId, clientResp);
+        }
+
+        /// <summary>公会结构变更后使操作者的成员缓存失效（下次聊天/查询重新加载）。</summary>
+        private static void InvalidateGuildCacheForPending(PendingGuildRequest pending)
+        {
+            int userId = Game.Managers.PlayerSessionManager.Instance.GetUserIdBySessionId(pending.SessionId);
+            if (userId > 0)
+            {
+                InvalidateGuildCache(userId);
+            }
         }
     }
 }
