@@ -31,11 +31,12 @@ public sealed class EntityCallHub
 
     public EntityCallHub(string? hubId = null)
     {
-        // 用进程内单调时间戳 + 实例哈希做 CallId 起点，确保多节点不冲突
-        long baseTicks = DateTime.UtcNow.Ticks;
+        // 用进程内单调时钟（Stopwatch.GetTimestamp，QPC/CLOCK_MONOTONIC）+ 实例哈希做 CallId 起点，
+        // 确保多节点不冲突且不受系统时钟回拨影响（原 UtcNow.Ticks 受校时影响，C 组加固）。
+        long baseTs = System.Diagnostics.Stopwatch.GetTimestamp();
         int instanceHash = hubId != null ? hubId.GetHashCode() & 0xFFFF : Random.Shared.Next(0, 0xFFFF);
-        // 起点：低 16 位为实例哈希，高位为时间戳；保证全局单调
-        callIdSeed = ((baseTicks & 0x7FFFFFFFFFFFF000L) | (uint)instanceHash);
+        // 起点：低 16 位为实例哈希，高位为单调时间戳；保证全局单调
+        callIdSeed = (baseTs & 0x7FFFFFFFFFFF0000L) | (uint)instanceHash;
         if (callIdSeed < 0)
         {
             callIdSeed = -callIdSeed;

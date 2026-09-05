@@ -56,8 +56,13 @@ namespace DB.Routing
 
             int headerMsgId;
             ReadOnlyMemory<byte> payload;
+            // 判定完整帧 [TotalLength(4)][MsgId(4)][Payload] vs 未打包 [MsgId(4)][Payload]：
+            // 两种形态 data.Length 相同（均为 4+payloadLen），唯一区分是前 4 字节语义（长度字段 vs MsgId）。
+            // 收紧条件：长度字段必须 == data.Length-4，且偏移 4 读出的 MsgId 落在业务区间（>=1000）。
+            // 否则未打包包在"msgId 恰好等于 payload 长度"时会被误判为完整帧（丢 4 字节 payload）。
             if (data.Length >= 8
-                && System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4)) == data.Length - 4)
+                && System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4)) == data.Length - 4
+                && System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(4, 4)) >= 1000)
             {
                 // 完整帧：前 4 字节是 TotalLength，MsgId 在偏移 4，Payload 从偏移 8 开始。
                 headerMsgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(4, 4));

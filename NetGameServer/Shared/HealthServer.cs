@@ -19,6 +19,8 @@ public sealed class HealthServer : IDisposable
     private readonly string nodeId;
     private readonly CancellationTokenSource cts = new();
     private readonly Task acceptLoop;
+    // 并发处理上限：健康探针频率低，正常情况下不会接近该值；防止恶意连接洪泛时每连接一个 Task 拖垮进程。
+    private readonly SemaphoreSlim handleSlots = new(64, 64);
 
     public int Port { get; }
     public bool IsDraining => NodeLifecycle.Default.IsDraining;
@@ -90,6 +92,11 @@ public sealed class HealthServer : IDisposable
 
     private async Task HandleAsync(TcpClient client)
     {
+        if (!await handleSlots.WaitAsync(0))
+        {
+            client.Dispose(); // 并发超限：直接丢弃连接，不排队
+            return;
+        }
         try
         {
             using (client)
@@ -116,6 +123,10 @@ public sealed class HealthServer : IDisposable
         catch (Exception ex)
         {
             Log.Debug("健康检查连接处理异常: {Message}", ex.Message);
+        }
+        finally
+        {
+            handleSlots.Release();
         }
     }
 

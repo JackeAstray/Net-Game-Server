@@ -554,11 +554,21 @@ namespace Battle
                     return;
                 }
 
+                // 契约：Battle 处理器必须同步完成（Task.FromResult），此处 GetResult 串行执行不阻塞。
+                // 计时告警：未来若误引入真实异步（await 网络/DB）或慢 handler，会卡死整个 tick 线程，
+                // 超过 100ms 立即告警便于早期发现（C 组加固）。
+                var sw = System.Diagnostics.Stopwatch.StartNew();
                 if (dispatcher != null && dispatcher.TryDispatch(new Battle.Handlers.BattleSessionContext(session, originalSessionId), msgId, payload).GetAwaiter().GetResult())
                 {
+                    sw.Stop();
+                    if (sw.ElapsedMilliseconds > 100)
+                    {
+                        Log.Warning($"Battle handler 执行过慢 MsgId:{msgId} 耗时:{sw.ElapsedMilliseconds}ms（>100ms，检查是否误用异步）");
+                    }
                     Log.Debug("Battle 新协议分发完成 MsgId:{MsgId} ClientSessionId:{ClientSessionId}", msgId, originalSessionId);
                     return;
                 }
+                sw.Stop();
 
                 Log.Warning($"Battle 收到未知 MsgId: {msgId}");
 
