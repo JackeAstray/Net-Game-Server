@@ -505,7 +505,8 @@ namespace Center.Handlers
                     // 解除客户端→网关路由绑定（防 clientGatewayRoutes 无界增长；绑定本身不可信，断线即失效）
                     NodeManager.Instance.UnbindClientGatewayRoute(clientSessionId);
                     await matchHandler.HandleClientDisconnectAsync(clientSessionId, session, SendToGateway, SendToGateway, SendToGateway);
-                    Shared.Log.Info($"Center 处理客户端断线，已从房间/匹配队列移除 ClientSessionId:{clientSessionId}");
+                    CenterServerApp.Parties?.HandleClientDisconnect(clientSessionId);
+                    Shared.Log.Info($"Center 处理客户端断线，已从房间/匹配队列/队伍移除 ClientSessionId:{clientSessionId}");
                 }
                 catch (Exception ex)
                 {

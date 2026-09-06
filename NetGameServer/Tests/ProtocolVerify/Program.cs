@@ -912,7 +912,8 @@ Directory.Delete(persistDir, recursive: true);
 
 // ===== 16. Center 配置化分发集成验证（MatchHandler 真实链路） =====
 var centerMatchHandler = new Center.Handlers.MatchHandler();
-var centerDispatcher = Center.Handlers.CenterDispatcher.BuildDispatcher(centerMatchHandler);
+var centerPartyManager = new Center.Handlers.PartyManager();
+var centerDispatcher = Center.Handlers.CenterDispatcher.BuildDispatcher(centerMatchHandler, centerPartyManager);
 var centerSent = new List<(int msgId, byte[] payload)>();
 var centerGatewaySession = new TestGatewaySession(centerSent);
 var centerCtx = new Center.Handlers.CenterSessionContext(centerGatewaySession, 7001)
@@ -958,6 +959,29 @@ Framework.Protocol.ProtocolCodec.TryParseFrame(leavePacket.AsSpan(4), out int le
 bool leaveOk = await centerDispatcher.TryDispatch(centerCtx, leaveMsgId, leaveBody);
 Console.WriteLine($"Center 离开房间: ok={leaveOk} 发送包数={centerSent.Count} (期望 True/>=4)");
 if (!leaveOk || centerSent.Count < 4) return 1;
+
+// ===== 16b. 队伍（A2）逻辑验证（创建/加入/就位/我的/队长转让/解散） =====
+var partyMgr = new Center.Handlers.PartyManager();
+var pc1 = partyMgr.HandleCreate(7001, 42, "Tester");
+bool partyCreateOk = pc1.Success && !string.IsNullOrWhiteSpace(pc1.PartyId);
+var pc2 = partyMgr.HandleJoin(7002, 43, "Tester2", pc1.PartyId);
+bool partyJoinOk = pc2.Success;
+var pr1 = partyMgr.HandleReady(7002, true);
+bool partyReadyOk = pr1.Success && pr1.Ready;
+var pm1 = partyMgr.HandleMy(7001);
+bool partyMyOk = pm1.Success && pm1.Members.Count == 2 && pm1.Members[0].ClientSessionId == 7001;
+// 队长离队 → 自动转让给剩余成员
+var pleave = partyMgr.HandleLeave(7001);
+var pm2 = partyMgr.HandleMy(7002);
+bool partyTransferOk = pleave.Success && pm2.Success && pm2.OwnerClientSessionId == 7002;
+// 已离队成员不能被踢（新队长踢 7001 应失败）
+var pk = partyMgr.HandleKick(7002, 7001);
+bool partyKickFailOk = !pk.Success;
+// 新队长解散
+var pd = partyMgr.HandleDisband(7002);
+bool partyDisbandOk = pd.Success && partyMgr.PartyCount == 0 && partyMgr.MemberCount == 0;
+Console.WriteLine($"队伍逻辑: Create={partyCreateOk} Join={partyJoinOk} Ready={partyReadyOk} My={partyMyOk} Transfer={partyTransferOk} KickFail={partyKickFailOk} Disband={partyDisbandOk} (期望 全 True)");
+if (!(partyCreateOk && partyJoinOk && partyReadyOk && partyMyOk && partyTransferOk && partyKickFailOk && partyDisbandOk)) return 1;
 
 // ===== 17. Leader 选举验证（主备高可用：争锁 + 故障接管） =====
 string leaderLock = Path.Combine(Path.GetTempPath(), $"leader_test_{Guid.NewGuid():N}.lock");

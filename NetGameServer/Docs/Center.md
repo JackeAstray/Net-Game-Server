@@ -10,6 +10,7 @@
 - ✅ 节点注册 / 心跳（10s 间隔）/ 心跳过期剔除
 - ✅ 平滑加权负载均衡（`GetBestBattleNode`，对标 Nginx SWRR，迭代 14）
 - ✅ 房间匹配（`MatchHandler`：按 `SceneType` / `MaxPlayers` / `CustomRules`）
+- ✅ 队伍管理（`PartyManager`：创建/加入/离开/解散/踢人/就位，队长离队自动转让，断线自动清理）
 - ✅ 实体迁移协调（91003 中继 + 91004 回执 + 91005 通知 Gateway 切换路由）
 - ✅ EntityCall 中继（91001/91002，按 EntityId 查找目标节点并中继）
 - ❌ 不做场景内逻辑（场景在 Battle 节点）
@@ -31,6 +32,7 @@
 | `Center/Handlers/CenterDispatcher.cs` | 强类型消息分发（含 91001/91002 中继 + 91007~91010 位置服务）；`CenterSessionContext` 内部消息上下文定义于此文件内 |
 | `Center/Handlers/EntityLocationService.cs` | 实体位置注册表（91007 登记 / 91008 注销 / 91009 查询 / 91010 响应，TTL 清扫） |
 | `Center/Handlers/MatchHandler.cs` | 房间匹配（创建/加入/聊天/离开） |
+| `Center/Handlers/PartyManager.cs` | 队伍管理（创建/加入/离开/解散/踢人/就位；31001~31015 客户端消息） |
 | `Center/Controllers/CenterController.cs` | 管理台 REST：`/api/center/health` / `nodes` / `summary` / `rooms` / `cluster`（按 MachineId 聚合） |
 
 ## 注意事项

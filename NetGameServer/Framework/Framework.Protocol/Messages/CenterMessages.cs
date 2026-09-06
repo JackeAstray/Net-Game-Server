@@ -357,6 +357,139 @@ public partial class CenterLeaveRoomResult
     public string Message { get; set; } = string.Empty;
 }
 
+// ============================================================
+// Party（队伍）协议（31001-31015）：Center 协调，队伍可衔接匹配/进房
+// ============================================================
+
+[MemoryPackable]
+[GameStruct]
+public partial class PartyMemberInfo
+{
+    public long ClientSessionId { get; set; } = new();
+    public int UserId { get; set; } = new();
+    public string Nickname { get; set; } = string.Empty;
+    public bool Ready { get; set; } = new();
+}
+
+[MemoryPackable]
+[GameMessage(31001, Target = "Center", Reply = "PartyCreateResult")]
+public partial class PartyCreate
+{
+}
+
+[MemoryPackable]
+[GameMessage(31002, Target = "Center")]
+public partial class PartyCreateResult
+{
+    public bool Success { get; set; } = new();
+    public string PartyId { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+[GameMessage(31003, Target = "Center", Reply = "PartyJoinResult")]
+public partial class PartyJoin
+{
+    public string PartyId { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+[GameMessage(31004, Target = "Center")]
+public partial class PartyJoinResult
+{
+    public bool Success { get; set; } = new();
+    public string PartyId { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+[GameMessage(31005, Target = "Center", Reply = "PartyLeaveResult")]
+public partial class PartyLeave
+{
+}
+
+[MemoryPackable]
+[GameMessage(31006, Target = "Center")]
+public partial class PartyLeaveResult
+{
+    public bool Success { get; set; } = new();
+    public string Message { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+[GameMessage(31007, Target = "Center", Reply = "PartyDisbandResult")]
+public partial class PartyDisband
+{
+}
+
+[MemoryPackable]
+[GameMessage(31008, Target = "Center")]
+public partial class PartyDisbandResult
+{
+    public bool Success { get; set; } = new();
+    public string Message { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+[GameMessage(31009, Target = "Center", Reply = "PartyMyResult")]
+public partial class PartyMy
+{
+}
+
+[MemoryPackable]
+[GameMessage(31010, Target = "Center")]
+public partial class PartyMyResult
+{
+    public bool Success { get; set; } = new();
+    public string PartyId { get; set; } = string.Empty;
+    public long OwnerClientSessionId { get; set; } = new();
+    public string Message { get; set; } = string.Empty;
+    public List<PartyMemberInfo> Members { get; set; } = new();
+}
+
+[MemoryPackable]
+[GameMessage(31011, Target = "Center", Reply = "PartyKickResult")]
+public partial class PartyKick
+{
+    public long TargetClientSessionId { get; set; } = new();
+}
+
+[MemoryPackable]
+[GameMessage(31012, Target = "Center")]
+public partial class PartyKickResult
+{
+    public bool Success { get; set; } = new();
+    public string Message { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+[GameMessage(31013, Target = "Center", Reply = "PartyReadyResult")]
+public partial class PartyReady
+{
+    public bool Ready { get; set; } = new();
+}
+
+[MemoryPackable]
+[GameMessage(31014, Target = "Center")]
+public partial class PartyReadyResult
+{
+    public bool Success { get; set; } = new();
+    public bool Ready { get; set; } = new();
+    public string Message { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+[GameMessage(31015, Target = "Center")]
+public partial class PartyMemberNotif
+{
+    public string PartyId { get; set; } = string.Empty;
+    /// <summary>member_joined / member_left / kicked / ready_changed / disbanded / created。</summary>
+    public string Type { get; set; } = string.Empty;
+    public long TargetClientSessionId { get; set; } = new();
+    public string Message { get; set; } = string.Empty;
+    public List<PartyMemberInfo> Members { get; set; } = new();
+}
+
 [MemoryPackable]
 [GameMessage(90001, Target = "Center", Internal = true)]
 public partial class CenterRegisterNode

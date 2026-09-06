@@ -91,7 +91,7 @@ public sealed class CenterSessionContext : ISessionContext
 public static class CenterDispatcher
 {
     /// <summary>构建 Center 服务器的配置化分发器。未注册的 MsgId 由调用方回退旧字典。</summary>
-    public static Framework.Protocol.MessageDispatcher BuildDispatcher(MatchHandler matchHandler)
+    public static Framework.Protocol.MessageDispatcher BuildDispatcher(MatchHandler matchHandler, PartyManager partyManager)
     {
         var dispatcher = new Framework.Protocol.MessageDispatcher();
 
@@ -355,6 +355,65 @@ public static class CenterDispatcher
                 Success = res.Success,
                 Message = res.Message ?? string.Empty
             });
+        }, jsonFallback: true);
+
+        // ===== 队伍（A2）：创建/加入/离开/解散/我的/踢人/就位 =====
+        dispatcher.Register<PartyCreate>(async (ctx, msg) =>
+        {
+            var cctx = (CenterSessionContext)ctx;
+            var res = partyManager.HandleCreate(ctx.ClientSessionId, cctx.RoutedUserId, cctx.RoutedNickname);
+            ctx.Send(new PartyCreateResult { Success = res.Success, PartyId = res.PartyId ?? "", Message = res.Message ?? "" });
+        }, jsonFallback: true);
+
+        dispatcher.Register<PartyJoin>(async (ctx, msg) =>
+        {
+            var cctx = (CenterSessionContext)ctx;
+            var res = partyManager.HandleJoin(ctx.ClientSessionId, cctx.RoutedUserId, cctx.RoutedNickname, msg.PartyId);
+            ctx.Send(new PartyJoinResult { Success = res.Success, PartyId = res.PartyId ?? "", Message = res.Message ?? "" });
+        }, jsonFallback: true);
+
+        dispatcher.Register<PartyLeave>(async (ctx, msg) =>
+        {
+            var res = partyManager.HandleLeave(ctx.ClientSessionId);
+            ctx.Send(new PartyLeaveResult { Success = res.Success, Message = res.Message ?? "" });
+        }, jsonFallback: true);
+
+        dispatcher.Register<PartyDisband>(async (ctx, msg) =>
+        {
+            var res = partyManager.HandleDisband(ctx.ClientSessionId);
+            ctx.Send(new PartyDisbandResult { Success = res.Success, Message = res.Message ?? "" });
+        }, jsonFallback: true);
+
+        dispatcher.Register<PartyMy>(async (ctx, msg) =>
+        {
+            var res = partyManager.HandleMy(ctx.ClientSessionId);
+            ctx.Send(new PartyMyResult
+            {
+                Success = res.Success,
+                PartyId = res.PartyId ?? "",
+                OwnerClientSessionId = res.OwnerClientSessionId,
+                Message = res.Message ?? "",
+                Members = (res.Members ?? new System.Collections.Generic.List<Shared.Messages.Center.PartyMemberInfo>())
+                    .Select(m => new Framework.Protocol.Generated.PartyMemberInfo
+                    {
+                        ClientSessionId = m.ClientSessionId,
+                        UserId = m.UserId,
+                        Nickname = m.Nickname ?? "",
+                        Ready = m.Ready
+                    }).ToList()
+            });
+        }, jsonFallback: true);
+
+        dispatcher.Register<PartyKick>(async (ctx, msg) =>
+        {
+            var res = partyManager.HandleKick(ctx.ClientSessionId, msg.TargetClientSessionId);
+            ctx.Send(new PartyKickResult { Success = res.Success, Message = res.Message ?? "" });
+        }, jsonFallback: true);
+
+        dispatcher.Register<PartyReady>(async (ctx, msg) =>
+        {
+            var res = partyManager.HandleReady(ctx.ClientSessionId, msg.Ready);
+            ctx.Send(new PartyReadyResult { Success = res.Success, Ready = res.Ready, Message = res.Message ?? "" });
         }, jsonFallback: true);
 
         // ==== 实体在线迁移（C2 第二阶段：Center 协调中继，对标 KBE cellappmgr 实体搬迁） ====

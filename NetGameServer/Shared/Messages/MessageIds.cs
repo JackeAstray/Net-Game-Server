@@ -146,6 +146,23 @@ namespace Shared.Messages
         public const int CenterLeaveRoomReq = 30033;
         public const int CenterLeaveRoomRes = 30034;
 
+        // === 队伍功能通信 (31000-31099 网关转发过来) ===
+        public const int PartyCreateReq = 31001;
+        public const int PartyCreateRes = 31002;
+        public const int PartyJoinReq = 31003;
+        public const int PartyJoinRes = 31004;
+        public const int PartyLeaveReq = 31005;
+        public const int PartyLeaveRes = 31006;
+        public const int PartyDisbandReq = 31007;
+        public const int PartyDisbandRes = 31008;
+        public const int PartyMyReq = 31009;
+        public const int PartyMyRes = 31010;
+        public const int PartyKickReq = 31011;
+        public const int PartyKickRes = 31012;
+        public const int PartyReadyReq = 31013;
+        public const int PartyReadyRes = 31014;
+        public const int PartyMemberNotif = 31015;
+
         // === Center 内部节点通信 (90000-90999，非客户端消息) ===
         public const int CenterRegisterNodeReq = 90001;
         public const int CenterRegisterNodeRes = 90002;
