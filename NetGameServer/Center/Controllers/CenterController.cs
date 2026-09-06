@@ -92,4 +92,56 @@ public class CenterController : ControllerBase
             machines = grouped
         });
     }
+
+    // ===== 配置中心（B4）：运行时覆盖的读写与持久化（经 ConfigHelper.SetRuntimeOverride 立即热更） =====
+
+    [HttpGet("config")]
+    public IActionResult Config()
+    {
+        var overrides = RuntimeConfigStore.Load();
+        return Ok(new { count = overrides.Count, overrides });
+    }
+
+    [HttpPost("config")]
+    public IActionResult SetConfig([FromBody] ConfigItem item)
+    {
+        if (item == null || string.IsNullOrWhiteSpace(item.Key))
+        {
+            return BadRequest(new { success = false, message = "key 不能为空" });
+        }
+        string key = item.Key.Trim();
+        Shared.ConfigHelper.SetRuntimeOverride(key, item.Value);
+        var overrides = RuntimeConfigStore.Load();
+        if (item.Value == null)
+        {
+            overrides.Remove(key);
+        }
+        else
+        {
+            overrides[key] = item.Value;
+        }
+        RuntimeConfigStore.Save(overrides);
+        return Ok(new { success = true, key, value = item.Value });
+    }
+
+    [HttpDelete("config/{key}")]
+    public IActionResult DeleteConfig(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return BadRequest(new { success = false, message = "key 不能为空" });
+        }
+        string trimmed = key.Trim();
+        Shared.ConfigHelper.SetRuntimeOverride(trimmed, null);
+        var overrides = RuntimeConfigStore.Load();
+        overrides.Remove(trimmed);
+        RuntimeConfigStore.Save(overrides);
+        return Ok(new { success = true, key = trimmed });
+    }
+
+    public sealed class ConfigItem
+    {
+        public string Key { get; set; } = string.Empty;
+        public string? Value { get; set; }
+    }
 }

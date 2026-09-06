@@ -17,6 +17,12 @@ namespace Center
             if (!string.IsNullOrEmpty(launch.Host)) ConfigHelper.SetRuntimeOverride("CenterHost", launch.Host);
             NodeLaunchArgs.ApplyToConfigHelper(launch);
 
+            // B4 配置中心：加载管理台持久化的运行时覆盖（远程改配重启不丢失；优先级最高）
+            foreach (var kv in Center.Handlers.RuntimeConfigStore.Load())
+            {
+                ConfigHelper.SetRuntimeOverride(kv.Key, kv.Value);
+            }
+
             Log.Configure(true, "Logs/Center.log", ConfigHelper.GetConfig<string>("Logging:MinimumLevel") ?? "Information");
 
             string nodeId = launch.NodeId

@@ -33,7 +33,7 @@
 | `Center/Handlers/EntityLocationService.cs` | 实体位置注册表（91007 登记 / 91008 注销 / 91009 查询 / 91010 响应，TTL 清扫） |
 | `Center/Handlers/MatchHandler.cs` | 房间匹配（创建/加入/聊天/离开） |
 | `Center/Handlers/PartyManager.cs` | 队伍管理（创建/加入/离开/解散/踢人/就位；31001~31015 客户端消息） |
-| `Center/Controllers/CenterController.cs` | 管理台 REST：`/api/center/health` / `nodes` / `summary` / `rooms` / `cluster`（按 MachineId 聚合） |
+| `Center/Controllers/CenterController.cs` | 管理台 REST：`/api/center/health` / `nodes` / `summary` / `rooms` / `cluster` / `config`（配置中心：GET 列覆盖、POST 热更+落盘、DELETE 删） |
 
 ## 注意事项
 
