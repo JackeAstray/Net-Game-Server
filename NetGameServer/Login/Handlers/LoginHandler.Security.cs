@@ -8,6 +8,7 @@ using MailKit.Net.Smtp;
 using MimeKit;
 using Shared.Data;
 using Shared.Messages;
+using StackExchange.Redis;
 namespace Login.Handlers
 {
     /// <summary>
@@ -104,6 +105,13 @@ namespace Login.Handlers
         private static bool TryGetThrottleRemaining(string action, string identity, out TimeSpan remaining)
         {
             remaining = TimeSpan.Zero;
+            // B3：Redis 集中限流（多实例共享计数）。先查 Redis——本地无 tracker 时不能被绕过。
+            if (TryGetRedisThrottleRemaining(action, identity, out var redisRemaining))
+            {
+                remaining = redisRemaining;
+                return true;
+            }
+
             string key = BuildActionKey(action, identity);
             // V13 修复：偶发清理失效的失败尝试跟踪（防按账号/IP 永久增长）
             if (actionAttemptTrackers.Count >= 1024 && (actionAttemptTrackers.Count & 255) == 0)
@@ -128,6 +136,75 @@ namespace Login.Handlers
             }
 
             return false;
+        }
+
+        // ===== B3：Redis 集中限流（多实例共享，本地限流之外的增量维度）=====
+
+        private static string BuildRedisKey(string action, string identity, string suffix)
+            => $"throttle:{BuildActionKey(action, identity)}:{suffix}";
+
+        private static bool TryGetRedisThrottleRemaining(string action, string identity, out TimeSpan remaining)
+        {
+            remaining = TimeSpan.Zero;
+            try
+            {
+                var db = RedisHelper.GetDatabase();
+                string lockKey = BuildRedisKey(action, identity, "lock");
+                if (db.KeyExists(lockKey))
+                {
+                    remaining = db.KeyTimeToLive(lockKey) ?? ThrottleLockDuration;
+                    return true;
+                }
+                string failKey = BuildRedisKey(action, identity, "fail");
+                RedisValue failVal = db.StringGet(failKey);
+                long count = failVal.TryParse(out long parsed) ? parsed : 0;
+                if (count >= MaxFailedAttempts)
+                {
+                    remaining = db.KeyTimeToLive(failKey) ?? ThrottleLockDuration;
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Shared.Log.Warning($"Redis 限流查询失败（回退本地） Action:{action} Err:{ex.Message}");
+            }
+            return false;
+        }
+
+        private static void RegisterFailedAttemptRedis(string action, string identity)
+        {
+            try
+            {
+                var db = RedisHelper.GetDatabase();
+                string failKey = BuildRedisKey(action, identity, "fail");
+                long count = db.StringIncrement(failKey);
+                if (count == 1)
+                {
+                    db.KeyExpire(failKey, ThrottleLockDuration);
+                }
+                if (count >= MaxFailedAttempts)
+                {
+                    db.StringSet(BuildRedisKey(action, identity, "lock"), "1", ThrottleLockDuration);
+                }
+            }
+            catch (Exception ex)
+            {
+                Shared.Log.Warning($"Redis 限流计数失败（回退本地） Action:{action} Err:{ex.Message}");
+            }
+        }
+
+        private static void ClearFailedAttemptsRedis(string action, string identity)
+        {
+            try
+            {
+                var db = RedisHelper.GetDatabase();
+                db.KeyDelete(BuildRedisKey(action, identity, "fail"));
+                db.KeyDelete(BuildRedisKey(action, identity, "lock"));
+            }
+            catch (Exception ex)
+            {
+                Shared.Log.Warning($"Redis 限流清除失败 Action:{action} Err:{ex.Message}");
+            }
         }
 
         /// <summary>移除已失效的失败尝试跟踪项（V13 兜底）：既不在锁定中、且最近一次失败已超过 ThrottleLockDuration 的条目。</summary>
@@ -184,6 +261,7 @@ namespace Login.Handlers
                         LastFailedAtUtc = now
                     };
                 });
+            RegisterFailedAttemptRedis(action, identity);
         }
 
         /// <summary>
@@ -195,6 +273,7 @@ namespace Login.Handlers
         {
             string key = BuildActionKey(action, identity);
             actionAttemptTrackers.TryRemove(key, out _);
+            ClearFailedAttemptsRedis(action, identity);
         }
 
         /// <summary>

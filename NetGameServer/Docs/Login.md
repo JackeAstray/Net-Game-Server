@@ -33,8 +33,8 @@
 
 - **Token 密钥**：`TokenSecret` 从配置读取（缺省时用随机 GUID——重启后旧 Token 全部失效，保证安全）。
   生产环境**必须**显式配置固定密钥，否则重启会强制所有用户重登。
-- **限流维度**：当前是账号维度本地计数（`LoginHandler.TryGetThrottleRemaining`）。
-  多实例部署时各实例独立计数，可换 Redis 集中计数。
+- **限流维度**：双轨——账号维度本地计数（`TryGetThrottleRemaining`）+ Redis 集中计数
+  （`throttle:{action}:{identity}:fail/lock`，多实例共享；Redis 不可用时自动回退本地，fail-open）。
 - **限流 vs Token 校验**：`HandleLoginRequestAsync` 是登录链路（计限流），
   `VerifyToken` 是后续业务校验（不计限流），不要混用。
 - **登录成功不直发 Token 字段名修改**：客户端按 `LoginResponse.Token` 取，字段重命名要同步客户端。
