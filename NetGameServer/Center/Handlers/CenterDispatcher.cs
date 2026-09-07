@@ -633,6 +633,41 @@ public static class CenterDispatcher
             }
         });
 
+        // ===== Gateway 集群挂起会话目录（B1：跨实例断线重连接管） =====
+
+        // 挂起登记（Gateway → Center）
+        dispatcher.Register<ClientSessionSuspend>(async (ctx, msg) =>
+        {
+            var cctx = (CenterSessionContext)ctx;
+            var nodeId = NodeManager.Instance.GetNodeIdBySession(cctx.GatewaySession) ?? string.Empty;
+            int grace = msg.GraceSeconds > 0 ? msg.GraceSeconds : 30;
+            CenterServerApp.SuspendedSessions?.Suspend(msg.ClientSessionId, msg.UserId, nodeId, TimeSpan.FromSeconds(grace));
+        }, jsonFallback: true);
+
+        // 挂起注销（Gateway → Center）
+        dispatcher.Register<ClientSessionUnsuspend>(async (ctx, msg) =>
+        {
+            CenterServerApp.SuspendedSessions?.Unsuspend(msg.ClientSessionId);
+        }, jsonFallback: true);
+
+        // 按 UserId 查询挂起会话（Gateway → Center，返回 90015）
+        dispatcher.Register<ClientSessionLocate>(async (ctx, msg) =>
+        {
+            bool found = false;
+            Center.Handlers.ClientSessionDirectory.SuspendedEntry? entry = null;
+            if (CenterServerApp.SuspendedSessions != null)
+            {
+                found = CenterServerApp.SuspendedSessions.TryLocate(msg.UserId, out entry);
+            }
+            ctx.Send(new ClientSessionLocateResult
+            {
+                UserId = msg.UserId,
+                Found = found && entry != null,
+                ClientSessionId = entry?.ClientSessionId ?? 0,
+                ExpiresAtUtcTicks = entry?.ExpiresAtUtc.Ticks ?? 0
+            });
+        }, jsonFallback: true);
+
         return dispatcher;
     }
 

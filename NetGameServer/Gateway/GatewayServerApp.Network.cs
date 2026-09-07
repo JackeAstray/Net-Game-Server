@@ -276,6 +276,8 @@ namespace Gateway
                             ExpiresAtUtc = DateTime.UtcNow.AddSeconds(grace)
                         };
                         Shared.Log.Info($"Gateway 记录断线重连会话 SessionId:{canonicalId} UserId:{boundUserId} 宽限:{grace}s");
+                        // B1：上报 Center 挂起目录（客户端换 Gateway 重连时可跨实例接管）
+                        SendCenterSessionSuspend(canonicalId, boundUserId, grace);
                     }
                 }
                 Gateway.Managers.GatewaySessionManager.Instance.RemoveSession(session.SessionId);

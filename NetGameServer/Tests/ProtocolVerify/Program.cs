@@ -983,6 +983,19 @@ bool partyDisbandOk = pd.Success && partyMgr.PartyCount == 0 && partyMgr.MemberC
 Console.WriteLine($"队伍逻辑: Create={partyCreateOk} Join={partyJoinOk} Ready={partyReadyOk} My={partyMyOk} Transfer={partyTransferOk} KickFail={partyKickFailOk} Disband={partyDisbandOk} (期望 全 True)");
 if (!(partyCreateOk && partyJoinOk && partyReadyOk && partyMyOk && partyTransferOk && partyKickFailOk && partyDisbandOk)) return 1;
 
+// ===== 16c. Gateway 集群挂起会话目录（B1：跨实例断线重连接管） =====
+var sessionDir = new Center.Handlers.ClientSessionDirectory();
+sessionDir.Suspend(7001, 42, "Gateway-A", TimeSpan.FromSeconds(30));
+bool suspOk = sessionDir.TryLocate(42, out var suspEntry) && suspEntry != null && suspEntry.ClientSessionId == 7001 && suspEntry.GatewayNodeId == "Gateway-A";
+bool notFoundOk = !sessionDir.TryLocate(999, out _);
+sessionDir.Suspend(7002, 43, "Gateway-A", TimeSpan.FromSeconds(1));
+int expiredCount = sessionDir.SweepExpired(DateTime.UtcNow.AddSeconds(2));
+bool expiryOk = expiredCount >= 1 && !sessionDir.TryLocate(43, out _);
+sessionDir.Unsuspend(7001);
+bool unsuspendOk = !sessionDir.TryLocate(42, out _) && sessionDir.Count == 0;
+Console.WriteLine($"挂起目录: Suspend={suspOk} NotFound={notFoundOk} Expiry={expiryOk} Unsuspend={unsuspendOk} (期望 全 True)");
+if (!(suspOk && notFoundOk && expiryOk && unsuspendOk)) return 1;
+
 // ===== 17. Leader 选举验证（主备高可用：争锁 + 故障接管） =====
 string leaderLock = Path.Combine(Path.GetTempPath(), $"leader_test_{Guid.NewGuid():N}.lock");
 var leaderA = new Framework.Core.LeaderElection(leaderLock, "Center-A", heartbeatIntervalMs: 300);

@@ -16,6 +16,8 @@ namespace Center
         public static Center.Handlers.MatchHandler? Match { get; private set; }
         /// <summary>队伍管理器（A2）：断线清理/监控用。</summary>
         public static Center.Handlers.PartyManager? Parties { get; private set; }
+        /// <summary>Gateway 集群挂起会话目录（B1：跨实例断线重连接管）。</summary>
+        public static Center.Handlers.ClientSessionDirectory? SuspendedSessions { get; private set; }
 
         /// <summary>Leader 选举实例（主备高可用：仅 Leader 处理业务）。</summary>
         public static Framework.Core.LeaderElection? LeaderElection { get; private set; }
@@ -50,6 +52,8 @@ namespace Center
             Match = matchHandler;
             var partyManager = new Center.Handlers.PartyManager();
             Parties = partyManager;
+            var sessionDirectory = new Center.Handlers.ClientSessionDirectory();
+            SuspendedSessions = sessionDirectory;
             handlers = Center.Handlers.MessageRouter.BuildHandlers(matchHandler);
 
             // 新协议分发器：强类型消息 + MemoryPack（JSON 兼容回退），消灭手写 switch
@@ -280,6 +284,8 @@ namespace Center
                         Center.Handlers.CenterDispatcher.SweepPending(TimeSpan.FromSeconds(30));
                         // 迭代 21：清扫实体位置服务过期条目（防迁移异常导致位置泄漏）
                         Center.Handlers.EntityLocationService.Instance.SweepExpired(DateTime.UtcNow);
+                        // B1：清扫 Gateway 挂起会话目录过期条目（防跨实例重连目录无界增长）
+                        CenterServerApp.SuspendedSessions?.SweepExpired(DateTime.UtcNow);
                     }
                     catch (OperationCanceledException)
                     {

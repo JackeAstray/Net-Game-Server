@@ -176,6 +176,12 @@ namespace Shared.Messages
         public const int CenterRoomMemberLeaveSyncReq = 90010; // Battle -> Center
         public const int CenterRoomMemberLeaveSyncRes = 90011;
 
+        // === Gateway 集群挂起会话目录（B1：跨实例断线重连接管）===
+        public const int ClientSessionSuspendReq = 90012;   // Gateway -> Center 挂起登记
+        public const int ClientSessionUnsuspendReq = 90013; // Gateway -> Center 注销
+        public const int ClientSessionLocateReq = 90014;    // Gateway -> Center 按 UserId 查询
+        public const int ClientSessionLocateRes = 90015;    // Center -> Gateway 查询响应
+
         // === 战斗/房间服务器客户端通信 (40000-49999 网关转发过来) ===
         public const int BattleJoinReq = 40001;
         public const int BattleJoinRes = 40002;

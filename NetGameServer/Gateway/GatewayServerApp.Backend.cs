@@ -301,6 +301,21 @@ namespace Gateway
                     return;
                 }
 
+                // B1：Center 挂起会话查询响应（90015）——跨实例断线重连接管
+                if (msgId == Framework.Protocol.Generated.MessageIds.ClientSessionLocateResult)
+                {
+                    try
+                    {
+                        var locate = MemoryPackSerializer.Deserialize<Framework.Protocol.Generated.ClientSessionLocateResult>(payload.AsSpan());
+                        HandleCenterLocateResult(locate);
+                    }
+                    catch (Exception ex)
+                    {
+                        Shared.Log.Warning($"Gateway 解析 ClientSessionLocateResult 失败: {ex.Message}");
+                    }
+                    return;
+                }
+
                 // P3 加固：出站客户端消息校验（仅客户端可见区间的非内部消息）+ 大小上限。
                 // 注意：EntityMigrateRouted 等内部控制消息已在上方单独处理，不经过此处。
                 if (!IsClientVisibleOutboundMsgId(msgId) || data.Length > MaxGatewayOutboundFrame)

@@ -127,24 +127,131 @@ namespace Gateway
                 }
                 if (Gateway.Managers.GatewaySessionManager.Instance.ResumeSession(newSessionId, key))
                 {
-                    // 通知 Battle 节点：玩家会话恢复（实体从挂起转在线），按玩家绑定路由到所在节点
-                    var resume = new Framework.Protocol.Generated.PlayerSessionResume { ClientSessionId = key };
-                    byte[] payload = resume.Serialize();
-                    byte[] routedPayload = Shared.RouteMetadata.AttachClientSessionId(payload, key);
-                    byte[] packet = PacketBuilder.BuildPacket(Framework.Protocol.Generated.MessageIds.PlayerSessionResume, routedPayload, out int totalLength);
-                    string nodeId = clientBattleNodeBindings.TryGetValue(key, out var bound) ? bound : defaultBattleNodeId;
-                    if (battleNodeSenders.TryGetValue(nodeId, out var sender))
-                    {
-                        sender.SendOrBuffer(packet.AsSpan(0, totalLength).ToArray());
-                        System.Buffers.ArrayPool<byte>.Shared.Return(packet);
-                    }
-                    else
-                    {
-                        System.Buffers.ArrayPool<byte>.Shared.Return(packet);
-                        Shared.Log.Warning($"Gateway Battle 节点不可用（{nodeId}），重连恢复通知丢弃 ClientSessionId:{key}");
-                    }
+                    SendPlayerSessionResume(key);
+                    SendCenterSessionUnsuspend(key); // B1：注销 Center 挂起目录
                 }
                 return;
+            }
+
+            // B1 跨实例重连：本地无挂起记录 → 查询 Center 挂起目录（新 Gateway 接管旧会话）
+            pendingLocates[userId] = newSessionId;
+            SendCenterSessionLocate(userId);
+        }
+
+        /// <summary>通知 Battle 节点玩家会话恢复（实体从挂起转在线），按玩家绑定路由到所在节点。</summary>
+        private static void SendPlayerSessionResume(long clientSessionId)
+        {
+            var resume = new Framework.Protocol.Generated.PlayerSessionResume { ClientSessionId = clientSessionId };
+            byte[] payload = resume.Serialize();
+            byte[] routedPayload = Shared.RouteMetadata.AttachClientSessionId(payload, clientSessionId);
+            byte[] packet = PacketBuilder.BuildPacket(Framework.Protocol.Generated.MessageIds.PlayerSessionResume, routedPayload, out int totalLength);
+            string nodeId = clientBattleNodeBindings.TryGetValue(clientSessionId, out var bound) ? bound : defaultBattleNodeId;
+            if (battleNodeSenders.TryGetValue(nodeId, out var sender))
+            {
+                sender.SendOrBuffer(packet.AsSpan(0, totalLength).ToArray());
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            }
+            else
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+                Shared.Log.Warning($"Gateway Battle 节点不可用（{nodeId}），重连恢复通知丢弃 ClientSessionId:{clientSessionId}");
+            }
+        }
+
+        // ===== B1：Center 挂起会话目录上报/查询/接管 =====
+
+        private static void SendCenterSessionSuspend(long clientSessionId, int userId, int graceSeconds)
+        {
+            if (centerSender == null)
+            {
+                return;
+            }
+            try
+            {
+                var msg = new Framework.Protocol.Generated.ClientSessionSuspend
+                {
+                    ClientSessionId = clientSessionId,
+                    UserId = userId,
+                    GraceSeconds = graceSeconds
+                };
+                SendToCenter(MessageIds.ClientSessionSuspendReq, msg.Serialize());
+            }
+            catch (Exception ex)
+            {
+                Shared.Log.Warning($"Gateway 上报挂起会话失败 ClientSessionId:{clientSessionId} Exception:{ex.Message}");
+            }
+        }
+
+        private static void SendCenterSessionUnsuspend(long clientSessionId)
+        {
+            if (centerSender == null)
+            {
+                return;
+            }
+            try
+            {
+                SendToCenter(MessageIds.ClientSessionUnsuspendReq,
+                    new Framework.Protocol.Generated.ClientSessionUnsuspend { ClientSessionId = clientSessionId }.Serialize());
+            }
+            catch (Exception ex)
+            {
+                Shared.Log.Warning($"Gateway 注销挂起会话失败 ClientSessionId:{clientSessionId} Exception:{ex.Message}");
+            }
+        }
+
+        private static void SendCenterSessionLocate(int userId)
+        {
+            if (centerSender == null)
+            {
+                pendingLocates.TryRemove(userId, out _);
+                return;
+            }
+            try
+            {
+                SendToCenter(MessageIds.ClientSessionLocateReq,
+                    new Framework.Protocol.Generated.ClientSessionLocate { UserId = userId }.Serialize());
+            }
+            catch (Exception ex)
+            {
+                pendingLocates.TryRemove(userId, out _);
+                Shared.Log.Warning($"Gateway 查询挂起会话失败 UserId:{userId} Exception:{ex.Message}");
+            }
+        }
+
+        private static void SendToCenter(int msgId, byte[] payload)
+        {
+            byte[] packet = PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
+            try
+            {
+                centerSender!.SendOrBuffer(packet.AsSpan(0, totalLength).ToArray());
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+            }
+        }
+
+        /// <summary>处理 Center 的 90015 挂起查询响应：在新 Gateway 恢复别名并续接后端实体（跨实例接管）。</summary>
+        private static void HandleCenterLocateResult(Framework.Protocol.Generated.ClientSessionLocateResult locate)
+        {
+            if (locate == null || !locate.Found || locate.ClientSessionId <= 0)
+            {
+                return;
+            }
+            if (!pendingLocates.TryRemove(locate.UserId, out long newSessionId))
+            {
+                return;
+            }
+            // 新连接别名到旧 clientSessionId（后端按旧 ID 续接挂起实体）
+            if (Gateway.Managers.GatewaySessionManager.Instance.ResumeSession(newSessionId, locate.ClientSessionId))
+            {
+                SendPlayerSessionResume(locate.ClientSessionId);
+                SendCenterSessionUnsuspend(locate.ClientSessionId);
+                Shared.Log.Info($"Gateway 跨实例接管会话 UserId:{locate.UserId} NewSession:{newSessionId} -> OldSession:{locate.ClientSessionId}");
+            }
+            else
+            {
+                Shared.Log.Warning($"Gateway 跨实例接管失败 UserId:{locate.UserId} NewSession:{newSessionId} OldSession:{locate.ClientSessionId}");
             }
         }
 

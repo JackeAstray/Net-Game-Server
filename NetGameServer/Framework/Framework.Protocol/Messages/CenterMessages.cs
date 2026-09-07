@@ -691,3 +691,44 @@ public partial class EntityLocateResponse
     public int Port { get; set; }
 }
 
+// ===== Gateway 集群挂起会话目录（B1）：跨实例断线重连接管 =====
+// Gateway 断线挂起时上报 Center（90012），客户端换 Gateway 重连时按 UserId 查询（90014）
+// 拿到旧 clientSessionId，在新实例上恢复别名并续接后端实体，实现多 Gateway 实例的粘性会话。
+
+/// <summary>挂起会话登记（Gateway → Center）：客户端已断开，宽限期内可跨实例恢复。</summary>
+[MemoryPackable]
+[GameMessage(90012, Target = "Center", Internal = true)]
+public partial class ClientSessionSuspend
+{
+    public long ClientSessionId { get; set; } = new();
+    public int UserId { get; set; } = new();
+    public int GraceSeconds { get; set; } = new();
+}
+
+/// <summary>挂起会话注销（Gateway → Center）：会话已恢复/彻底离场。</summary>
+[MemoryPackable]
+[GameMessage(90013, Target = "Center", Internal = true)]
+public partial class ClientSessionUnsuspend
+{
+    public long ClientSessionId { get; set; } = new();
+}
+
+/// <summary>挂起会话查询（Gateway → Center，按 UserId）：用于跨实例重连续接。</summary>
+[MemoryPackable]
+[GameMessage(90014, Target = "Center", Internal = true)]
+public partial class ClientSessionLocate
+{
+    public int UserId { get; set; } = new();
+}
+
+/// <summary>挂起会话查询响应（Center → Gateway）：返回挂起的 clientSessionId。</summary>
+[MemoryPackable]
+[GameMessage(90015, Target = "All", Internal = true)]
+public partial class ClientSessionLocateResult
+{
+    public int UserId { get; set; } = new();
+    public bool Found { get; set; }
+    public long ClientSessionId { get; set; } = new();
+    public long ExpiresAtUtcTicks { get; set; } = new();
+}
+

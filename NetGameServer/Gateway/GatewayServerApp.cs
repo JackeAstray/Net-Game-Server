@@ -38,6 +38,9 @@ namespace Gateway
 
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, PendingReconnect> pendingReconnects = new();
 
+        // B1 跨实例重连：userId → 新连接会话（发 90014 查询 Center 前的待续接记录）
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, long> pendingLocates = new();
+
         // ===== 静态分片（对标 KBE cellappmgr 调度）：多 Battle 节点 + 按玩家绑定路由 =====
 
         // 后端发送器（Login/Game/Center）：在连接发起前创建并订阅 OnConnected，
