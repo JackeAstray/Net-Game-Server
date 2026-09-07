@@ -48,6 +48,21 @@ namespace Battle.Handlers
                 },
                 jsonFallback: true);
 
+            // 观战（只读加入：复用广播链路，不占名额/不生成玩法实体）
+            dispatcher.RegisterSync<Framework.Protocol.Generated.BattleSpectate>(
+                (ctx, msg) =>
+                {
+                    var req = new BattleSpectateRequest { RoomId = msg.RoomId, SceneType = msg.SceneType };
+                    var gatewaySession = ((BattleSessionContext)ctx).GatewaySession;
+                    var res = roomHandler.HandleSpectateRequestAsync(ctx.ClientSessionId, req, gatewaySession).GetAwaiter().GetResult();
+                    ctx.Send(new Framework.Protocol.Generated.BattleSpectateResult
+                    {
+                        Success = res.Success,
+                        Message = res.Message
+                    });
+                },
+                jsonFallback: true);
+
             // 离开房间
             dispatcher.RegisterSync<Framework.Protocol.Generated.BattleLeaveRoom>(
                 (ctx, msg) =>

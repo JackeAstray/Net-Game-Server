@@ -161,6 +161,59 @@ namespace Battle.Handlers
             }
         }
 
+        /// <summary>
+        /// 观战（只读）加入：复用玩家实体/AOI/快照广播链路，但不占玩家名额、不生成玩法实体、不参与战斗判定。
+        /// 离开走 <see cref="HandleLeaveRoomRequestAsync"/>。
+        /// </summary>
+        public Task<BattleSpectateResponse> HandleSpectateRequestAsync(long clientSessionId, BattleSpectateRequest request, Network.ISession gatewaySession)
+        {
+            try
+            {
+                string roomId = request.RoomId ?? string.Empty;
+                if (string.IsNullOrEmpty(roomId))
+                {
+                    return Task.FromResult(new BattleSpectateResponse { Success = false, Message = "房间ID不能为空" });
+                }
+
+                var existingScene = sceneManager.GetSceneByPlayer(clientSessionId);
+                if (existingScene != null)
+                {
+                    if (string.Equals(existingScene.SceneId, roomId, StringComparison.Ordinal))
+                    {
+                        return Task.FromResult(new BattleSpectateResponse { Success = true, Message = "已在观战中" });
+                    }
+                    return Task.FromResult(new BattleSpectateResponse { Success = false, Message = "已在其他房间中，请先离开当前房间" });
+                }
+
+                var scene = sceneManager.GetOrCreateScene(new SceneConfig
+                {
+                    SceneId = roomId,
+                    Name = roomId,
+                    SceneType = "Spectate",
+                    UseAoi = true,
+                    GridSize = 50.0f,
+                    MaxPlayers = 0 // 观战场景不设玩家上限
+                });
+
+                // 观战者不占玩家名额：跳过 MaxPlayers 校验，但加入广播目标集合以接收场景广播
+                sceneManager.BindPlayerToScene(clientSessionId, roomId);
+
+                // 只读玩家实体：复用快照/AOI 广播；不 Spawn 玩法实体（Skill/Item），不参与战斗输入
+                var spectatorEntity = Battle.Entities.PlayerEntityDef.Create(clientSessionId);
+                spectatorEntity.OwnerClientId = clientSessionId;
+                Battle.BattleServerApp.NotifyEntityCreated(spectatorEntity);
+                entitySyncHandler.OnPlayerEnter(clientSessionId, spectatorEntity, gatewaySession);
+
+                return Task.FromResult(new BattleSpectateResponse { Success = true, Message = $"已进入观战 {roomId}" });
+            }
+            catch (Exception ex)
+            {
+                Shared.Log.Error($"Battle 观战加入失败 ClientSessionId:{clientSessionId} RoomId:{request?.RoomId} Exception:{ex}");
+                sceneManager.UnbindPlayer(clientSessionId);
+                return Task.FromResult(new BattleSpectateResponse { Success = false, Message = "观战加入失败" });
+            }
+        }
+
         public Task<BattleLeaveRoomResponse> HandleLeaveRoomRequestAsync(long clientSessionId, BattleLeaveRoomRequest request, Network.ISession gatewaySession)
         {
             var scene = sceneManager.GetSceneByPlayer(clientSessionId);

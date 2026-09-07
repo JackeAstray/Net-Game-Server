@@ -48,4 +48,22 @@ namespace Shared.Messages.Battle
         [JsonPropertyName("message")]
         public string Message { get; set; } = string.Empty;
     }
+
+    public class BattleSpectateRequest
+    {
+        [JsonPropertyName("roomId")]
+        public string RoomId { get; set; } = string.Empty;
+
+        [JsonPropertyName("sceneType")]
+        public string SceneType { get; set; } = string.Empty;
+    }
+
+    public class BattleSpectateResponse
+    {
+        [JsonPropertyName("success")]
+        public bool Success { get; set; }
+
+        [JsonPropertyName("message")]
+        public string Message { get; set; } = string.Empty;
+    }
 }

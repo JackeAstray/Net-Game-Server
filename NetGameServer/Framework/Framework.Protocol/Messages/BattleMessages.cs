@@ -62,6 +62,22 @@ public partial class BattleJoinResult
 }
 
 [MemoryPackable]
+[GameMessage(40012, Target = "Battle", Reply = "BattleSpectateResult")]
+public partial class BattleSpectate
+{
+    public string RoomId { get; set; } = string.Empty;
+    public string SceneType { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+[GameMessage(40013, Target = "Battle")]
+public partial class BattleSpectateResult
+{
+    public bool Success { get; set; } = new();
+    public string Message { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
 [GameMessage(40003, Target = "Battle")]
 public partial class BattleFrameSync
 {

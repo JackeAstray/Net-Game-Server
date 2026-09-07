@@ -183,6 +183,10 @@ namespace Shared.Messages
         public const int BattleLeaveRoomReq = 40004;
         public const int BattleLeaveRoomRes = 40005;
 
+        // 观战（只读加入，复用实体广播链路；不占玩家名额、不生成玩法实体）
+        public const int BattleSpectateReq = 40012;
+        public const int BattleSpectateRes = 40013;
+
         // 实体相关同步与广播 (40100-40199)
         public const int EntitySyncReq = 40101;                // 客户端上报自身状态
         public const int EntityEnterViewNotif = 40102;         // 广播：实体进入视野

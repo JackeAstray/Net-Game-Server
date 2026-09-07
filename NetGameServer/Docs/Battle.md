@@ -9,6 +9,7 @@
 ## 职责边界
 
 - ✅ 场景管理（AOI / 帧同步 / 玩法实体生命周期）
+- ✅ 观战（只读加入 40012/40013：复用广播链路，不占玩家名额、不生成玩法实体）
 - ✅ 玩家主实体 + 属主玩法实体（Skill/Item）同包随迁（迭代 15）
 - ✅ EntityCall 接收（91001 中继过来的远端方法调用）
 - ✅ 客户端 ScriptAction 路由到 csx 脚本（`Battle/Handlers/MessageRouter.cs`）
