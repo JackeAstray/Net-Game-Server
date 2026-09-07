@@ -10,14 +10,16 @@ namespace Battle.Handlers
     {
         private readonly SceneManager sceneManager;
         private readonly EntitySyncHandler entitySyncHandler;
+        private readonly BattleReplayRecorder replayRecorder;
 
         /// <summary>房间人数硬上限（服务端权威）：客户端可请求小于该值的容量，但不能无限制放大房间。</summary>
         private const int HardMaxPlayers = 200;
 
-        public RoomHandler(SceneManager sceneManager, EntitySyncHandler entitySyncHandler)
+        public RoomHandler(SceneManager sceneManager, EntitySyncHandler entitySyncHandler, BattleReplayRecorder? replayRecorder = null)
         {
             this.sceneManager = sceneManager;
             this.entitySyncHandler = entitySyncHandler;
+            this.replayRecorder = replayRecorder ?? new BattleReplayRecorder();
         }
 
         /// <summary>
@@ -212,6 +214,36 @@ namespace Battle.Handlers
                 sceneManager.UnbindPlayer(clientSessionId);
                 return Task.FromResult(new BattleSpectateResponse { Success = false, Message = "观战加入失败" });
             }
+        }
+
+        /// <summary>回放录制器（BattleServerApp tick 周期录制）。</summary>
+        public BattleReplayRecorder ReplayRecorder => replayRecorder;
+
+        /// <summary>导出某场景最近的回放帧（低频采样快照序列，观战/复盘用）。</summary>
+        public Task<BattleReplayResponse> HandleReplayRequestAsync(long clientSessionId, BattleReplayRequest request)
+        {
+            string sceneId = request.SceneId ?? string.Empty;
+            if (string.IsNullOrEmpty(sceneId))
+            {
+                return Task.FromResult(new BattleReplayResponse { Success = false, Message = "场景ID不能为空" });
+            }
+            var frames = replayRecorder.GetRecent(sceneId, request.MaxFrames > 0 ? request.MaxFrames : 60);
+            return Task.FromResult(new BattleReplayResponse
+            {
+                Success = true,
+                SceneId = sceneId,
+                Message = $"返回 {frames.Count} 帧回放",
+                Frames = frames.Select(f => new BattleReplayFrame
+                {
+                    FrameId = f.FrameId,
+                    TimeMs = f.TimeMs,
+                    Snapshots = f.Snapshots.Select(s => new BattleReplayEntitySnapshot
+                    {
+                        EntityId = s.EntityId,
+                        Props = s.Props
+                    }).ToList()
+                }).ToList()
+            });
         }
 
         public Task<BattleLeaveRoomResponse> HandleLeaveRoomRequestAsync(long clientSessionId, BattleLeaveRoomRequest request, Network.ISession gatewaySession)

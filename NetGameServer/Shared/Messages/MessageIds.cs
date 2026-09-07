@@ -187,6 +187,10 @@ namespace Shared.Messages
         public const int BattleSpectateReq = 40012;
         public const int BattleSpectateRes = 40013;
 
+        // 战斗回放（低频采样快照导出）
+        public const int BattleReplayReq = 40014;
+        public const int BattleReplayRes = 40015;
+
         // 实体相关同步与广播 (40100-40199)
         public const int EntitySyncReq = 40101;                // 客户端上报自身状态
         public const int EntityEnterViewNotif = 40102;         // 广播：实体进入视野

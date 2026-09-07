@@ -66,4 +66,41 @@ namespace Shared.Messages.Battle
         [JsonPropertyName("message")]
         public string Message { get; set; } = string.Empty;
     }
+
+    public class BattleReplayRequest
+    {
+        [JsonPropertyName("sceneId")]
+        public string SceneId { get; set; } = string.Empty;
+
+        [JsonPropertyName("maxFrames")]
+        public int MaxFrames { get; set; }
+    }
+
+    public class BattleReplayEntitySnapshot
+    {
+        public long EntityId { get; set; }
+        public byte[] Props { get; set; } = Array.Empty<byte>();
+    }
+
+    public class BattleReplayFrame
+    {
+        public long FrameId { get; set; }
+        public long TimeMs { get; set; }
+        public List<BattleReplayEntitySnapshot> Snapshots { get; set; } = new();
+    }
+
+    public class BattleReplayResponse
+    {
+        [JsonPropertyName("success")]
+        public bool Success { get; set; }
+
+        [JsonPropertyName("sceneId")]
+        public string SceneId { get; set; } = string.Empty;
+
+        [JsonPropertyName("message")]
+        public string Message { get; set; } = string.Empty;
+
+        [JsonPropertyName("frames")]
+        public List<BattleReplayFrame> Frames { get; set; } = new();
+    }
 }

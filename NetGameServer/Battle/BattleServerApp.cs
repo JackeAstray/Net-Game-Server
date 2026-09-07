@@ -1192,10 +1192,13 @@ namespace Battle
                 persistService.AttachManager(scene.EntityManager); // 周期批量落库的实体来源
                 SpawnSceneGameplayEntities(scene);
             };
+            // 回放录制器（A2）：tick 周期采样 + 场景销毁清理
+            var replayRecorder = new Battle.Handlers.BattleReplayRecorder();
             // 场景销毁：必须反向注销（A2/A3 修复）——此前 entityManagers/备份管理器只写不删、
             // 帧同步字典从不清理、脚本定时器不取消，导致场景销毁后备份文件无限增长、幽灵定时器继续跑。
             sceneManager.SceneDestroyed += scene =>
             {
+                replayRecorder.RemoveScene(scene.SceneId);
                 foreach (var entity in scene.EntityManager.GetAllEntities())
                 {
                     scriptHost.NotifyDestroy(entity); // 通知脚本 OnDestroy（取消定时器、退订属性事件）
@@ -1246,8 +1249,17 @@ namespace Battle
                 {
                     Log.Info($"tick 统计: last={tickEngine.LastTickMs}ms avg={tickEngine.AvgTickMs}ms max={tickEngine.MaxTickMs}ms 阈值={tickEngine.SlowTickThresholdMs}ms 入站队列={System.Threading.Interlocked.Read(ref queuedInboundCount)}");
                 }
+
+                // 回放录制（A2）：每 40 tick（2s @20Hz）采样所有活跃场景实体快照
+                if (frame % 40 == 0)
+                {
+                    foreach (var scene in sceneManager.GetAllScenes())
+                    {
+                        replayRecorder.Record(scene.EntityManager, scene.SceneId, frame);
+                    }
+                }
             };
-            var roomHandler = new Battle.Handlers.RoomHandler(sceneManager, entitySyncHandler);
+            var roomHandler = new Battle.Handlers.RoomHandler(sceneManager, entitySyncHandler, replayRecorder);
             var battleMainHandler = new Battle.Handlers.BattleMainHandler(sceneManager);
 
             // 帧同步管理器：客户端输入入队，tick 引擎聚合广播权威帧

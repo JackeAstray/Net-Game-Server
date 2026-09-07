@@ -78,6 +78,41 @@ public partial class BattleSpectateResult
 }
 
 [MemoryPackable]
+[GameStruct]
+public partial class ReplayEntitySnapshot
+{
+    public long EntityId { get; set; } = new();
+    public byte[] Props { get; set; } = Array.Empty<byte>();
+}
+
+[MemoryPackable]
+[GameStruct]
+public partial class ReplayFrameInfo
+{
+    public long FrameId { get; set; } = new();
+    public long TimeMs { get; set; } = new();
+    public List<ReplayEntitySnapshot> Snapshots { get; set; } = new();
+}
+
+[MemoryPackable]
+[GameMessage(40014, Target = "Battle", Reply = "BattleReplayResult")]
+public partial class BattleReplay
+{
+    public string SceneId { get; set; } = string.Empty;
+    public int MaxFrames { get; set; } = new();
+}
+
+[MemoryPackable]
+[GameMessage(40015, Target = "Battle")]
+public partial class BattleReplayResult
+{
+    public bool Success { get; set; } = new();
+    public string SceneId { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+    public List<ReplayFrameInfo> Frames { get; set; } = new();
+}
+
+[MemoryPackable]
 [GameMessage(40003, Target = "Battle")]
 public partial class BattleFrameSync
 {

@@ -63,6 +63,32 @@ namespace Battle.Handlers
                 },
                 jsonFallback: true);
 
+            // 战斗回放导出（低频采样快照序列）
+            dispatcher.RegisterSync<Framework.Protocol.Generated.BattleReplay>(
+                (ctx, msg) =>
+                {
+                    var req = new BattleReplayRequest { SceneId = msg.SceneId, MaxFrames = msg.MaxFrames };
+                    var res = roomHandler.HandleReplayRequestAsync(ctx.ClientSessionId, req).GetAwaiter().GetResult();
+                    var resMsg = new Framework.Protocol.Generated.BattleReplayResult
+                    {
+                        Success = res.Success,
+                        SceneId = res.SceneId,
+                        Message = res.Message,
+                        Frames = res.Frames.Select(f => new Framework.Protocol.Generated.ReplayFrameInfo
+                        {
+                            FrameId = f.FrameId,
+                            TimeMs = f.TimeMs,
+                            Snapshots = f.Snapshots.Select(s => new Framework.Protocol.Generated.ReplayEntitySnapshot
+                            {
+                                EntityId = s.EntityId,
+                                Props = s.Props
+                            }).ToList()
+                        }).ToList()
+                    };
+                    ctx.Send(resMsg);
+                },
+                jsonFallback: true);
+
             // 离开房间
             dispatcher.RegisterSync<Framework.Protocol.Generated.BattleLeaveRoom>(
                 (ctx, msg) =>
