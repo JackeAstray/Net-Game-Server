@@ -49,21 +49,44 @@ internal static class CenterHttpServer
         int httpPort = ConfigHelper.GetConfig<int>("CenterHttpPort") == 0 ? 31316 : ConfigHelper.GetConfig<int>("CenterHttpPort");
         // 安全默认：管理面仅监听回环地址，避免默认公网暴露。
         string bindAddress = ConfigHelper.GetConfig<string>("CenterHttpListenAddress") ?? "127.0.0.1";
+        // B6 TLS：配置 pfx 证书 + 密码后启用 HTTPS（默认端口 = HTTP 端口 + 1）
+        string tlsPfx = ConfigHelper.GetConfig<string>("CenterHttpTlsPfx") ?? string.Empty;
+        string tlsPassword = ConfigHelper.GetConfig<string>("CenterHttpTlsPassword") ?? string.Empty;
+        int httpsPort = ConfigHelper.GetConfig<int>("CenterHttpTlsPort") == 0 ? httpPort + 1 : ConfigHelper.GetConfig<int>("CenterHttpTlsPort");
+        bool tlsEnabled = !string.IsNullOrWhiteSpace(tlsPfx) && System.IO.File.Exists(tlsPfx);
 
         var builder = WebApplication.CreateBuilder(args);
         builder.WebHost.ConfigureKestrel(options =>
         {
             // P3 加固：管理面绑定地址可配置（CenterHttpListenAddress，默认 127.0.0.1 回环保持安全）。
             // 需要从外部访问时设 0.0.0.0，但建议经 TLS/防火墙保护；明文 HTTP 上承载 X-Api-Key 有被嗅探风险。
+            System.Net.IPAddress bindIp;
             if (string.Equals(bindAddress, "0.0.0.0", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(bindAddress, "*", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(bindAddress, "::", StringComparison.OrdinalIgnoreCase))
             {
+                bindIp = System.Net.IPAddress.Any;
                 options.ListenAnyIP(httpPort);
             }
             else
             {
-                options.Listen(System.Net.IPAddress.Parse(bindAddress), httpPort);
+                bindIp = System.Net.IPAddress.Parse(bindAddress);
+                options.Listen(bindIp, httpPort);
+            }
+
+            // B6：启用 HTTPS（证书文件存在才生效，缺失时保持明文并告警）
+            if (tlsEnabled)
+            {
+                try
+                {
+                    var cert = new System.Security.Cryptography.X509Certificates.X509Certificate2(tlsPfx, tlsPassword);
+                    options.Listen(bindIp, httpsPort, o => o.UseHttps(cert));
+                    Shared.Log.Info($"Center 管理面 HTTPS 已启用: {bindAddress}:{httpsPort}（证书 {tlsPfx}）");
+                }
+                catch (Exception ex)
+                {
+                    Shared.Log.Warning($"Center 管理面 HTTPS 启用失败（回退明文）: {ex.Message}");
+                }
             }
         });
 

@@ -35,6 +35,7 @@
 | `Center/Handlers/MatchHandler.cs` | 房间匹配（创建/加入/聊天/离开） |
 | `Center/Handlers/PartyManager.cs` | 队伍管理（创建/加入/离开/解散/踢人/就位；31001~31015 客户端消息） |
 | `Center/Controllers/CenterController.cs` | 管理台 REST：`/api/center/health` / `nodes` / `summary` / `rooms` / `cluster` / `config`（配置中心：GET 列覆盖、POST 热更+落盘、DELETE 删） |
+| `Center/CenterHttpServer.cs` | 管理台 HTTPS（B6）：配 `CenterHttpTlsPfx`/`CenterHttpTlsPassword`/`CenterHttpTlsPort` 后启用（默认 HTTPS 端口 = HTTP+1） |
 
 ## 注意事项
 
