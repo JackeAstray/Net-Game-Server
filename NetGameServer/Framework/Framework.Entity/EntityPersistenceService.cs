@@ -14,6 +14,8 @@ namespace Framework.Entity;
 public sealed class EntityPersistenceService : IDisposable
 {
     private readonly IEntityPersistenceStore store;
+    /// <summary>分片路由（B5）：EntityType → 专用存储后端；未命中回退默认 store。</summary>
+    private readonly IReadOnlyDictionary<string, IEntityPersistenceStore>? shardStores;
     private readonly Func<long, Entity>? entityFactory; // 按 ID 重建空实体骨架（恢复用）
     private readonly List<EntityManager> managers = new(); // 周期批量落库的实体来源（对标 EntityBackupService）
     private readonly long flushIntervalMs;
@@ -49,17 +51,30 @@ public sealed class EntityPersistenceService : IDisposable
     /// <param name="entityFactory">按实体 ID 创建空实体骨架的回调（恢复时用；null 则无法加载单实体）</param>
     /// <param name="flushIntervalMs">批量落库最小间隔（毫秒）</param>
     /// <param name="flushBatchSize">单次批量落库最多快照的实体数（超出部分留给下轮，控制主循环耗时上界）</param>
+    /// <param name="shardStores">分片路由（B5）：EntityType → 专用存储后端；null 表示全类型走默认 store。</param>
     public EntityPersistenceService(
         IEntityPersistenceStore store,
         Func<long, Entity>? entityFactory = null,
         long flushIntervalMs = 5000,
-        int flushBatchSize = 256)
+        int flushBatchSize = 256,
+        IReadOnlyDictionary<string, IEntityPersistenceStore>? shardStores = null)
     {
         this.store = store;
+        this.shardStores = shardStores;
         this.entityFactory = entityFactory;
         this.flushIntervalMs = Math.Max(1, flushIntervalMs);
         this.flushBatchSize = Math.Max(1, flushBatchSize);
         lastFlushAt = Environment.TickCount64;
+    }
+
+    /// <summary>按实体类型选择存储后端（分片命中用分片，否则默认）。</summary>
+    private IEntityPersistenceStore GetStore(string entityType)
+    {
+        if (shardStores != null && !string.IsNullOrEmpty(entityType) && shardStores.TryGetValue(entityType, out var shard))
+        {
+            return shard;
+        }
+        return store;
     }
 
     // ===== 批量落库（对标 GeekServer 脏状态自动保存）=====
@@ -189,7 +204,6 @@ public sealed class EntityPersistenceService : IDisposable
 
         LastFlushedCount = batch.Count;
         TotalFlushes++;
-        var storeRef = store;
         // 串行写入（已在 gate 内，保持提交顺序）。
         await Task.Run(() =>
         {
@@ -199,7 +213,7 @@ public sealed class EntityPersistenceService : IDisposable
                 {
                     // 与 SaveEntity 语义一致：只序列化 SyncToClient 属性（CELL_PRIVATE 为服务端瞬时状态，不落库）
                     byte[] props = PropertyCodec.SerializeAllValues(s.Props, s.Def, onlySyncToClient: true);
-                    storeRef.Save(s.EntityType, s.EntityId, props);
+                    GetStore(s.EntityType).Save(s.EntityType, s.EntityId, props);
                 }
                 catch (Exception ex)
                 {
@@ -219,7 +233,7 @@ public sealed class EntityPersistenceService : IDisposable
     public void SaveEntity(Entity entity)
     {
         byte[] props = PropertyCodec.SerializeAll(entity);
-        store.Save(entity.TypeName, entity.EntityId, props);
+        GetStore(entity.TypeName).Save(entity.TypeName, entity.EntityId, props);
         entity.MarkPersisted();
     }
 
@@ -236,13 +250,12 @@ public sealed class EntityPersistenceService : IDisposable
         long entityId = entity.EntityId;
         string entityType = entity.TypeName;
         entity.MarkPersisted();
-        var storeRef = store;
         try
         {
             await Task.Run(() =>
             {
                 byte[] props = PropertyCodec.SerializeAllValues(snapshot, def);
-                storeRef.Save(entityType, entityId, props);
+                GetStore(entityType).Save(entityType, entityId, props);
             });
         }
         catch (Exception ex)
@@ -258,7 +271,7 @@ public sealed class EntityPersistenceService : IDisposable
     /// </summary>
     public bool LoadEntity(Entity entity)
     {
-        byte[]? props = store.TryLoad(entity.TypeName, entity.EntityId);
+        byte[]? props = GetStore(entity.TypeName).TryLoad(entity.TypeName, entity.EntityId);
         if (props == null)
         {
             return false;
@@ -276,7 +289,7 @@ public sealed class EntityPersistenceService : IDisposable
         {
             return null;
         }
-        byte[]? props = store.TryLoad(entityType, entityId);
+        byte[]? props = GetStore(entityType).TryLoad(entityType, entityId);
         if (props == null)
         {
             return null;
@@ -287,7 +300,7 @@ public sealed class EntityPersistenceService : IDisposable
     }
 
     /// <summary>删除单个实体持久化数据。</summary>
-    public void DeleteEntity(string entityType, long entityId) => store.Delete(entityType, entityId);
+    public void DeleteEntity(string entityType, long entityId) => GetStore(entityType).Delete(entityType, entityId);
 
     /// <summary>批量保存实体（自动按类型分目录）。</summary>
     public void SaveAll(IEnumerable<Entity> entities)
@@ -305,7 +318,7 @@ public sealed class EntityPersistenceService : IDisposable
     public List<Entity> RestoreAll(string entityType)
     {
         var result = new List<Entity>();
-        foreach (var stored in store.LoadAll(entityType))
+        foreach (var stored in GetStore(entityType).LoadAll(entityType))
         {
             if (entityFactory == null)
             {
@@ -320,7 +333,7 @@ public sealed class EntityPersistenceService : IDisposable
     }
 
     /// <summary>统计某类型的持久化实体数。</summary>
-    public int Count(string entityType) => store.Count(entityType);
+    public int Count(string entityType) => GetStore(entityType).Count(entityType);
 
     public void Dispose()
     {
@@ -358,5 +371,12 @@ public sealed class EntityPersistenceService : IDisposable
             try { flushGate.Release(); } catch { /* 已释放则忽略 */ }
         }
         store.Dispose();
+        if (shardStores != null)
+        {
+            foreach (var shard in shardStores.Values)
+            {
+                try { shard.Dispose(); } catch { /* 分片释放失败不阻塞整体关闭 */ }
+            }
+        }
     }
 }

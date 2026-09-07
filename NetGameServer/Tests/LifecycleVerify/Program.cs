@@ -67,6 +67,17 @@ catch (ArgumentException)
     Check(true, "未知 Provider 抛 ArgumentException（fail-fast）");
 }
 
+// ---- 1b. B5 分片路由：按实体类型路由不同存储后端 ----
+var shardFake = new FakeStore();
+var shardService = new EntityPersistenceService(fake, id => flushDef.CreateEntity(id), flushIntervalMs: 1000, flushBatchSize: 64,
+    shardStores: new Dictionary<string, IEntityPersistenceStore> { { "Player", shardFake } });
+var pShard = flushDef.CreateEntity(100);
+pShard.Set("Hp", 7);
+shardService.SaveEntity(pShard); // 类型 Player → 命中分片 shardFake
+Check(shardFake.SaveCount == 1, $"分片 Player 路由到分片存储（实际 {shardFake.SaveCount}）");
+Check(fake.SaveCount == 2, "分片命中时默认 store 不写入（实际不变）");
+Check(shardService.Count("Player") == 1, $"分片计数走分片存储（实际 {shardService.Count("Player")}）");
+
 // ---- 2. 健康检查服务 ----
 int hp = FreePort();
 using var health = HealthServer.Start(hp, "lifecycle-test");

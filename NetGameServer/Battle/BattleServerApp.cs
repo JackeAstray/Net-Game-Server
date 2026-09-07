@@ -1172,13 +1172,42 @@ namespace Battle
                     ? ConfigHelper.GetConfig<int>("EntityPersistence:FlushBatchSize") : 256,
             };
             var persistStore = Framework.Persistence.PersistenceStoreFactory.Create(persistOptions);
+
+            // B5 分片路由：EntityPersistence:Shards = { "Player": "MySql", "Npc": "Redis" }（类型 → provider，
+            // 连接串复用主 ConnectionString；File 分片用主 Directory）。未配置分片时全类型走默认后端。
+            var shardStores = new System.Collections.Generic.Dictionary<string, Framework.Entity.IEntityPersistenceStore>();
+            var shardConfigs = ConfigHelper.GetConfig<System.Collections.Generic.Dictionary<string, string>>("EntityPersistence:Shards");
+            if (shardConfigs != null)
+            {
+                foreach (var kv in shardConfigs)
+                {
+                    try
+                    {
+                        var shardOptions = new Framework.Persistence.EntityPersistenceOptions
+                        {
+                            Provider = kv.Value,
+                            ConnectionString = persistOptions.ConnectionString,
+                            Directory = persistOptions.Directory,
+                            RedisDatabase = persistOptions.RedisDatabase
+                        };
+                        shardStores[kv.Key] = Framework.Persistence.PersistenceStoreFactory.Create(shardOptions);
+                        Log.Info($"实体持久化分片: 类型[{kv.Key}] -> 后端[{kv.Value}]");
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning($"实体持久化分片创建失败（跳过该类型分片） 类型:{kv.Key} Provider:{kv.Value} Exception:{ex.Message}");
+                    }
+                }
+            }
+
             var persistService = new Framework.Entity.EntityPersistenceService(
                 persistStore,
                 id => Battle.Entities.PlayerEntityDef.Create(id),
                 persistOptions.FlushIntervalMs,
-                persistOptions.FlushBatchSize);
+                persistOptions.FlushBatchSize,
+                shardStores.Count > 0 ? shardStores : null);
             BattleServerApp.persistService = persistService;
-            Log.Info($"实体持久化后端: {persistService.StoreName}（Provider={persistOptions.Provider}，批量落库间隔={persistOptions.FlushIntervalMs}ms）");
+            Log.Info($"实体持久化后端: {persistService.StoreName}（Provider={persistOptions.Provider}，分片数={shardStores.Count}，批量落库间隔={persistOptions.FlushIntervalMs}ms）");
 
             sceneManager = new Battle.Handlers.SceneManager();
             // 帧同步管理器声明提前：场景销毁事件在下方引用它做字典清理（闭包捕获要求先声明）。

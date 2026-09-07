@@ -45,6 +45,8 @@
   （Player / Npc / Skill / Item / ...），单条加载 O(1) 避免全量目录扫描。
 - **后端替换**：当前文件持久化仅供开发/测试用；生产替换为 MySQL/Redis 时
   改 `DbQueryHandler` 内部实现，**不要**改 `DbDispatcher` 强类型注册。
+- **分片路由（B5）**：`EntityPersistence:Shards`（如 `{ "Player": "MySql", "Npc": "Redis" }`）按实体类型
+  路由到不同后端（连接串复用主 `ConnectionString`；File 分片用主目录）；未配置时全类型走默认后端。
 - **RequestId 0**：无需响应匹配时省略 `__requestId`（fire-and-forget），如纯写入场景。
 
 ## 排错
