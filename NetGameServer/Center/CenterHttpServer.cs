@@ -79,7 +79,7 @@ internal static class CenterHttpServer
             {
                 try
                 {
-                    var cert = new System.Security.Cryptography.X509Certificates.X509Certificate2(tlsPfx, tlsPassword);
+                    var cert = System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadPkcs12FromFile(tlsPfx, tlsPassword);
                     options.Listen(bindIp, httpsPort, o => o.UseHttps(cert));
                     Shared.Log.Info($"Center 管理面 HTTPS 已启用: {bindAddress}:{httpsPort}（证书 {tlsPfx}）");
                 }
