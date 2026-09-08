@@ -1,7 +1,7 @@
 ﻿using System;
-using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Collections.Concurrent;
 using Network.Routing;
 
 namespace Network.Udp;
@@ -18,6 +18,7 @@ public class UdpServer : INetworkServer
     private const int MaxSessionsPerIp = 64;
 
     private UdpClient? udpClient;
+    private readonly ConcurrentDictionary<IPAddress, int> sessionsPerIp = new();
 
     public event SessionConnectedHandler? OnSessionConnected;
     public event DataReceivedHandler? OnDataReceived;
@@ -71,7 +72,7 @@ public class UdpServer : INetworkServer
                         Shared.Log.Warning($"[UdpServer] 会话数已达上限({MaxSessions})，拒绝新会话 Remote:{result.RemoteEndPoint}");
                         continue;
                     }
-                    int perIp = sessions.Keys.Count(k => k.Address.Equals(result.RemoteEndPoint.Address));
+                    int perIp = sessionsPerIp.TryGetValue(result.RemoteEndPoint.Address, out int count) ? count : 0;
                     if (perIp >= MaxSessionsPerIp)
                     {
                         Shared.Log.Warning($"[UdpServer] 每 IP 会话数已达上限({MaxSessionsPerIp})，拒绝新会话 Remote:{result.RemoteEndPoint}");
@@ -80,6 +81,7 @@ public class UdpServer : INetworkServer
 
                     session = new UdpSession(udpClient, result.RemoteEndPoint);
                     sessions[result.RemoteEndPoint] = session;
+                    sessionsPerIp.AddOrUpdate(result.RemoteEndPoint.Address, 1, (_, value) => value + 1);
                     Shared.Log.Info($"[UdpServer] 新会话建立 SessionId:{session.SessionId} Remote:{result.RemoteEndPoint}");
                     OnSessionConnected?.Invoke(session);
                 }
@@ -125,6 +127,7 @@ public class UdpServer : INetworkServer
                         }
 
                         sessions.Remove(pair.Key);
+                        DecrementPerIp(pair.Key.Address);
                         Shared.Log.Warning($"[UdpServer] 会话超时断开 SessionId:{pair.Value.SessionId} Remote:{pair.Value.RemoteEndPoint} TimeoutSeconds:{sessionTimeout.TotalSeconds}");
                         OnSessionDisconnected?.Invoke(pair.Value, "UDP session timeout.");
                     }
@@ -147,6 +150,21 @@ public class UdpServer : INetworkServer
         {
             Shared.Log.Info($"[UdpServer] 服务停止触发会话断开 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
             OnSessionDisconnected?.Invoke(session, "Server stopped.");
+        }
+        sessions.Clear();
+        sessionsPerIp.Clear();
+    }
+
+    private void DecrementPerIp(IPAddress address)
+    {
+        if (!sessionsPerIp.TryGetValue(address, out int count)) return;
+        if (count <= 1)
+        {
+            sessionsPerIp.TryRemove(new KeyValuePair<IPAddress, int>(address, count));
+        }
+        else
+        {
+            sessionsPerIp.TryUpdate(address, count - 1, count);
         }
     }
 

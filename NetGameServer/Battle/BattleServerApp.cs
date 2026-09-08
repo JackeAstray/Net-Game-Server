@@ -1249,7 +1249,7 @@ namespace Battle
 
                 if (sceneManager != null)
                 {
-                    foreach (var scene in sceneManager.GetAllScenes())
+                    foreach (var scene in sceneManager?.GetAllScenes() ?? Array.Empty<Battle.Handlers.BattleScene>())
                     {
                         scriptHost.TickAll(scene.EntityManager, frame);
                     }
@@ -1282,13 +1282,14 @@ namespace Battle
                 // 回放录制（A2）：每 40 tick（2s @20Hz）采样所有活跃场景实体快照
                 if (frame % 40 == 0)
                 {
-                    foreach (var scene in sceneManager.GetAllScenes())
+                    foreach (var scene in sceneManager?.GetAllScenes() ?? Array.Empty<Battle.Handlers.BattleScene>())
                     {
                         replayRecorder.Record(scene.EntityManager, scene.SceneId, frame);
                     }
                 }
             };
-            var roomHandler = new Battle.Handlers.RoomHandler(sceneManager, entitySyncHandler, replayRecorder);
+            var roomHandler = new Battle.Handlers.RoomHandler(sceneManager, entitySyncHandler, replayRecorder,
+                clientId => frameSyncManager?.RemoveClient(clientId));
             var battleMainHandler = new Battle.Handlers.BattleMainHandler(sceneManager);
 
             // 帧同步管理器：客户端输入入队，tick 引擎聚合广播权威帧

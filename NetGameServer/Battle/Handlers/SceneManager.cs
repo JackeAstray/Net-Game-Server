@@ -162,6 +162,11 @@ namespace Battle.Handlers
         {
             if (scenes.TryRemove(sceneId, out var removedScene))
             {
+                // 场景销毁必须同时解除玩家绑定。此前只有部分调用方先手动解绑，
+                // 其它销毁路径会留下 playerToSceneBinding/sceneToPlayers 的孤儿索引，
+                // 使后续请求仍被路由到已不存在的场景。
+                UnbindPlayersInScene(sceneId);
+
                 // 清理实体反索引中指向该场景的条目（场景销毁时实体可能未逐条走 RemoveEntity）。
                 foreach (var kv in entityToSceneBinding)
                 {

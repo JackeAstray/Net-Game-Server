@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.WebSockets;
+using System.Collections.Concurrent;
 
 using Network.Routing;
 
@@ -13,6 +14,7 @@ public class WebSocketServer : INetworkServer
 {
     private HttpListener? listener;
     private CancellationTokenSource? cts;
+    private readonly ConcurrentDictionary<long, WebSocketSession> activeSessions = new();
     private int activeConnections;
     private int maxConnections = -1;
 
@@ -103,6 +105,7 @@ public class WebSocketServer : INetworkServer
             }
 
             // 单连接处理隔离：任何异常都不允许终止 accept 循环（W1 修复）。
+            bool countedConnection = false;
             try
             {
                 if (context.Request.IsWebSocketRequest)
@@ -116,9 +119,10 @@ public class WebSocketServer : INetworkServer
                         context.Response.Close();
                         continue;
                     }
+                    countedConnection = true;
                     Shared.Log.Info($"[WebSocketServer] 收到握手请求 Remote:{context.Request.RemoteEndPoint} Url:{context.Request.Url}");
                     var wsContext = await context.AcceptWebSocketAsync(null);
-                    _ = HandleWebSocketAsync(wsContext.WebSocket, context.Request.RemoteEndPoint);
+                    _ = HandleWebSocketAsync(wsContext.WebSocket, context.Request.RemoteEndPoint, cts!.Token);
                 }
                 else
                 {
@@ -129,6 +133,12 @@ public class WebSocketServer : INetworkServer
             }
             catch (Exception ex)
             {
+                // 握手失败时 HandleWebSocketAsync 不会接管计数；必须在此回滚，
+                // 否则反复的畸形握手最终会把 activeConnections 推到上限。
+                if (countedConnection)
+                {
+                    Interlocked.Decrement(ref activeConnections);
+                }
                 Shared.Log.Warning($"[WebSocketServer] 单连接处理失败，忽略并继续接受新连接 Remote:{context.Request.RemoteEndPoint} Exception:{ex.Message}");
             }
         }
@@ -142,9 +152,10 @@ public class WebSocketServer : INetworkServer
     /// <param name="webSocket">用于与客户端通信的已接受 WebSocket 实例。</param>
     /// <param name="remoteEndPoint">可选的远程终结点，表示客户端来源；可能为 null。</param>
     /// <returns>表示操作完成的异步任务；在会话终止或发生异常时完成。</returns>
-    private async Task HandleWebSocketAsync(WebSocket webSocket, EndPoint? remoteEndPoint)
+    private async Task HandleWebSocketAsync(WebSocket webSocket, EndPoint? remoteEndPoint, CancellationToken cancellationToken)
     {
         var session = new WebSocketSession(webSocket, remoteEndPoint);
+        activeSessions[session.SessionId] = session;
         var packetReader = new LengthPrefixedPacketReader();
         Shared.Log.Info($"[WebSocketServer] 会话建立 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
         OnSessionConnected?.Invoke(session);
@@ -160,7 +171,7 @@ public class WebSocketServer : INetworkServer
             while (webSocket.State == WebSocketState.Open)
             {
                 WebSocketReceiveResult receiveResult =
-                    await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                    await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
 
                 if (receiveResult.MessageType == WebSocketMessageType.Close)
                 {
@@ -208,7 +219,9 @@ public class WebSocketServer : INetworkServer
         }
         finally
         {
+            activeSessions.TryRemove(session.SessionId, out _);
             Interlocked.Decrement(ref activeConnections);
+            session.Close();
         }
 
         Shared.Log.Info($"[WebSocketServer] 会话正常关闭 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
@@ -222,6 +235,11 @@ public class WebSocketServer : INetworkServer
         listener?.Stop();
         listener?.Close();
         listener = null;
+        foreach (var session in activeSessions.Values)
+        {
+            session.Close();
+        }
+        activeSessions.Clear();
         return Task.CompletedTask;
     }
 }

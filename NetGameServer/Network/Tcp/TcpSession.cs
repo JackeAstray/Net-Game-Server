@@ -49,7 +49,9 @@ public class TcpSession : ISession
         {
             SingleReader = true,
             SingleWriter = false,
-            FullMode = BoundedChannelFullMode.DropWrite // 满时 TryWrite 返回 false，由 Enqueue 处理
+            // Wait 模式下 TryWrite 在队列满时返回 false。DropWrite 会返回 true 并
+            // 静默丢弃新项，调用方无法归还池化缓冲，也无法触发慢消费者保护。
+            FullMode = BoundedChannelFullMode.Wait
         });
     }
 

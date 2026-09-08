@@ -12,6 +12,7 @@ namespace Network.Tcp;
 /// </summary>
 public class TcpServer : INetworkServer
 {
+    private static readonly TimeSpan IdleSessionTimeout = TimeSpan.FromMinutes(15);
     private TcpListener? tcpListener;
     private int activeConnections;
     private int maxConnections = -1;
@@ -119,7 +120,21 @@ public class TcpServer : INetworkServer
                 {
                     while (client.Connected)
                     {
-                        int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+                        // LastActivityTime 仅用于观测并不能阻止慢速连接占用 socket。
+                        // 每次读取设置一个独立超时，收到数据后重置；超时即关闭连接，
+                        // 避免攻击者只发送极慢的半包长期耗尽连接配额。
+                        int bytesRead;
+                        try
+                        {
+                            bytesRead = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length))
+                                .AsTask().WaitAsync(IdleSessionTimeout);
+                        }
+                        catch (TimeoutException)
+                        {
+                            Shared.Log.Warning($"[TcpServer] 会话空闲超时断开 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} TimeoutMinutes:{IdleSessionTimeout.TotalMinutes}");
+                            OnSessionDisconnected?.Invoke(session, "连接空闲超时。");
+                            return;
+                        }
                         if (bytesRead == 0) break;
 
                         session.LastActivityTime = DateTime.UtcNow; // 心跳/空闲超时检测用

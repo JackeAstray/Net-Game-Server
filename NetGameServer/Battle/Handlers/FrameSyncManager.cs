@@ -25,6 +25,7 @@ public sealed class FrameSyncManager
 
     /// <summary>场景 -> 玩家输入队列（收包线程入队，tick 线程消费）</summary>
     private readonly ConcurrentDictionary<string, ConcurrentQueue<(long sessionId, PlayerInput input)>> inputQueues = new();
+    private readonly ConcurrentDictionary<string, int> queuedInputCounts = new();
 
     /// <summary>场景 -> 服务端帧号（每场景独立推进，多场景互不干扰）</summary>
     private readonly ConcurrentDictionary<string, long> sceneFrames = new();
@@ -44,7 +45,9 @@ public sealed class FrameSyncManager
     /// <summary>每客户端帧状态（FrameId 防重放/乱序）。</summary>
     private sealed class ClientFrameState
     {
-        public int LastFrameId;
+        // 客户端通常从 0 或 1 开始上报。使用最小值作为哨兵，不能把
+        // GetOrAdd 的第一条请求本身写入 LastFrameId，否则首帧会被立即判定为重复。
+        public int LastFrameId = int.MinValue;
         public long LastWarnMs;
     }
 
@@ -73,7 +76,7 @@ public sealed class FrameSyncManager
         // 此前 FrameId 完全被忽略，作弊客户端可对同一帧反复提交不同输入（能力/开火作弊），
         // 也可乱序回放旧帧。现在 < 上次（乱序/回放）或 == 上次（重复提交）一律丢弃。
         var key = (scene.SceneId, clientSessionId);
-        var state = clientFrameStates.GetOrAdd(key, _ => new ClientFrameState { LastFrameId = request.FrameId });
+        var state = clientFrameStates.GetOrAdd(key, _ => new ClientFrameState());
         if (request.FrameId <= state.LastFrameId)
         {
             long nowMs = Environment.TickCount64;
@@ -100,13 +103,9 @@ public sealed class FrameSyncManager
         }
 
         var queue = inputQueues.GetOrAdd(scene.SceneId, _ => new ConcurrentQueue<(long, PlayerInput)>());
-        // P3 加固：队列总长度上限（防洪泛填满队列耗尽内存）。
-        if (queue.Count >= MaxQueuedInputsPerScene)
-        {
-            return;
-        }
         for (int i = 0; i < count; i++)
         {
+            if (!TryReserveInputSlot(scene.SceneId)) break;
             var input = inputs[i];
             SanitizeInput(input);
             queue.Enqueue((clientSessionId, input));
@@ -143,6 +142,7 @@ public sealed class FrameSyncManager
                 var perClient = new Dictionary<long, int>();
                 while (queue.TryDequeue(out var entry))
                 {
+                    DecrementQueuedInputCount(scene.SceneId);
                     if (sessionIds.Length == 0) continue; // 无玩家：丢弃过期输入
                     if (perClient.TryGetValue(entry.sessionId, out var contributed))
                     {
@@ -207,6 +207,7 @@ public sealed class FrameSyncManager
     public void RemoveScene(string sceneId)
     {
         inputQueues.TryRemove(sceneId, out _);
+        queuedInputCounts.TryRemove(sceneId, out _);
         sceneFrames.TryRemove(sceneId, out _);
         // P3 加固：清理该场景下所有客户端的帧状态（防字典无界增长 + 防换房后旧 FrameId 状态误拒新输入）。
         foreach (var kvp in clientFrameStates)
@@ -214,6 +215,50 @@ public sealed class FrameSyncManager
             if (string.Equals(kvp.Key.SceneId, sceneId, StringComparison.Ordinal))
             {
                 clientFrameStates.TryRemove(kvp.Key, out _);
+            }
+        }
+    }
+
+    /// <summary>玩家离开场景且不再重连时清理帧状态，允许下次入场从初始帧号重新开始。</summary>
+    public void RemoveClient(long clientSessionId)
+    {
+        foreach (var kvp in clientFrameStates)
+        {
+            if (kvp.Key.ClientId == clientSessionId)
+            {
+                clientFrameStates.TryRemove(kvp.Key, out _);
+            }
+        }
+    }
+
+    private bool TryReserveInputSlot(string sceneId)
+    {
+        while (true)
+        {
+            int current = queuedInputCounts.TryGetValue(sceneId, out int value) ? value : 0;
+            if (current >= MaxQueuedInputsPerScene) return false;
+            if (current == 0)
+            {
+                if (queuedInputCounts.TryAdd(sceneId, 1)) return true;
+            }
+            else if (queuedInputCounts.TryUpdate(sceneId, current + 1, current))
+            {
+                return true;
+            }
+        }
+    }
+
+    private void DecrementQueuedInputCount(string sceneId)
+    {
+        while (queuedInputCounts.TryGetValue(sceneId, out int current))
+        {
+            if (current <= 1)
+            {
+                if (queuedInputCounts.TryRemove(new KeyValuePair<string, int>(sceneId, current))) return;
+            }
+            else if (queuedInputCounts.TryUpdate(sceneId, current - 1, current))
+            {
+                return;
             }
         }
     }

@@ -307,7 +307,10 @@ namespace Gateway
                     try
                     {
                         var locate = MemoryPackSerializer.Deserialize<Framework.Protocol.Generated.ClientSessionLocateResult>(payload.AsSpan());
-                        HandleCenterLocateResult(locate);
+                        if (locate != null)
+                        {
+                            HandleCenterLocateResult(locate);
+                        }
                     }
                     catch (Exception ex)
                     {

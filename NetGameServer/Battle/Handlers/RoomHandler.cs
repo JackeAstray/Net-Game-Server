@@ -11,15 +11,17 @@ namespace Battle.Handlers
         private readonly SceneManager sceneManager;
         private readonly EntitySyncHandler entitySyncHandler;
         private readonly BattleReplayRecorder replayRecorder;
+        private readonly Action<long>? frameSyncClientRemoved;
 
         /// <summary>房间人数硬上限（服务端权威）：客户端可请求小于该值的容量，但不能无限制放大房间。</summary>
         private const int HardMaxPlayers = 200;
 
-        public RoomHandler(SceneManager sceneManager, EntitySyncHandler entitySyncHandler, BattleReplayRecorder? replayRecorder = null)
+        public RoomHandler(SceneManager sceneManager, EntitySyncHandler entitySyncHandler, BattleReplayRecorder? replayRecorder = null, Action<long>? frameSyncClientRemoved = null)
         {
             this.sceneManager = sceneManager;
             this.entitySyncHandler = entitySyncHandler;
             this.replayRecorder = replayRecorder ?? new BattleReplayRecorder();
+            this.frameSyncClientRemoved = frameSyncClientRemoved;
         }
 
         /// <summary>
@@ -282,6 +284,7 @@ namespace Battle.Handlers
             Battle.BattleServerApp.RecycleOwnedEntities(scene, clientSessionId);
 
             entitySyncHandler.OnPlayerLeave(clientSessionId, gatewaySession);
+            frameSyncClientRemoved?.Invoke(clientSessionId);
             Battle.BattleServerApp.SyncRoomPlayerCount(roomId);
             Battle.BattleServerApp.SyncRoomMemberLeave(roomId, clientSessionId);
 
@@ -315,6 +318,7 @@ namespace Battle.Handlers
 
             // 无重连支持（配置关闭）：完整离场
             Battle.BattleServerApp.LeaveScene(scene, clientSessionId, gatewaySession);
+            frameSyncClientRemoved?.Invoke(clientSessionId);
             Shared.Log.Info($"玩家 {clientSessionId} 已从场景解绑并清理");
         }
     }
