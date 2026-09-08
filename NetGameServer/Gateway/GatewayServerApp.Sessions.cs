@@ -232,7 +232,7 @@ namespace Gateway
         }
 
         /// <summary>处理 Center 的 90015 挂起查询响应：在新 Gateway 恢复别名并续接后端实体（跨实例接管）。</summary>
-        private static void HandleCenterLocateResult(Framework.Protocol.Generated.ClientSessionLocateResult locate)
+        private static void HandleCenterLocateResult(Framework.Protocol.Generated.ClientSessionLocateResult? locate)
         {
             if (locate == null || !locate.Found || locate.ClientSessionId <= 0)
             {

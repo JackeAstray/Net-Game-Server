@@ -1280,7 +1280,7 @@ namespace Battle
                 }
 
                 // 回放录制（A2）：每 40 tick（2s @20Hz）采样所有活跃场景实体快照
-                if (frame % 40 == 0)
+                if (frame % 40 == 0 && sceneManager != null)
                 {
                     foreach (var scene in sceneManager?.GetAllScenes() ?? Array.Empty<Battle.Handlers.BattleScene>())
                     {
