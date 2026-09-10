@@ -96,6 +96,19 @@ namespace Gateway
 
             // 数据接收处理器：统一协议 [MsgId(4)][Payload]
             // 会话路由信息放入 JSON payload 元数据 __clientSessionId
+            // P-OPT：转发帧为 BuildPacket 池化缓冲，直传后端（零拷贝移交）；sender 为空/异常路径统一归还，防池化缓冲泄漏。
+            void SendToBackend(BufferedBackendSender? sender, byte[] pooledPacket, int totalLength)
+            {
+                if (sender != null)
+                {
+                    sender.SendOrBufferFromPool(pooledPacket, totalLength);
+                }
+                else
+                {
+                    System.Buffers.ArrayPool<byte>.Shared.Return(pooledPacket);
+                }
+            }
+
             DataReceivedHandler onDataReceived = (session, data) =>
             {
                 try
@@ -176,37 +189,38 @@ namespace Gateway
                             System.Buffers.ArrayPool<byte>.Shared.Return(wrapperMsg);
                             return;
                         }
-                        byte[] outbound = wrapperMsg.AsSpan(0, routedLength).ToArray();
-                        System.Buffers.ArrayPool<byte>.Shared.Return(wrapperMsg);
 
                         // 配置化路由：查源生成器产出的路由表（[GameMessage] 声明为唯一事实来源），
                         // 未定义的消息回退到旧区间路由（过渡期兼容）。
+                        // 注意：wrapperMsg 为池化缓冲，各路由分支必须"直传移交 或 Return"恰好一次。
                         string? targetServer = Framework.Protocol.Generated.RouterTable.GetTargetServer(msgId);
                         if (targetServer != null)
                         {
                             var route = Framework.Protocol.Generated.RouterTable.Routes[msgId];
                             if (route.IsInternal)
                             {
+                                System.Buffers.ArrayPool<byte>.Shared.Return(wrapperMsg);
                                 Shared.Log.Warning($"Gateway 拒绝客户端发送的内部消息 MsgId:{msgId}");
                                 return;
                             }
 
-                            Shared.Log.Debug("Gateway 配置化路由客户端消息 MsgId:{MsgId} ClientSessionId:{ClientSessionId} Target:{Target} OutboundLength:{OutboundLength}", msgId, session.SessionId, targetServer, outbound.Length);
+                            Shared.Log.Debug("Gateway 配置化路由客户端消息 MsgId:{MsgId} ClientSessionId:{ClientSessionId} Target:{Target} RoutedLength:{RoutedLength}", msgId, session.SessionId, targetServer, routedLength);
                             switch (targetServer)
                             {
                                 case "Login":
-                                    loginSender?.SendOrBuffer(outbound);
+                                    SendToBackend(loginSender, wrapperMsg, routedLength);
                                     break;
                                 case "Game":
-                                    gameSender?.SendOrBuffer(outbound);
+                                    SendToBackend(gameSender, wrapperMsg, routedLength);
                                     break;
                                 case "Center":
-                                    centerSender?.SendOrBuffer(outbound);
+                                    SendToBackend(centerSender, wrapperMsg, routedLength);
                                     break;
                                 case "Battle":
-                                    SendToBattle(outbound, session.SessionId);
+                                    SendToBattle(wrapperMsg, routedLength, session.SessionId);
                                     break;
                                 default:
+                                    System.Buffers.ArrayPool<byte>.Shared.Return(wrapperMsg);
                                     Shared.Log.Warning($"Gateway: 未知的路由目标 TargetServer=>{targetServer} MsgId=>{msgId}");
                                     break;
                             }
@@ -215,26 +229,27 @@ namespace Gateway
 
                         if (msgId >= 10000 && msgId < 20000)
                         {
-                            Shared.Log.Debug("Gateway 路由客户端消息 -> Login MsgId:{MsgId} ClientSessionId:{ClientSessionId} BoundUserId:{BoundUserId} OutboundLength:{OutboundLength}", msgId, session.SessionId, boundUserId, outbound.Length);
-                            loginSender?.SendOrBuffer(outbound);
+                            Shared.Log.Debug("Gateway 路由客户端消息 -> Login MsgId:{MsgId} ClientSessionId:{ClientSessionId} BoundUserId:{BoundUserId} RoutedLength:{RoutedLength}", msgId, session.SessionId, boundUserId, routedLength);
+                            SendToBackend(loginSender, wrapperMsg, routedLength);
                         }
                         else if ((msgId >= 20000 && msgId < 30000) || (msgId >= 50000 && msgId < 70000))
                         {
-                            Shared.Log.Debug("Gateway 路由客户端消息 -> Game MsgId:{MsgId} ClientSessionId:{ClientSessionId} BoundUserId:{BoundUserId} OutboundLength:{OutboundLength}", msgId, session.SessionId, boundUserId, outbound.Length);
-                            gameSender?.SendOrBuffer(outbound);
+                            Shared.Log.Debug("Gateway 路由客户端消息 -> Game MsgId:{MsgId} ClientSessionId:{ClientSessionId} BoundUserId:{BoundUserId} RoutedLength:{RoutedLength}", msgId, session.SessionId, boundUserId, routedLength);
+                            SendToBackend(gameSender, wrapperMsg, routedLength);
                         }
                         else if (msgId >= 30000 && msgId < 40000)
                         {
-                            Shared.Log.Debug("Gateway 路由客户端消息 -> Center MsgId:{MsgId} ClientSessionId:{ClientSessionId} BoundUserId:{BoundUserId} OutboundLength:{OutboundLength}", msgId, session.SessionId, boundUserId, outbound.Length);
-                            centerSender?.SendOrBuffer(outbound);
+                            Shared.Log.Debug("Gateway 路由客户端消息 -> Center MsgId:{MsgId} ClientSessionId:{ClientSessionId} BoundUserId:{BoundUserId} RoutedLength:{RoutedLength}", msgId, session.SessionId, boundUserId, routedLength);
+                            SendToBackend(centerSender, wrapperMsg, routedLength);
                         }
                         else if (msgId >= 40000 && msgId < 50000)
                         {
-                            Shared.Log.Debug("Gateway 路由客户端消息 -> Battle MsgId:{MsgId} ClientSessionId:{ClientSessionId} BoundUserId:{BoundUserId} OutboundLength:{OutboundLength}", msgId, session.SessionId, boundUserId, outbound.Length);
-                            SendToBattle(outbound, session.SessionId);
+                            Shared.Log.Debug("Gateway 路由客户端消息 -> Battle MsgId:{MsgId} ClientSessionId:{ClientSessionId} BoundUserId:{BoundUserId} RoutedLength:{RoutedLength}", msgId, session.SessionId, boundUserId, routedLength);
+                            SendToBattle(wrapperMsg, routedLength, session.SessionId);
                         }
                         else
                         {
+                            System.Buffers.ArrayPool<byte>.Shared.Return(wrapperMsg);
                             Shared.Log.Warning($"Gateway: 未知的消息路由 MsgId=>{msgId}");
                         }
                     }

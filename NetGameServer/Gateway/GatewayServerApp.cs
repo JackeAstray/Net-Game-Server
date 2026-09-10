@@ -60,8 +60,8 @@ namespace Gateway
         /// <summary>默认 Battle 节点（无绑定时的回退目标）。</summary>
         private static volatile string defaultBattleNodeId = string.Empty;
 
-        /// <summary>按玩家绑定（或默认节点）发送到对应 Battle 节点。</summary>
-        private static void SendToBattle(byte[] outbound, long clientSessionId)
+        /// <summary>按玩家绑定（或默认节点）发送到对应 Battle 节点（池化帧零拷贝直传；无可用节点时归还缓冲）。</summary>
+        private static void SendToBattle(byte[] pooledPacket, int totalLength, long clientSessionId)
         {
             // 断线重连：客户端消息携带新会话 ID，但玩家->Battle 节点绑定以旧会话 ID 为键。
             // 必须先做 新->旧 别名解析，否则多 Battle 节点下会回退默认节点导致路由错误。
@@ -71,25 +71,29 @@ namespace Gateway
                 : defaultBattleNodeId;
             if (battleNodeSenders.TryGetValue(nodeId, out var sender))
             {
-                sender.SendOrBuffer(outbound);
+                sender.SendOrBufferFromPool(pooledPacket, totalLength);
+                return;
             }
-            else if (battleNodeSenders.Count > 0)
+            if (battleNodeSenders.Count > 0)
             {
                 // 绑定节点不存在（节点已下线）：回退默认节点并清除绑定
                 clientBattleNodeBindings.TryRemove(routingKey, out _);
-                battleNodeSenders.TryGetValue(defaultBattleNodeId, out sender);
-                sender?.SendOrBuffer(outbound);
+                if (battleNodeSenders.TryGetValue(defaultBattleNodeId, out sender))
+                {
+                    sender.SendOrBufferFromPool(pooledPacket, totalLength);
+                    return;
+                }
             }
-            else
-            {
-                Shared.Log.Warning($"Gateway 无可用 Battle 节点，丢弃消息 ClientSessionId:{clientSessionId}");
-            }
+
+            System.Buffers.ArrayPool<byte>.Shared.Return(pooledPacket);
+            Shared.Log.Warning($"Gateway 无可用 Battle 节点，丢弃消息 ClientSessionId:{clientSessionId}");
         }
 
         private sealed class BufferedBackendSender
         {
             private readonly string backendName;
             private readonly Action<ReadOnlyMemory<byte>> sendAction;
+            private readonly Action<byte[], int> sendFromPoolAction;
             private readonly ConcurrentQueue<byte[]> pendingPackets = new ConcurrentQueue<byte[]>();
             private readonly int maxPending;
             private volatile bool isConnected;
@@ -97,10 +101,11 @@ namespace Gateway
             /// 避免"缓冲旧消息 + 实时新消息"交错乱序。冲刷完成后恢复直发。</summary>
             private volatile bool flushing;
 
-            public BufferedBackendSender(string backendName, Action<ReadOnlyMemory<byte>> sendAction, int maxPending = 512)
+            public BufferedBackendSender(string backendName, Action<ReadOnlyMemory<byte>> sendAction, Action<byte[], int> sendFromPoolAction, int maxPending = 512)
             {
                 this.backendName = backendName;
                 this.sendAction = sendAction;
+                this.sendFromPoolAction = sendFromPoolAction;
                 this.maxPending = maxPending;
             }
 
@@ -135,6 +140,29 @@ namespace Gateway
                     return;
                 }
 
+                EnqueuePacket(packet);
+            }
+
+            /// <summary>
+            /// 零拷贝发送池化转发帧（P-OPT）：连接正常时直接移交 BuildPacket 池化缓冲（SendFromPool，写后自动归还）；
+            /// 未连接/冲刷中则拷贝入队并归还池化缓冲。调用方不再持有缓冲所有权。
+            /// </summary>
+            public void SendOrBufferFromPool(byte[] pooledPacket, int totalLength)
+            {
+                if (isConnected && !flushing)
+                {
+                    sendFromPoolAction(pooledPacket, totalLength);
+                    return;
+                }
+
+                byte[] copy = new byte[totalLength];
+                Array.Copy(pooledPacket, copy, totalLength);
+                System.Buffers.ArrayPool<byte>.Shared.Return(pooledPacket);
+                EnqueuePacket(copy);
+            }
+
+            private void EnqueuePacket(byte[] packet)
+            {
                 pendingPackets.Enqueue(packet);
                 Shared.Log.Warning($"Gateway->{backendName} 未连接或冲刷中，消息入缓冲 Length:{packet.Length} 当前待发:{pendingPackets.Count}");
                 int droppedCount = 0;

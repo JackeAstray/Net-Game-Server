@@ -81,7 +81,7 @@ namespace Gateway
             string loginHost = ConfigHelper.GetConfig<string>("LoginHost") ?? "127.0.0.1";
             var loginClient = new TcpClientWrapper(loginHost, loginPort);
             // 发送器必须在 ConnectAsync 之前创建并订阅 OnConnected（避免快速连接竞态导致缓冲永不冲刷）
-            loginSender = new BufferedBackendSender("Login", data => loginClient.Send(data));
+            loginSender = new BufferedBackendSender("Login", data => loginClient.Send(data), (buf, len) => loginClient.SendFromPool(buf, len));
             loginClient.OnConnected += _ => loginSender?.OnConnected();
             loginClient.OnDisconnected += (_, __) => loginSender?.OnDisconnected();
             loginClient.OnConnected += session =>
@@ -184,7 +184,7 @@ namespace Gateway
             string gameHost = ConfigHelper.GetConfig<string>("GameHost") ?? "127.0.0.1";
             var gameClient = new TcpClientWrapper(gameHost, gamePort);
             // 发送器必须在 ConnectAsync 之前创建并订阅 OnConnected（避免快速连接竞态）
-            gameSender = new BufferedBackendSender("Game", data => gameClient.Send(data));
+            gameSender = new BufferedBackendSender("Game", data => gameClient.Send(data), (buf, len) => gameClient.SendFromPool(buf, len));
             gameClient.OnConnected += _ => gameSender?.OnConnected();
             gameClient.OnDisconnected += (_, __) => gameSender?.OnDisconnected();
             gameClient.OnConnected += session =>
@@ -257,7 +257,7 @@ namespace Gateway
             string centerHost = ConfigHelper.GetConfig<string>("CenterHost") ?? "127.0.0.1";
             var centerClient = new TcpClientWrapper(centerHost, centerPort);
             // 发送器必须在 ConnectAsync 之前创建并订阅 OnConnected（避免快速连接竞态）
-            centerSender = new BufferedBackendSender("Center", data => centerClient.Send(data));
+            centerSender = new BufferedBackendSender("Center", data => centerClient.Send(data), (buf, len) => centerClient.SendFromPool(buf, len));
             centerClient.OnConnected += _ => centerSender?.OnConnected();
             centerClient.OnDisconnected += (_, __) => centerSender?.OnDisconnected();
             centerClient.OnConnected += session =>
@@ -421,7 +421,7 @@ namespace Gateway
                 var battleClient = new TcpClientWrapper(nodeHost, nodePort);
                 battleNodes[nodeId] = battleClient;
 
-                var sender = new BufferedBackendSender(nodeId, data => battleClient.Send(data));
+                var sender = new BufferedBackendSender(nodeId, data => battleClient.Send(data), (buf, len) => battleClient.SendFromPool(buf, len));
                 battleNodeSenders[nodeId] = sender;
 
                 battleClient.OnConnected += _ =>
