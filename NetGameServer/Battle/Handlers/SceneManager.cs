@@ -52,15 +52,31 @@ namespace Battle.Handlers
         /// <returns>对应的 BattleScene 实例。</returns>
         public BattleScene GetOrCreateScene(SceneConfig config)
         {
-            return scenes.GetOrAdd(config.SceneId, id =>
+            if (scenes.TryGetValue(config.SceneId, out var existing))
             {
-                var scene = new BattleScene(config);
-                // 维护实体反索引：新增/更新→记录，移除→清除。
-                scene.EntityManager.EntityAdded += (entityId, _) => entityToSceneBinding[entityId] = id;
-                scene.EntityManager.EntityRemoved += (entityId, _) => entityToSceneBinding.TryRemove(entityId, out string? _);
+                return existing;
+            }
+
+            // P3 修复：由 GetOrAdd 改为显式 TryAdd——GetOrAdd 工厂并发时可能执行多次，
+            // 副作用（SceneCreated → 生成玩法实体/注册脚本管理器）会在被丢弃的实例上执行（幽灵注册）。
+            var scene = new BattleScene(config);
+            Action<long, Framework.Entity.Entity> onAdded = (entityId, _) => entityToSceneBinding[entityId] = config.SceneId;
+            Action<long, string> onRemoved = (entityId, _) => entityToSceneBinding.TryRemove(entityId, out string? _);
+            // 维护实体反索引：新增/更新→记录，移除→清除（必须在 SceneCreated 之前订阅，
+            // 以捕获宿主生成场景级玩法实体的注册）。
+            scene.EntityManager.EntityAdded += onAdded;
+            scene.EntityManager.EntityRemoved += onRemoved;
+
+            if (scenes.TryAdd(config.SceneId, scene))
+            {
                 SceneCreated?.Invoke(scene);
                 return scene;
-            });
+            }
+
+            // 并发竞态：另一线程已创建同 SceneId——退订本实例事件防幽灵订阅（该实例永不进入 scenes）。
+            scene.EntityManager.EntityAdded -= onAdded;
+            scene.EntityManager.EntityRemoved -= onRemoved;
+            return scenes[config.SceneId];
         }
 
         /// <summary>

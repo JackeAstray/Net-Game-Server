@@ -45,10 +45,19 @@ namespace Center.Handlers
             }
 
             string roomId = request.RoomId.Trim();
-            if (rooms.TryGetValue(roomId, out var room))
+            var roomLock = GetRoomLock(roomId);
+            roomLock.Wait();
+            try
             {
-                room.Info.CurrentPlayers = Math.Max(0, request.CurrentPlayers);
-                Shared.Log.Debug($"房间人数同步 RoomId:{roomId} CurrentPlayers:{room.Info.CurrentPlayers}");
+                if (rooms.TryGetValue(roomId, out var room))
+                {
+                    room.Info.CurrentPlayers = Math.Max(0, request.CurrentPlayers);
+                    Shared.Log.Debug($"房间人数同步 RoomId:{roomId} CurrentPlayers:{room.Info.CurrentPlayers}");
+                }
+            }
+            finally
+            {
+                roomLock.Release();
             }
         }
 
@@ -60,6 +69,20 @@ namespace Center.Handlers
             }
 
             string roomId = request.RoomId.Trim();
+            var roomLock = GetRoomLock(roomId);
+            await roomLock.WaitAsync();
+            try
+            {
+                await HandleRoomMemberLeaveSyncLockedAsync(roomId, request, gatewaySession, sendClosedToGatewayFunc, sendMemberListToGatewayFunc, sendOwnerChangedToGatewayFunc);
+            }
+            finally
+            {
+                roomLock.Release();
+            }
+        }
+
+        private async Task HandleRoomMemberLeaveSyncLockedAsync(string roomId, CenterRoomMemberLeaveSyncRequest request, Network.ISession gatewaySession, Action<Network.ISession, long, int, RoomClosedNotification> sendClosedToGatewayFunc, Action<Network.ISession, long, int, RoomMemberListChangedNotification> sendMemberListToGatewayFunc, Action<Network.ISession, long, int, RoomOwnerChangedNotification> sendOwnerChangedToGatewayFunc)
+        {
             if (!rooms.TryGetValue(roomId, out var room))
             {
                 return;
@@ -92,20 +115,26 @@ namespace Center.Handlers
             }
 
             rooms.TryRemove(roomId, out _);
+            ReleaseRoomLock(roomId);
             BroadcastRoomClosedNotification(gatewaySession, destroyResult.AffectedSessionIds, roomId, sendClosedToGatewayFunc);
             Shared.Log.Info($"空房已自动关闭 RoomId:{roomId}");
         }
 
         private void RegisterRoom(RoomInfo roomInfo, string password = "", IEnumerable<long>? memberSessionIds = null, int ownerUserId = 0, string ownerUid = "", string ownerNickname = "")
         {
-            var entry = new RoomRegistryEntry
+            // P1 修复：房间注册在房间锁内完成（与并发 Join/Leave 串行化，避免注册未完成即被访问）
+            var roomLock = GetRoomLock(roomInfo.RoomId);
+            roomLock.Wait();
+            try
             {
-                Info = roomInfo,
-                PasswordHash = ComputePasswordHash(password)
-            };
+                var entry = new RoomRegistryEntry
+                {
+                    Info = roomInfo,
+                    PasswordHash = ComputePasswordHash(password)
+                };
 
-            if (memberSessionIds != null)
-            {
+                if (memberSessionIds != null)
+                {
                 foreach (var sessionId in memberSessionIds.Where(static id => id > 0))
                 {
                     entry.MemberStates[sessionId] = new RoomMemberState
@@ -120,8 +149,13 @@ namespace Center.Handlers
             }
 
             entry.Info.CurrentPlayers = entry.MemberStates.Count > 0 ? entry.MemberStates.Count : entry.Info.CurrentPlayers;
-            entry.Info.Members = BuildRoomMembers(entry);
-            rooms[roomInfo.RoomId] = entry;
+                entry.Info.Members = BuildRoomMembers(entry);
+                rooms[roomInfo.RoomId] = entry;
+            }
+            finally
+            {
+                roomLock.Release();
+            }
         }
 
         private static void BroadcastRoomClosedNotification(Network.ISession gatewaySession, IEnumerable<long> affectedSessionIds, string roomId, Action<Network.ISession, long, int, RoomClosedNotification> sendToGatewayFunc)

@@ -38,8 +38,18 @@ namespace Gateway
 
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, PendingReconnect> pendingReconnects = new();
 
-        // B1 跨实例重连：userId → 新连接会话（发 90014 查询 Center 前的待续接记录）
-        private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, long> pendingLocates = new();
+        // B1 跨实例重连：userId → 新连接会话（发 90014 查询 Center 前的待续接记录）。
+        // P2 修复：携带登记时间，供维护循环清扫（Center 响应丢失时防条目永久残留）。
+        private sealed class PendingLocate
+        {
+            public long NewSessionId;
+            public DateTime CreatedAtUtc;
+        }
+
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, PendingLocate> pendingLocates = new();
+
+        /// <summary>跨实例重连查询的超时上限（超过则丢弃该 pending，重连走新建会话路径）。</summary>
+        private static readonly TimeSpan PendingLocateTimeout = TimeSpan.FromSeconds(60);
 
         // ===== 静态分片（对标 KBE cellappmgr 调度）：多 Battle 节点 + 按玩家绑定路由 =====
 

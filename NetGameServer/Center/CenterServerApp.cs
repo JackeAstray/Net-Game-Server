@@ -295,6 +295,8 @@ namespace Center
                         Center.Handlers.EntityLocationService.Instance.SweepExpired(DateTime.UtcNow);
                         // B1：清扫 Gateway 挂起会话目录过期条目（防跨实例重连目录无界增长）
                         CenterServerApp.SuspendedSessions?.SweepExpired(DateTime.UtcNow);
+                        // P2：清扫匹配/房间/分类锁状态（防客户端可控分类洪泛累积）
+                        CenterServerApp.Match?.SweepStaleMatchState(DateTime.UtcNow);
                     }
                     catch (OperationCanceledException)
                     {

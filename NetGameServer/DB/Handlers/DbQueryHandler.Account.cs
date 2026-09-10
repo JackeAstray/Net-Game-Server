@@ -190,23 +190,9 @@ namespace DB.Handlers
                     await dbContext.SaveChangesAsync();
                 }
 
-                string message;
-                if (user == null)
-                {
-                    message = "账号或密码错误";
-                }
-                else if (!isEnabled)
-                {
-                    message = "账号未启用";
-                }
-                else if (isLocked)
-                {
-                    message = "账号已被锁定";
-                }
-                else
-                {
-                    message = passwordMatched ? "登录成功" : "账号或密码错误";
-                }
+                // P3 修复：登录失败统一提示文案——账号不存在/未启用/已锁定/密码错误一律
+                // 返回"账号或密码错误"，防攻击者枚举账号注册与锁定状态。
+                string message = passwordMatched ? "登录成功" : "账号或密码错误";
 
                 var response = new LoginVerifyResponse
                 {

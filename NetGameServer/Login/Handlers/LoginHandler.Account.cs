@@ -83,12 +83,15 @@ namespace Login.Handlers
 
             // 安全修复（P0）：不再于请求时直接修改数据库密码。改为登记一次性验证码（带过期），
             // 只有后续"验证码重置密码"请求（提交 Code + 新密码）通过校验后才能重置，杜绝他人锁定账号。
+            // P3 修复：同时登记 Redis（多实例共享校验），本地内存作 Redis 不可用时的回退。
             SweepExpiredPendingResets();
+            byte[] resetCodeHash = HashResetCode(verifyCode);
             pendingPasswordResets[account] = new PendingPasswordReset
             {
-                CodeHash = HashResetCode(verifyCode),
+                CodeHash = resetCodeHash,
                 ExpiresAtUtc = DateTime.UtcNow.Add(PendingResetLifetime)
             };
+            StoreResetCodeRedis(account, resetCodeHash);
 
             findPasswordCooldowns[cooldownKey] = DateTime.UtcNow.Add(FindPasswordCooldown);
 
@@ -122,13 +125,28 @@ namespace Login.Handlers
             }
 
             SweepExpiredPendingResets();
-            if (!pendingPasswordResets.TryGetValue(account, out var pending) || pending.ExpiresAtUtc < DateTime.UtcNow)
+
+            // P3 修复：优先 Redis 校验（多实例共享），Redis 无记录/不可用时回退本地内存
+            byte[] effectiveHash = Array.Empty<byte>();
+            bool hasValidCode = false;
+            if (TryGetResetCodeRedis(account, out var redisHash))
+            {
+                effectiveHash = redisHash;
+                hasValidCode = true;
+            }
+            else if (pendingPasswordResets.TryGetValue(account, out var localPending) && localPending.ExpiresAtUtc >= DateTime.UtcNow)
+            {
+                effectiveHash = localPending.CodeHash;
+                hasValidCode = true;
+            }
+
+            if (!hasValidCode)
             {
                 return new ResetPasswordWithCodeResponse { Success = false, Message = "验证码无效或已过期，请重新获取" };
             }
 
             // 恒定时间比较验证码哈希，防时序侧信道
-            if (!CryptographicOperations.FixedTimeEquals(HashResetCode(code), pending.CodeHash))
+            if (!CryptographicOperations.FixedTimeEquals(HashResetCode(code), effectiveHash))
             {
                 return new ResetPasswordWithCodeResponse { Success = false, Message = "验证码错误" };
             }
@@ -153,8 +171,9 @@ namespace Login.Handlers
                 return new ResetPasswordWithCodeResponse { Success = false, Message = resetResp?.Message ?? "重置密码失败，请稍后重试" };
             }
 
-            // 一次性：成功后立即作废验证码
+            // 一次性：成功后立即作废验证码（本地 + Redis 双清）
             pendingPasswordResets.TryRemove(account, out _);
+            DeleteResetCodeRedis(account);
 
             return new ResetPasswordWithCodeResponse { Success = true, Message = "密码重置成功，请使用新密码登录" };
         }
@@ -610,6 +629,58 @@ namespace Login.Handlers
         private static byte[] HashResetCode(string code)
         {
             return SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(code));
+        }
+
+        // === 验证码 Redis 集中存储（P3 修复：多实例部署跨实例校验；TTL 自动过期） ===
+
+        private const string ResetCodeRedisKeyPrefix = "reset_code:";
+
+        /// <summary>验证码登记到 Redis（多实例共享校验；TTL 自动过期）。Redis 不可用时回退本地（静默）。</summary>
+        private static void StoreResetCodeRedis(string account, byte[] codeHash)
+        {
+            try
+            {
+                Shared.RedisHelper.GetDatabase()
+                    .StringSet(ResetCodeRedisKeyPrefix + account, Convert.ToBase64String(codeHash), PendingResetLifetime);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"验证码 Redis 登记失败（回退本地）Account:{account} Err:{ex.Message}");
+            }
+        }
+
+        /// <summary>从 Redis 读取验证码哈希。返回 false 表示无记录或 Redis 不可用（调用方回退本地）。</summary>
+        private static bool TryGetResetCodeRedis(string account, out byte[] codeHash)
+        {
+            codeHash = Array.Empty<byte>();
+            try
+            {
+                var value = Shared.RedisHelper.GetDatabase().StringGet(ResetCodeRedisKeyPrefix + account);
+                if (value.IsNullOrEmpty)
+                {
+                    return false;
+                }
+                codeHash = Convert.FromBase64String(value.ToString());
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"验证码 Redis 读取失败（回退本地）Account:{account} Err:{ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>验证码作废（重置成功后调用，防重放）。</summary>
+        private static void DeleteResetCodeRedis(string account)
+        {
+            try
+            {
+                Shared.RedisHelper.GetDatabase().KeyDelete(ResetCodeRedisKeyPrefix + account);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"验证码 Redis 删除失败 Account:{account} Err:{ex.Message}");
+            }
         }
 
         /// <summary>

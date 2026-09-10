@@ -164,12 +164,12 @@ namespace Game.Managers
         }
 
         /// <summary>
-        /// 获取当前会话中的在线玩家数。
+        /// 获取当前在线玩家数（唯一用户数，P3 修复：顶号瞬间两会话并存时 sessionUsers.Count 会重复计数）。
         /// </summary>
         /// <returns>当前在线玩家的数量。</returns>
         public int GetOnlinePlayerCount()
         {
-            return sessionUsers.Count;
+            return userSessions.Count;
         }
     }
 }

@@ -29,12 +29,18 @@ public sealed class EntityCallRouter
 
     /// <summary>
     /// 解析实体的目标节点：优先返回未过期的缓存位置；否则返回调用方提示（可能旧）。
+    /// P2 修复：读取到过期条目时顺手移除（此前仅靠 Update 覆盖，实体长期不迁移时过期条目会累积）。
     /// </summary>
     public string? Resolve(long entityId, string? hintNodeId)
     {
-        if (cache.TryGetValue(entityId, out var entry) && DateTime.UtcNow.Ticks < entry.ExpiresAtTicks)
+        if (cache.TryGetValue(entityId, out var entry))
         {
-            return entry.NodeId;
+            if (DateTime.UtcNow.Ticks < entry.ExpiresAtTicks)
+            {
+                return entry.NodeId;
+            }
+            // 过期条目：移除防缓存无界增长
+            cache.TryRemove(entityId, out _);
         }
         return string.IsNullOrEmpty(hintNodeId) ? null : hintNodeId;
     }

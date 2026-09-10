@@ -114,6 +114,20 @@ namespace DB
                     if (uidReserveBatch <= 0) uidReserveBatch = 1000;
                     Shared.UIDGenerator.Initialize(regionId, currentMaxSequence, uidReserveBatch);
 
+                    // P2 修复：确保 UidCounters 种子行存在（消除懒创建竞态——首个并发领取段请求
+                    // 查不到行则 FOR UPDATE 无行可锁，多实例可能双写 Id=1；启动期预置行后领取恒有行锁）
+                    if (!await dbContext.UidCounters.AnyAsync(c => c.Id == 1))
+                    {
+                        dbContext.UidCounters.Add(new Shared.Data.UidCounter
+                        {
+                            Id = 1,
+                            RegionId = regionId,
+                            CurrentValue = currentMaxSequence
+                        });
+                        await dbContext.SaveChangesAsync();
+                        Shared.Log.Info($"已初始化 UidCounters 种子行 Id=1 CurrentValue={currentMaxSequence}");
+                    }
+
                     InitializeRedisConnection();
 
                     // 安全修复：默认超级管理员密码必须显式配置（Admin:DefaultPassword），

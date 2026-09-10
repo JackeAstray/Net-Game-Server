@@ -127,13 +127,18 @@ namespace Center.Handlers
                 return new PartyDisbandResponse { Success = false, Message = "只有队长才能解散队伍" };
             }
 
-            // 通知全部成员后移除
-            SendNotif(clientSessionId, partyId, "disbanded", "队伍已解散", party, null);
-            foreach (var m in party.Members.Keys)
+            // P3 修复：解散与成员变更同一锁域（此前裸操作，与并发 Join/Leave 交错会让新成员
+            // 加入已解散队伍）
+            lock (party)
             {
-                memberParty.TryRemove(m, out _);
+                // 通知全部成员后移除
+                SendNotif(clientSessionId, partyId, "disbanded", "队伍已解散", party, null);
+                foreach (var m in party.Members.Keys)
+                {
+                    memberParty.TryRemove(m, out _);
+                }
+                parties.TryRemove(partyId, out _);
             }
-            parties.TryRemove(partyId, out _);
             return new PartyDisbandResponse { Success = true, Message = "队伍已解散" };
         }
 

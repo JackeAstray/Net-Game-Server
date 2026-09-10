@@ -28,7 +28,9 @@ namespace Login.Handlers
         /// <returns>反序列化后的响应对象，或在超时/异常时返回 null。</returns>
         private async Task<T?> CallDbAsync<T>(int msgId, object requestData) where T : class
         {
-            var tcs = new TaskCompletionSource<byte[]>();
+            // P3 修复：RunContinuationsAsynchronously——回包在 DB 收包线程 TrySetResult 时
+            // 不原地执行 await 方续体（防阻塞 DB 收包线程），与 Center 侧 pendingSceneCreations 一致。
+            var tcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
             byte[] data = Shared.Json.SerializeToUtf8Bytes(requestData);
 
             // Generate sequence/request Id

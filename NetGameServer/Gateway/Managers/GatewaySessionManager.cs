@@ -48,10 +48,14 @@ namespace Gateway.Managers
         }
         private readonly ConcurrentDictionary<long, SessionRateState> sessionInboundRates = new();
 
-        /// <summary>
-        /// 私有构造函数，防止外部实例化（实现单例模式）
-        /// </summary>
+        /// <summary>私有无参构造函数，防止外部实例化（实现单例模式）</summary>
         private GatewaySessionManager() { }
+
+        /// <summary>
+        /// 绑定互斥锁：串行化 BindUser/BindUid/Unbind/ResumeSession/RemoveSession 的复合字典读写
+        /// （防并发绑定同 userId/uid 产生双向表不一致，即"userId 映射两个会话"）。
+        /// </summary>
+        private readonly object bindGate = new();
 
         /// <summary>
         /// 添加或更新一个客户端会话到管理器中。
@@ -83,19 +87,23 @@ namespace Gateway.Managers
         public void RemoveSession(long sessionId)
         {
             clientSessions.TryRemove(sessionId, out _);
-            if (sessionUsers.TryRemove(sessionId, out int removedUserId))
+            // P2 修复：绑定清理与 BindUser/BindUid 同一互斥域，防跨表不一致
+            lock (bindGate)
             {
-                if (userSessions.TryGetValue(removedUserId, out long mapped) && mapped == sessionId)
+                if (sessionUsers.TryRemove(sessionId, out int removedUserId))
                 {
-                    userSessions.TryRemove(removedUserId, out _);
+                    if (userSessions.TryGetValue(removedUserId, out long mapped) && mapped == sessionId)
+                    {
+                        userSessions.TryRemove(removedUserId, out _);
+                    }
                 }
-            }
 
-            if (sessionUids.TryRemove(sessionId, out string? uid))
-            {
-                if (uidSessions.TryGetValue(uid, out long mappedSessionId) && mappedSessionId == sessionId)
+                if (sessionUids.TryRemove(sessionId, out string? uid))
                 {
-                    uidSessions.TryRemove(uid, out _);
+                    if (uidSessions.TryGetValue(uid, out long mappedSessionId) && mappedSessionId == sessionId)
+                    {
+                        uidSessions.TryRemove(uid, out _);
+                    }
                 }
             }
 
@@ -228,7 +236,19 @@ namespace Gateway.Managers
                     }
                     else
                     {
-                        session.Send(packet.AsMemory(0, totalLength));
+                        // P2 修复：非 TCP 会话同样用独立池化副本——调用方在 finally 中归还原始
+                        // 池化缓冲，直接共享引用会 use-after-return（数据损坏/池污染）。
+                        byte[] copy = System.Buffers.ArrayPool<byte>.Shared.Rent(totalLength);
+                        try
+                        {
+                            packet.AsSpan(0, totalLength).CopyTo(copy);
+                            session.Send(copy.AsMemory(0, totalLength));
+                        }
+                        catch
+                        {
+                            System.Buffers.ArrayPool<byte>.Shared.Return(copy);
+                            throw;
+                        }
                     }
                 }
                 catch (System.Exception ex)
@@ -253,14 +273,18 @@ namespace Gateway.Managers
                 return;
             }
 
-            long resolved = ResolveSessionId(sessionId);
-            if (userSessions.TryGetValue(userId, out long oldSessionId) && oldSessionId != resolved)
+            // P2 修复：复合读写原子化（此前并发绑定同 userId 可产生双向表不一致）
+            lock (bindGate)
             {
-                KickOutOldSession(userId, oldSessionId);
-            }
+                long resolved = ResolveSessionId(sessionId);
+                if (userSessions.TryGetValue(userId, out long oldSessionId) && oldSessionId != resolved)
+                {
+                    KickOutOldSession(userId, oldSessionId);
+                }
 
-            sessionUsers[resolved] = userId;
-            userSessions[userId] = resolved;
+                sessionUsers[resolved] = userId;
+                userSessions[userId] = resolved;
+            }
         }
 
         /// <summary>顶号：清理旧会话的全部身份绑定并关闭其连接（断开事件随后幂等清理会话主体）。</summary>
@@ -296,11 +320,15 @@ namespace Gateway.Managers
         /// <param name="sessionId">要从映射中移除其关联用户的会话标识符。</param>
         public void UnbindUser(long sessionId)
         {
-            if (sessionUsers.TryRemove(sessionId, out int userId))
+            // P2 修复：与 BindUser 同一互斥域，防跨表不一致
+            lock (bindGate)
             {
-                if (userSessions.TryGetValue(userId, out long mapped) && mapped == sessionId)
+                if (sessionUsers.TryRemove(sessionId, out int userId))
                 {
-                    userSessions.TryRemove(userId, out _);
+                    if (userSessions.TryGetValue(userId, out long mapped) && mapped == sessionId)
+                    {
+                        userSessions.TryRemove(userId, out _);
+                    }
                 }
             }
         }
@@ -317,18 +345,22 @@ namespace Gateway.Managers
                 return;
             }
 
-            if (sessionUids.TryGetValue(sessionId, out string? previousUid) && previousUid != uid)
+            // P2 修复：复合读写原子化（防双向表不一致）
+            lock (bindGate)
             {
-                uidSessions.TryRemove(previousUid, out _);
-            }
+                if (sessionUids.TryGetValue(sessionId, out string? previousUid) && previousUid != uid)
+                {
+                    uidSessions.TryRemove(previousUid, out _);
+                }
 
-            if (uidSessions.TryGetValue(uid, out long previousSessionId) && previousSessionId != sessionId)
-            {
-                sessionUids.TryRemove(previousSessionId, out _);
-            }
+                if (uidSessions.TryGetValue(uid, out long previousSessionId) && previousSessionId != sessionId)
+                {
+                    sessionUids.TryRemove(previousSessionId, out _);
+                }
 
-            sessionUids[sessionId] = uid;
-            uidSessions[uid] = sessionId;
+                sessionUids[sessionId] = uid;
+                uidSessions[uid] = sessionId;
+            }
         }
 
         /// <summary>
@@ -337,11 +369,15 @@ namespace Gateway.Managers
         /// <param name="sessionId">会话标识。</param>
         public void UnbindUid(long sessionId)
         {
-            if (sessionUids.TryRemove(sessionId, out string? uid))
+            // P2 修复：与 BindUid 同一互斥域
+            lock (bindGate)
             {
-                if (uidSessions.TryGetValue(uid, out long mappedSessionId) && mappedSessionId == sessionId)
+                if (sessionUids.TryRemove(sessionId, out string? uid))
                 {
-                    uidSessions.TryRemove(uid, out _);
+                    if (uidSessions.TryGetValue(uid, out long mappedSessionId) && mappedSessionId == sessionId)
+                    {
+                        uidSessions.TryRemove(uid, out _);
+                    }
                 }
             }
         }
@@ -458,36 +494,40 @@ namespace Gateway.Managers
                 return false;
             }
 
-            // 把新会话的 userId/uid/nickname 移动到 oldSessionId 桶里
-            if (sessionUsers.TryRemove(newSessionId, out int userId))
+            // P2 修复：跨表移动与 Bind/Unbind/RemoveSession 同一互斥域，防绑定表不一致
+            lock (bindGate)
             {
-                sessionUsers[oldSessionId] = userId;
-                userSessions[userId] = oldSessionId;
-            }
-            if (sessionUids.TryRemove(newSessionId, out string? uid))
-            {
-                sessionUids[oldSessionId] = uid;
-                uidSessions[uid] = oldSessionId;
-            }
-            if (sessionNicknames.TryRemove(newSessionId, out string? nickname))
-            {
-                sessionNicknames[oldSessionId] = nickname;
-            }
-            // 活动记录迁移：createdAt/lastActivity 来自旧挂起记录
-            // 这里不删除 newSessionId 的时间记录（保留作为新会话基线）
+                // 把新会话的 userId/uid/nickname 移动到 oldSessionId 桶里
+                if (sessionUsers.TryRemove(newSessionId, out int userId))
+                {
+                    sessionUsers[oldSessionId] = userId;
+                    userSessions[userId] = oldSessionId;
+                }
+                if (sessionUids.TryRemove(newSessionId, out string? uid))
+                {
+                    sessionUids[oldSessionId] = uid;
+                    uidSessions[uid] = oldSessionId;
+                }
+                if (sessionNicknames.TryRemove(newSessionId, out string? nickname))
+                {
+                    sessionNicknames[oldSessionId] = nickname;
+                }
+                // 活动记录迁移：createdAt/lastActivity 来自旧挂起记录
+                // 这里不删除 newSessionId 的时间记录（保留作为新会话基线）
 
-            // 关键修复：不替换 ISession 引用到 oldSessionId（ISession.SessionId 是只读属性，
-            // 强行替换 clientSessions[oldSessionId] = session 会让 session 内部的 SessionId
-            // 与 dict key 不一致，导致 clientBattleNodeBindings 找不到正确路由）。
-            // 改为：保留 newSessionId 作为 clientSession key，添加 newSessionId -> oldSessionId 别名。
-            sessionIdAliases[newSessionId] = oldSessionId;
-            // 同样建立反向映射（用于 GetAllSessions 时识别"该会话是别名重连"）
-            sessionIdAliases[oldSessionId] = oldSessionId; // 旧 ID 解析回自己
-            // 反向映射：oldSessionId -> newSessionId（旧 ID 定位真实会话；回复路由/断线清理用）
-            sessionIdReverseAliases[oldSessionId] = newSessionId;
+                // 关键修复：不替换 ISession 引用到 oldSessionId（ISession.SessionId 是只读属性，
+                // 强行替换 clientSessions[oldSessionId] = session 会让 session 内部的 SessionId
+                // 与 dict key 不一致，导致 clientBattleNodeBindings 找不到正确路由）。
+                // 改为：保留 newSessionId 作为 clientSession key，添加 newSessionId -> oldSessionId 别名。
+                sessionIdAliases[newSessionId] = oldSessionId;
+                // 同样建立反向映射（用于 GetAllSessions 时识别"该会话是别名重连"）
+                sessionIdAliases[oldSessionId] = oldSessionId; // 旧 ID 解析回自己
+                // 反向映射：oldSessionId -> newSessionId（旧 ID 定位真实会话；回复路由/断线清理用）
+                sessionIdReverseAliases[oldSessionId] = newSessionId;
 
-            Shared.Log.Info($"Gateway 断线重连：新会话 {newSessionId} 别名到旧 SessionId:{oldSessionId} Remote:{session.RemoteEndPoint} UserId:{userId}");
-            return true;
+                Shared.Log.Info($"Gateway 断线重连：新会话 {newSessionId} 别名到旧 SessionId:{oldSessionId} Remote:{session.RemoteEndPoint} UserId:{userId}");
+                return true;
+            }
         }
     }
 }

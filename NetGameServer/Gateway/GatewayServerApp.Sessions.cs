@@ -134,7 +134,7 @@ namespace Gateway
             }
 
             // B1 跨实例重连：本地无挂起记录 → 查询 Center 挂起目录（新 Gateway 接管旧会话）
-            pendingLocates[userId] = newSessionId;
+            pendingLocates[userId] = new PendingLocate { NewSessionId = newSessionId, CreatedAtUtc = DateTime.UtcNow };
             SendCenterSessionLocate(userId);
         }
 
@@ -238,10 +238,11 @@ namespace Gateway
             {
                 return;
             }
-            if (!pendingLocates.TryRemove(locate.UserId, out long newSessionId))
+            if (!pendingLocates.TryRemove(locate.UserId, out var locateEntry))
             {
                 return;
             }
+            long newSessionId = locateEntry.NewSessionId;
             // 新连接别名到旧 clientSessionId（后端按旧 ID 续接挂起实体）
             if (Gateway.Managers.GatewaySessionManager.Instance.ResumeSession(newSessionId, locate.ClientSessionId))
             {

@@ -1,4 +1,5 @@
 ﻿using System.Buffers;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using System.Net.Sockets.Kcp;
@@ -88,6 +89,7 @@ public class KcpClientWrapper : INetworkClient
             while (!token.IsCancellationRequested && udpClient != null)
             {
                 var result = await udpClient.ReceiveAsync(token);
+                List<byte[]>? packets = null;
                 lock (kcpGate)
                 {
                     kcp?.Input(result.Buffer);
@@ -96,8 +98,17 @@ public class KcpClientWrapper : INetworkClient
 
                     while (kcp != null && kcp.TryRecv(recvWriter) > 0)
                     {
-                        OnDataReceived?.Invoke(sessionProxy!, recvWriter.WrittenMemory.ToArray());
+                        // P2 修复：锁内只收集，锁外回调（与 KcpSession.Input 一致，防持锁触发
+                        // 应用层回调导致跨会话锁序死锁/长时间阻塞 KCP 驱动）
+                        (packets ??= new List<byte[]>(2)).Add(recvWriter.WrittenMemory.ToArray());
                         recvWriter.Clear();
+                    }
+                }
+                if (packets != null)
+                {
+                    foreach (var packet in packets)
+                    {
+                        OnDataReceived?.Invoke(sessionProxy!, packet);
                     }
                 }
             }

@@ -26,22 +26,37 @@ namespace Center.Handlers
                 });
             }
 
+            // P1 修复：按房间加锁（同房间并发 Join/Leave/Kick 的成员表/人数读改写原子化）
+            var roomLock = GetRoomLock(request.RoomId.Trim());
+            roomLock.Wait();
+            try
+            {
+                return Task.FromResult(HandleJoinRoomLocked(clientSessionId, requesterUserId, requesterUid, requesterNickname, request));
+            }
+            finally
+            {
+                roomLock.Release();
+            }
+        }
+
+        private CenterJoinRoomResponse HandleJoinRoomLocked(long clientSessionId, int requesterUserId, string requesterUid, string requesterNickname, CenterJoinRoomRequest request)
+        {
             if (!rooms.TryGetValue(request.RoomId.Trim(), out var room))
             {
-                return Task.FromResult(new CenterJoinRoomResponse
+                return new CenterJoinRoomResponse
                 {
                     Success = false,
                     Message = "房间不存在或已关闭"
-                });
+                };
             }
 
             if (room.Info.RoomStatus == RoomStatuses.Closed)
             {
-                return Task.FromResult(new CenterJoinRoomResponse
+                return new CenterJoinRoomResponse
                 {
                     Success = false,
                     Message = "房间已关闭"
-                });
+                };
             }
 
             // 私密房间访问控制（枚举/泄露加入阻断）：此前 IsPrivate 只影响列表可见性，
@@ -52,31 +67,31 @@ namespace Center.Handlers
                 && requesterUserId != room.Info.OwnerUserId
                 && !room.MemberStates.ContainsKey(clientSessionId))
             {
-                return Task.FromResult(new CenterJoinRoomResponse
+                return new CenterJoinRoomResponse
                 {
                     Success = false,
                     RoomId = room.Info.RoomId,
                     RoomName = room.Info.RoomName,
                     HasPassword = room.Info.HasPassword,
                     Message = "该房间为私密房间，仅限房主邀请的玩家进入。"
-                });
+                };
             }
 
             if (room.Info.HasPassword && !IsPasswordValid(room.PasswordHash, request.Password))
             {
-                return Task.FromResult(new CenterJoinRoomResponse
+                return new CenterJoinRoomResponse
                 {
                     Success = false,
                     RoomId = room.Info.RoomId,
                     RoomName = room.Info.RoomName,
                     HasPassword = true,
                     Message = "房间密码错误"
-                });
+                };
             }
 
             if (room.Info.MaxPlayers > 0 && room.Info.CurrentPlayers >= room.Info.MaxPlayers && !room.MemberStates.ContainsKey(clientSessionId))
             {
-                return Task.FromResult(new CenterJoinRoomResponse
+                return new CenterJoinRoomResponse
                 {
                     Success = false,
                     RoomId = room.Info.RoomId,
@@ -85,7 +100,7 @@ namespace Center.Handlers
                     MaxPlayers = room.Info.MaxPlayers,
                     CurrentPlayers = room.Info.CurrentPlayers,
                     Message = "房间人数已满"
-                });
+                };
             }
 
             if (clientSessionId > 0)
@@ -111,7 +126,7 @@ namespace Center.Handlers
                 room.Info.Members = BuildRoomMembers(room);
             }
 
-            return Task.FromResult(new CenterJoinRoomResponse
+            return new CenterJoinRoomResponse
             {
                 Success = true,
                 RoomId = room.Info.RoomId,
@@ -123,14 +138,29 @@ namespace Center.Handlers
                 MaxPlayers = room.Info.MaxPlayers,
                 CurrentPlayers = room.Info.CurrentPlayers,
                 Message = room.Info.RoomStatus == RoomStatuses.Playing ? "房间已开局，可重新进入" : "允许加入房间"
-            });
+            };
         }
 
         public Task<CenterUpdateRoomSettingsResponse> HandleUpdateRoomSettingsRequestAsync(int requesterUserId, CenterUpdateRoomSettingsRequest request, Network.ISession gatewaySession, Action<Network.ISession, long, int, RoomSettingsChangedNotification> sendToGatewayFunc)
         {
+            // P1 修复：按房间加锁串行化成员表/设置读写
+            var roomLock = GetRoomLock(request.RoomId.Trim());
+            roomLock.Wait();
+            try
+            {
+                return Task.FromResult(HandleUpdateRoomSettingsLocked(requesterUserId, request, gatewaySession, sendToGatewayFunc));
+            }
+            finally
+            {
+                roomLock.Release();
+            }
+        }
+
+        private CenterUpdateRoomSettingsResponse HandleUpdateRoomSettingsLocked(int requesterUserId, CenterUpdateRoomSettingsRequest request, Network.ISession gatewaySession, Action<Network.ISession, long, int, RoomSettingsChangedNotification> sendToGatewayFunc)
+        {
             if (!TryGetOwnedRoom(requesterUserId, request.RoomId, out var roomEntry, out var errorResponse))
             {
-                return Task.FromResult(errorResponse!);
+                return errorResponse!;
             }
 
             string sceneType = string.IsNullOrWhiteSpace(request.SceneType) ? roomEntry.Info.SceneType : request.SceneType.Trim();
@@ -160,44 +190,59 @@ namespace Center.Handlers
 
             BroadcastRoomSettingsChanged(gatewaySession, roomEntry, sendToGatewayFunc, $"房间设置已更新：{roomName}");
 
-            return Task.FromResult(new CenterUpdateRoomSettingsResponse
+            return new CenterUpdateRoomSettingsResponse
             {
                 Success = true,
                 Message = "房间设置更新成功",
                 Room = CloneRoomInfo(roomEntry.Info)
-            });
+            };
         }
 
         public Task<CenterStartRoomGameResponse> HandleStartRoomGameRequestAsync(int requesterUserId, CenterStartRoomGameRequest request, Network.ISession gatewaySession, Action<Network.ISession, long, int, RoomGameStartedNotification> sendToGatewayFunc)
         {
+            // P1 修复：按房间加锁串行化成员表/状态读写
+            var roomLock = GetRoomLock(request.RoomId.Trim());
+            roomLock.Wait();
+            try
+            {
+                return Task.FromResult(HandleStartRoomGameLocked(requesterUserId, request, gatewaySession, sendToGatewayFunc));
+            }
+            finally
+            {
+                roomLock.Release();
+            }
+        }
+
+        private CenterStartRoomGameResponse HandleStartRoomGameLocked(int requesterUserId, CenterStartRoomGameRequest request, Network.ISession gatewaySession, Action<Network.ISession, long, int, RoomGameStartedNotification> sendToGatewayFunc)
+        {
             if (!TryGetOwnedRoom(requesterUserId, request.RoomId, out var roomEntry, out _))
             {
-                return Task.FromResult(new CenterStartRoomGameResponse
+                return new CenterStartRoomGameResponse
                 {
                     Success = false,
                     Message = "只有房主可以开始游戏"
-                });
+                };
             }
 
             if (roomEntry.MemberStates.Count <= 0)
             {
-                return Task.FromResult(new CenterStartRoomGameResponse
+                return new CenterStartRoomGameResponse
                 {
                     Success = false,
                     RoomId = roomEntry.Info.RoomId,
                     Message = "房间内暂无玩家，无法开始"
-                });
+                };
             }
 
             bool hasUnreadyNonOwner = roomEntry.MemberStates.Values.Any(member => member.UserId != roomEntry.Info.OwnerUserId && !member.IsReady);
             if (hasUnreadyNonOwner)
             {
-                return Task.FromResult(new CenterStartRoomGameResponse
+                return new CenterStartRoomGameResponse
                 {
                     Success = false,
                     RoomId = roomEntry.Info.RoomId,
                     Message = "存在未准备成员，无法开始游戏"
-                });
+                };
             }
 
             roomEntry.Info.RoomStatus = RoomStatuses.Playing;
@@ -206,7 +251,7 @@ namespace Center.Handlers
             var roomSnapshot = CloneRoomInfo(roomEntry.Info);
             BroadcastRoomGameStarted(gatewaySession, roomEntry, sendToGatewayFunc, roomSnapshot);
 
-            return Task.FromResult(new CenterStartRoomGameResponse
+            return new CenterStartRoomGameResponse
             {
                 Success = true,
                 RoomId = roomSnapshot.RoomId,
@@ -215,7 +260,7 @@ namespace Center.Handlers
                 SceneType = roomSnapshot.SceneType,
                 Message = "游戏开始",
                 Room = roomSnapshot
-            });
+            };
         }
 
         public async Task<CenterCloseRoomResponse> HandleCloseRoomRequestAsync(int requesterUserId, CenterCloseRoomRequest request, Network.ISession gatewaySession, Action<Network.ISession, long, int, RoomClosedNotification> sendToGatewayFunc)
@@ -230,6 +275,20 @@ namespace Center.Handlers
             }
 
             string roomId = request.RoomId.Trim();
+            var roomLock = GetRoomLock(roomId);
+            await roomLock.WaitAsync();
+            try
+            {
+                return await HandleCloseRoomLockedAsync(requesterUserId, roomId, gatewaySession, sendToGatewayFunc);
+            }
+            finally
+            {
+                roomLock.Release();
+            }
+        }
+
+        private async Task<CenterCloseRoomResponse> HandleCloseRoomLockedAsync(int requesterUserId, string roomId, Network.ISession gatewaySession, Action<Network.ISession, long, int, RoomClosedNotification> sendToGatewayFunc)
+        {
             if (!rooms.TryGetValue(roomId, out var room))
             {
                 return new CenterCloseRoomResponse
@@ -265,6 +324,7 @@ namespace Center.Handlers
 
             room.Info.RoomStatus = RoomStatuses.Closed;
             rooms.TryRemove(roomId, out _);
+            ReleaseRoomLock(roomId);
             BroadcastRoomClosedNotification(gatewaySession, destroyResult.AffectedSessionIds.Length > 0 ? destroyResult.AffectedSessionIds : room.MemberStates.Keys, roomId, sendToGatewayFunc);
             return new CenterCloseRoomResponse
             {
@@ -295,6 +355,20 @@ namespace Center.Handlers
             }
 
             string roomId = request.RoomId.Trim();
+            var roomLock = GetRoomLock(roomId);
+            await roomLock.WaitAsync();
+            try
+            {
+                return await HandleLeaveRoomLockedAsync(clientSessionId, roomId, gatewaySession, sendClosedToGatewayFunc, sendMemberListToGatewayFunc, sendOwnerChangedToGatewayFunc);
+            }
+            finally
+            {
+                roomLock.Release();
+            }
+        }
+
+        private async Task<CenterLeaveRoomResponse> HandleLeaveRoomLockedAsync(long clientSessionId, string roomId, Network.ISession gatewaySession, Action<Network.ISession, long, int, RoomClosedNotification> sendClosedToGatewayFunc, Action<Network.ISession, long, int, RoomMemberListChangedNotification> sendMemberListToGatewayFunc, Action<Network.ISession, long, int, RoomOwnerChangedNotification> sendOwnerChangedToGatewayFunc)
+        {
             if (!rooms.TryGetValue(roomId, out var room))
             {
                 return new CenterLeaveRoomResponse
@@ -353,6 +427,7 @@ namespace Center.Handlers
             }
 
             rooms.TryRemove(roomId, out _);
+            ReleaseRoomLock(roomId);
             BroadcastRoomClosedNotification(gatewaySession, destroyResult.AffectedSessionIds, roomId, sendClosedToGatewayFunc);
             Shared.Log.Info($"玩家主动离房导致空房关闭 RoomId:{roomId} ClientSessionId:{clientSessionId}");
 
@@ -366,43 +441,91 @@ namespace Center.Handlers
 
         public Task<RoomMemberListResponse> HandleRoomMemberListRequestAsync(RoomMemberListRequest request)
         {
-            if (string.IsNullOrWhiteSpace(request.RoomId) || !rooms.TryGetValue(request.RoomId.Trim(), out var room))
+            if (string.IsNullOrWhiteSpace(request.RoomId))
             {
                 return Task.FromResult(new RoomMemberListResponse
                 {
                     Success = false,
-                    Message = "房间不存在或已关闭"
+                    Message = "房间ID不能为空"
                 });
             }
 
+            // P1 修复：按房间加锁（读取快照与并发写交错时保持一致）
+            var roomLock = GetRoomLock(request.RoomId.Trim());
+            roomLock.Wait();
+            try
+            {
+                return Task.FromResult(HandleRoomMemberListLocked(request));
+            }
+            finally
+            {
+                roomLock.Release();
+            }
+        }
+
+        private RoomMemberListResponse HandleRoomMemberListLocked(RoomMemberListRequest request)
+        {
+            if (!rooms.TryGetValue(request.RoomId.Trim(), out var room))
+            {
+                return new RoomMemberListResponse
+                {
+                    Success = false,
+                    Message = "房间不存在或已关闭"
+                };
+            }
+
             room.Info.Members = BuildRoomMembers(room);
-            return Task.FromResult(new RoomMemberListResponse
+            return new RoomMemberListResponse
             {
                 Success = true,
                 Message = "获取房间成员成功",
                 Room = CloneRoomInfo(room.Info)
-            });
+            };
         }
 
         public Task<RoomReadyResponse> HandleRoomReadyRequestAsync(long clientSessionId, int requesterUserId, string requesterUid, string requesterNickname, RoomReadyRequest request, Network.ISession gatewaySession, Action<Network.ISession, long, int, RoomReadyChangedNotification> sendToGatewayFunc)
         {
-            if (string.IsNullOrWhiteSpace(request.RoomId) || !rooms.TryGetValue(request.RoomId.Trim(), out var room))
+            if (string.IsNullOrWhiteSpace(request.RoomId))
             {
                 return Task.FromResult(new RoomReadyResponse
                 {
                     Success = false,
-                    Message = "房间不存在或已关闭"
+                    Message = "房间ID不能为空"
                 });
+            }
+
+            // P1 修复：按房间加锁
+            var roomLock = GetRoomLock(request.RoomId.Trim());
+            roomLock.Wait();
+            try
+            {
+                return Task.FromResult(HandleRoomReadyLocked(clientSessionId, requesterUserId, requesterUid, requesterNickname, request, gatewaySession, sendToGatewayFunc));
+            }
+            finally
+            {
+                roomLock.Release();
+            }
+        }
+
+        private RoomReadyResponse HandleRoomReadyLocked(long clientSessionId, int requesterUserId, string requesterUid, string requesterNickname, RoomReadyRequest request, Network.ISession gatewaySession, Action<Network.ISession, long, int, RoomReadyChangedNotification> sendToGatewayFunc)
+        {
+            if (!rooms.TryGetValue(request.RoomId.Trim(), out var room))
+            {
+                return new RoomReadyResponse
+                {
+                    Success = false,
+                    Message = "房间不存在或已关闭"
+                };
             }
 
             if (!room.MemberStates.TryGetValue(clientSessionId, out var memberState))
             {
                 // 安全修复：非成员不允许通过 Ready 消息"后门加入"（此前会自动插入成员，绕过密码/人数上限校验）。
-                return Task.FromResult(new RoomReadyResponse
+                return new RoomReadyResponse
                 {
                     Success = false,
                     Message = "当前不在该房间中，请先加入房间"
-                });
+                };
             }
 
             memberState.UserId = requesterUserId;
@@ -416,41 +539,65 @@ namespace Center.Handlers
             room.Info.Members = BuildRoomMembers(room);
             BroadcastRoomReadyChanged(gatewaySession, room, sendToGatewayFunc, request.IsReady ? "成员已准备" : "成员取消准备");
 
-            return Task.FromResult(new RoomReadyResponse
+            return new RoomReadyResponse
             {
                 Success = true,
                 Message = request.IsReady ? "准备成功" : "已取消准备",
                 Room = CloneRoomInfo(room.Info)
-            });
+            };
         }
 
         public Task<CenterRoomChatResponse> HandleRoomChatRequestAsync(long clientSessionId, int requesterUserId, string requesterUid, string requesterNickname, CenterRoomChatRequest request, Network.ISession gatewaySession, Action<Network.ISession, long, int, CenterRoomChatNotification> sendToGatewayFunc)
         {
-            if (string.IsNullOrWhiteSpace(request.RoomId) || !rooms.TryGetValue(request.RoomId.Trim(), out var room))
+            if (string.IsNullOrWhiteSpace(request.RoomId))
             {
                 return Task.FromResult(new CenterRoomChatResponse
                 {
                     Success = false,
-                    Message = "房间不存在或已关闭"
+                    Message = "房间ID不能为空"
                 });
+            }
+
+            // P1 修复：按房间加锁（成员身份读取与成员表写一致）
+            var roomLock = GetRoomLock(request.RoomId.Trim());
+            roomLock.Wait();
+            try
+            {
+                return Task.FromResult(HandleRoomChatLocked(clientSessionId, requesterUserId, requesterUid, requesterNickname, request, gatewaySession, sendToGatewayFunc));
+            }
+            finally
+            {
+                roomLock.Release();
+            }
+        }
+
+        private CenterRoomChatResponse HandleRoomChatLocked(long clientSessionId, int requesterUserId, string requesterUid, string requesterNickname, CenterRoomChatRequest request, Network.ISession gatewaySession, Action<Network.ISession, long, int, CenterRoomChatNotification> sendToGatewayFunc)
+        {
+            if (!rooms.TryGetValue(request.RoomId.Trim(), out var room))
+            {
+                return new CenterRoomChatResponse
+                {
+                    Success = false,
+                    Message = "房间不存在或已关闭"
+                };
             }
 
             if (string.IsNullOrWhiteSpace(request.Content))
             {
-                return Task.FromResult(new CenterRoomChatResponse
+                return new CenterRoomChatResponse
                 {
                     Success = false,
                     Message = "聊天内容不能为空"
-                });
+                };
             }
 
             if (!room.MemberStates.TryGetValue(clientSessionId, out var memberState))
             {
-                return Task.FromResult(new CenterRoomChatResponse
+                return new CenterRoomChatResponse
                 {
                     Success = false,
                     Message = "当前不在该房间中"
-                });
+                };
             }
 
             memberState.UserId = requesterUserId > 0 ? requesterUserId : memberState.UserId;
@@ -478,41 +625,65 @@ namespace Center.Handlers
                 sendToGatewayFunc(gatewaySession, sessionId, MessageIds.CenterRoomChatNotif, notification);
             }
 
-            return Task.FromResult(new CenterRoomChatResponse
+            return new CenterRoomChatResponse
             {
                 Success = true,
                 Message = "房间消息发送成功"
-            });
+            };
         }
 
         public Task<RoomTransferOwnerResponse> HandleRoomTransferOwnerRequestAsync(int requesterUserId, RoomTransferOwnerRequest request, Network.ISession gatewaySession, Action<Network.ISession, long, int, RoomOwnerChangedNotification> sendToGatewayFunc)
         {
-            if (string.IsNullOrWhiteSpace(request.RoomId) || !rooms.TryGetValue(request.RoomId.Trim(), out var room))
+            if (string.IsNullOrWhiteSpace(request.RoomId))
             {
                 return Task.FromResult(new RoomTransferOwnerResponse
                 {
                     Success = false,
-                    Message = "房间不存在或已关闭"
+                    Message = "房间ID不能为空"
                 });
+            }
+
+            // P1 修复：按房间加锁（房主校验+成员查找+状态转移原子化）
+            var roomLock = GetRoomLock(request.RoomId.Trim());
+            roomLock.Wait();
+            try
+            {
+                return Task.FromResult(HandleRoomTransferOwnerLocked(requesterUserId, request, gatewaySession, sendToGatewayFunc));
+            }
+            finally
+            {
+                roomLock.Release();
+            }
+        }
+
+        private RoomTransferOwnerResponse HandleRoomTransferOwnerLocked(int requesterUserId, RoomTransferOwnerRequest request, Network.ISession gatewaySession, Action<Network.ISession, long, int, RoomOwnerChangedNotification> sendToGatewayFunc)
+        {
+            if (!rooms.TryGetValue(request.RoomId.Trim(), out var room))
+            {
+                return new RoomTransferOwnerResponse
+                {
+                    Success = false,
+                    Message = "房间不存在或已关闭"
+                };
             }
 
             if (room.Info.OwnerUserId <= 0 || room.Info.OwnerUserId != requesterUserId)
             {
-                return Task.FromResult(new RoomTransferOwnerResponse
+                return new RoomTransferOwnerResponse
                 {
                     Success = false,
                     Message = "只有当前房主可以转移房主"
-                });
+                };
             }
 
             var targetMember = room.MemberStates.Values.FirstOrDefault(member => member.UserId == request.TargetUserId);
             if (targetMember == null)
             {
-                return Task.FromResult(new RoomTransferOwnerResponse
+                return new RoomTransferOwnerResponse
                 {
                     Success = false,
                     Message = "目标成员不存在"
-                });
+                };
             }
 
             room.Info.OwnerUserId = request.TargetUserId;
@@ -521,17 +692,41 @@ namespace Center.Handlers
             var roomSnapshot = CloneRoomInfo(room.Info);
             BroadcastRoomOwnerChanged(gatewaySession, room, sendToGatewayFunc, $"房主已转移给 {targetMember.DisplayName}", roomSnapshot);
 
-            return Task.FromResult(new RoomTransferOwnerResponse
+            return new RoomTransferOwnerResponse
             {
                 Success = true,
                 Message = "房主转移成功",
                 Room = roomSnapshot
-            });
+            };
         }
 
         public async Task<RoomKickMemberResponse> HandleRoomKickMemberRequestAsync(int requesterUserId, RoomKickMemberRequest request, Network.ISession gatewaySession, Action<Network.ISession, long, int, RoomMemberListChangedNotification> sendMemberListToGatewayFunc, Action<Network.ISession, long, int, RoomKickedNotification> sendKickedToGatewayFunc, Action<Network.ISession, long, int, RoomOwnerChangedNotification> sendOwnerChangedToGatewayFunc)
         {
-            if (string.IsNullOrWhiteSpace(request.RoomId) || !rooms.TryGetValue(request.RoomId.Trim(), out var room))
+            if (string.IsNullOrWhiteSpace(request.RoomId))
+            {
+                return new RoomKickMemberResponse
+                {
+                    Success = false,
+                    Message = "房间ID不能为空"
+                };
+            }
+
+            string roomId = request.RoomId.Trim();
+            var roomLock = GetRoomLock(roomId);
+            await roomLock.WaitAsync();
+            try
+            {
+                return await HandleRoomKickMemberLockedAsync(requesterUserId, roomId, request, gatewaySession, sendMemberListToGatewayFunc, sendKickedToGatewayFunc, sendOwnerChangedToGatewayFunc);
+            }
+            finally
+            {
+                roomLock.Release();
+            }
+        }
+
+        private async Task<RoomKickMemberResponse> HandleRoomKickMemberLockedAsync(int requesterUserId, string roomId, RoomKickMemberRequest request, Network.ISession gatewaySession, Action<Network.ISession, long, int, RoomMemberListChangedNotification> sendMemberListToGatewayFunc, Action<Network.ISession, long, int, RoomKickedNotification> sendKickedToGatewayFunc, Action<Network.ISession, long, int, RoomOwnerChangedNotification> sendOwnerChangedToGatewayFunc)
+        {
+            if (!rooms.TryGetValue(roomId, out var room))
             {
                 return new RoomKickMemberResponse
                 {
@@ -583,6 +778,7 @@ namespace Center.Handlers
                     Shared.Log.Warning($"踢出最后成员后空房关闭失败 RoomId:{room.Info.RoomId} Message:{destroyResult?.Message}");
                 }
                 rooms.TryRemove(room.Info.RoomId, out _);
+                ReleaseRoomLock(room.Info.RoomId);
                 Shared.Log.Info($"踢出最后一名成员导致空房关闭 RoomId:{room.Info.RoomId}");
             }
             else if (room.Info.OwnerUserId == request.TargetUserId)

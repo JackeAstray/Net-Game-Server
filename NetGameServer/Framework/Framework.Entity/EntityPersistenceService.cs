@@ -180,10 +180,9 @@ public sealed class EntityPersistenceService : IDisposable
                 {
                     break;
                 }
-                // 快照在调用线程完成（单线程约定），随后 MarkPersisted 防重复落库；
-                // 快照携带 Source（实体引用），写入失败时 ForcePersistDirty 重试。
-                batch.Add(new Snapshot(entity.EntityId, entity.TypeName, entity.Def, entity.CopyValues(), entity));
-                entity.MarkPersisted();
+                // 快照在调用线程完成（单线程约定），随后原子清脏（P2 修复：快照+清脏合并为单锁内
+                // 操作，消除 TOCTOU 窗口；快照携带 Source（实体引用），写入失败时 ForcePersistDirty 重试）。
+                batch.Add(new Snapshot(entity.EntityId, entity.TypeName, entity.Def, entity.CopyValuesAndClearPersistDirty(), entity));
             }
             if (batch.Count >= flushBatchSize)
             {
@@ -234,29 +233,39 @@ public sealed class EntityPersistenceService : IDisposable
     /// <summary>
     /// 异步保存单个实体（不阻塞调用线程）。
     /// 先在调用线程快照（脱离活实体），再于后台写入存储。
+    /// P2 修复：单条落库与批量落库共用 flushGate 串行化（防旧快照覆盖新快照的 lost-update）；
+    /// 快照与清脏原子完成。
     /// P3 加固：写入失败时 ForcePersistDirty 重新置位脏标记，防静默数据丢失。
     /// </summary>
     public async Task SaveEntityAsync(Entity entity)
     {
         if (disposed) return;
-        var snapshot = entity.CopyValues();
-        var def = entity.Def;
-        long entityId = entity.EntityId;
-        string entityType = entity.TypeName;
-        entity.MarkPersisted();
+        await flushGate.WaitAsync();
         try
         {
-            await Task.Run(() =>
+            if (disposed) return;
+            var snapshot = entity.CopyValuesAndClearPersistDirty();
+            var def = entity.Def;
+            long entityId = entity.EntityId;
+            string entityType = entity.TypeName;
+            try
             {
-                byte[] props = PropertyCodec.SerializeAllValues(snapshot, def);
-                GetStore(entityType).Save(entityType, entityId, props);
-            });
+                await Task.Run(() =>
+                {
+                    byte[] props = PropertyCodec.SerializeAllValues(snapshot, def);
+                    GetStore(entityType).Save(entityType, entityId, props);
+                });
+            }
+            catch (Exception ex)
+            {
+                // P3 加固：写入失败重新置位脏标记，下个周期重试。
+                entity.ForcePersistDirty();
+                Framework.Core.Log.Error(ex, $"实体异步落库失败 EntityId:{entityId} Type:{entityType}");
+            }
         }
-        catch (Exception ex)
+        finally
         {
-            // P3 加固：写入失败重新置位脏标记，下个周期重试。
-            entity.ForcePersistDirty();
-            Framework.Core.Log.Error(ex, $"实体异步落库失败 EntityId:{entityId} Type:{entityType}");
+            flushGate.Release();
         }
     }
 

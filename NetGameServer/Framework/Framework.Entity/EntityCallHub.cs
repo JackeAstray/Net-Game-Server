@@ -52,6 +52,9 @@ public sealed class EntityCallHub
         public long EntityId { get; init; }
         public string? MethodName { get; init; }
         public DateTime DeadlineUtc { get; set; }
+        /// <summary>单调时钟截止（Environment.TickCount64 毫秒；0 表示未设置，走墙钟判定）。
+        /// P3 修复：配合墙钟做"任一过期即清理"，防 NTP 校时跳变导致超时误判。</summary>
+        public long DeadlineTicks { get; set; }
         /// <summary>回执回调：(Success, ResultValue)。超时或失败时 Success=false。</summary>
         public Action<bool, object?>? Callback { get; init; }
     }
@@ -130,6 +133,8 @@ public sealed class EntityCallHub
     public int SweepExpired(DateTime now)
     {
         int expired = 0;
+        // P3 修复：墙钟（兼容调用方注入模拟时间 now）与单调时钟（防 NTP 校时跳变）任一过期即清理。
+        long nowTicks = Environment.TickCount64;
         // 安全修复：先快照 key 集合，避免 foreach + TryRemove 抛异常
         foreach (var key in pending.Keys.ToArray())
         {
@@ -137,7 +142,9 @@ public sealed class EntityCallHub
             {
                 continue;
             }
-            if (pc.DeadlineUtc > now)
+            bool expiredByWallClock = pc.DeadlineUtc <= now;
+            bool expiredByMonotonic = pc.DeadlineTicks > 0 && pc.DeadlineTicks <= nowTicks;
+            if (!expiredByWallClock && !expiredByMonotonic)
             {
                 continue;
             }

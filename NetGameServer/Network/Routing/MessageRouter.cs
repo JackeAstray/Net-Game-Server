@@ -114,7 +114,11 @@ public class MessageRouter
     {
         if (data.Length < 4)
         {
-            Shared.Log.Error($"[MessageRouter] 会话 {session.SessionId} 发送的最小包长度无效，已忽略。");
+            // P3 修复：短包日志节流（恶意客户端刷畸形短包会触发日志风暴）
+            if (ShouldThrottleLog(ref lastMalformedWarnTick))
+            {
+                Shared.Log.Error($"[MessageRouter] 会话 {session.SessionId} 发送的最小包长度无效，已忽略。");
+            }
             return;
         }
 
@@ -123,7 +127,24 @@ public class MessageRouter
 
         if (!TryRouteMessage(session, msgId, payload))
         {
-            Shared.Log.Warning($"[MessageRouter] 收到未注册的 MsgId {msgId}，已丢弃");
+            // P3 修复：未注册 MsgId 日志节流（防被刷屏）
+            if (ShouldThrottleLog(ref lastUnknownMsgWarnTick))
+            {
+                Shared.Log.Warning($"[MessageRouter] 收到未注册的 MsgId {msgId}，已丢弃");
+            }
         }
+    }
+
+    private static long lastMalformedWarnTick;
+    private static long lastUnknownMsgWarnTick;
+    private const long LogThrottleTicks = 5 * 1000; // 同类告警每 5 秒最多输出一次
+
+    /// <summary>进程级同类日志限频（防畸形包/未知消息洪泛触发日志风暴）。</summary>
+    private static bool ShouldThrottleLog(ref long lastWarnTick)
+    {
+        long now = Environment.TickCount64;
+        long last = System.Threading.Volatile.Read(ref lastWarnTick);
+        return now - last > LogThrottleTicks
+            && System.Threading.Interlocked.CompareExchange(ref lastWarnTick, now, last) == last;
     }
 }

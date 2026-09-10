@@ -27,8 +27,8 @@ public sealed class FrameSyncManager
     private readonly ConcurrentDictionary<string, ConcurrentQueue<(long sessionId, PlayerInput input)>> inputQueues = new();
     private readonly ConcurrentDictionary<string, int> queuedInputCounts = new();
 
-    /// <summary>场景 -> 服务端帧号（每场景独立推进，多场景互不干扰）</summary>
-    private readonly ConcurrentDictionary<string, long> sceneFrames = new();
+    /// <summary>场景 -> 服务端帧号（每场景独立推进，多场景互不干扰；int 回绕由无符号差值判定兼容）。</summary>
+    private readonly ConcurrentDictionary<string, int> sceneFrames = new();
 
     /// <summary>单包输入数量上限（防放大广播/大列表分配 DoS）。</summary>
     private const int MaxInputsPerPacket = 64;
@@ -77,7 +77,11 @@ public sealed class FrameSyncManager
         // 也可乱序回放旧帧。现在 < 上次（乱序/回放）或 == 上次（重复提交）一律丢弃。
         var key = (scene.SceneId, clientSessionId);
         var state = clientFrameStates.GetOrAdd(key, _ => new ClientFrameState());
-        if (request.FrameId <= state.LastFrameId)
+        // P2 修复：int 回绕感知的递增判定（无符号差值，兼容 21 亿帧后的回绕）。
+        // 重复（相等）或回退（差值 > 2^31）一律丢弃；LastFrameId 哨兵（int.MinValue）接受首条。
+        if (state.LastFrameId != int.MinValue
+            && (request.FrameId == state.LastFrameId
+                || unchecked((uint)(request.FrameId - state.LastFrameId)) > (1u << 31)))
         {
             long nowMs = Environment.TickCount64;
             if (nowMs - state.LastWarnMs > 5000)
@@ -161,12 +165,12 @@ public sealed class FrameSyncManager
                 continue; // 无玩家不广播
             }
 
-            // 场景独立帧号：从 1 开始递增
-            long sceneFrame = sceneFrames.AddOrUpdate(scene.SceneId, 1, (_, v) => v + 1);
+            // 场景独立帧号：从 1 开始递增（int 回绕后由客户端无符号差值判定兼容，不再截断导致防重放失效）
+            int sceneFrame = sceneFrames.AddOrUpdate(scene.SceneId, 1, (_, v) => unchecked(v + 1));
 
             var frameMsg = new BattleFrameSync
             {
-                FrameId = (int)sceneFrame,
+                FrameId = sceneFrame,
                 Inputs = inputs
             };
             byte[] payload = frameMsg.Serialize();

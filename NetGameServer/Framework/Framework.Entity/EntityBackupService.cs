@@ -67,6 +67,9 @@ public sealed class EntityBackupService : IDisposable
             if (!managers.Contains(manager))
             {
                 managers.Add(manager);
+                // P2 修复：与 RemoveManager 对称，注册后重置实体缓存，下一轮 Tick 立即纳入新管理器实体
+                cachedFingerprint = -1;
+                allEntities.Clear();
             }
         }
         return this;
@@ -249,7 +252,11 @@ public sealed class EntityBackupService : IDisposable
         Log.Info($"实体备份文件已压缩: {path} 保留实体数: {lastByEntity.Count}");
     }
 
-    /// <summary>把一批已脱离的备份快照序列化为备份块（PropertyCodec 全量属性 + 长度前缀）。</summary>
+    /// <summary>
+    /// 把一批已脱离的备份快照序列化为备份块（PropertyCodec 全量属性 + 长度前缀）。
+    /// P2 修复：onlySyncToClient=false 全量序列化——CELL_PRIVATE 等服务端内部状态必须随备份落盘，
+    /// 否则崩溃恢复后内部状态丢失（仅备份 SyncToClient 属性会导致恢复退化）。
+    /// </summary>
     private static byte[] SerializeSnapshot(List<BackupEntitySnapshot> snapshots)
     {
         using var ms = new MemoryStream(256);
@@ -257,7 +264,7 @@ public sealed class EntityBackupService : IDisposable
         Span<byte> header = stackalloc byte[HeaderSize];
         foreach (var snapshot in snapshots)
         {
-            byte[] props = PropertyCodec.SerializeAllValues(snapshot.Props, snapshot.Def);
+            byte[] props = PropertyCodec.SerializeAllValues(snapshot.Props, snapshot.Def, onlySyncToClient: false);
             BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(0, 4), BackupMagic);
             BinaryPrimitives.WriteInt64LittleEndian(header.Slice(4, 8), snapshot.EntityId);
             BinaryPrimitives.WriteInt32LittleEndian(header.Slice(12, 4), props.Length);
@@ -282,6 +289,13 @@ public sealed class EntityBackupService : IDisposable
         int offset = 0;
         int restored = 0;
 
+        // P2 修复：锁内快照 managers（与 Tick 一致），防恢复期间场景销毁触发集合修改异常
+        EntityManager[] managersSnapshot;
+        lock (managers)
+        {
+            managersSnapshot = managers.ToArray();
+        }
+
         while (offset + HeaderSize <= data.Length)
         {
             uint magic = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset, 4));
@@ -300,7 +314,7 @@ public sealed class EntityBackupService : IDisposable
             }
 
             // 在已注册管理器中查找该实体（实体需已由业务层重建）
-            foreach (var manager in managers)
+            foreach (var manager in managersSnapshot)
             {
                 var entity = manager.GetEntity(entityId);
                 if (entity != null)

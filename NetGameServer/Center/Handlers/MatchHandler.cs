@@ -43,6 +43,81 @@ namespace Center.Handlers
 
         private object GetCategoryLock(string category) => categoryLocks.GetOrAdd(category, _ => new object());
 
+        /// <summary>规范化匹配分类：长度/字符白名单约束（仅字母数字与 _-），非法回退 "PVP"，防分类锁/匹配池随客户端可控值无界增长。</summary>
+        private static string NormalizeCategory(string? categoryId)
+        {
+            string category = string.IsNullOrWhiteSpace(categoryId) ? "PVP" : categoryId.Trim();
+            if (category.Length > 32)
+            {
+                return "PVP";
+            }
+            foreach (char c in category)
+            {
+                if (!char.IsLetterOrDigit(c) && c != '_' && c != '-')
+                {
+                    return "PVP";
+                }
+            }
+            return category;
+        }
+
+        // P1 修复：按房间的互斥锁，串行化同房间内不同客户端会话（不同 clientSessionId 串行键）的成员表/人数读写。
+        // 锁序约定：categoryLock → roomLock；持 roomLock 期间不得再获取 categoryLock（防环）。
+        private readonly ConcurrentDictionary<string, SemaphoreSlim> roomLocks = new();
+
+        private SemaphoreSlim GetRoomLock(string roomId) => roomLocks.GetOrAdd(roomId, _ => new SemaphoreSlim(1, 1));
+
+        /// <summary>房间移除后清理其锁（防 roomLocks 无界增长）。</summary>
+        private void ReleaseRoomLock(string roomId)
+        {
+            if (roomLocks.TryRemove(roomId, out var roomLock))
+            {
+                try { roomLock.Release(); } catch (SemaphoreFullException) { }
+            }
+        }
+
+        /// <summary>周期清扫匹配/房间状态（Center 维护循环调用）：防分类锁/匹配池/房间锁随客户端可控值无界增长。</summary>
+        public int SweepStaleMatchState(DateTime now)
+        {
+            int removed = 0;
+
+            // 1) 排队超时的玩家残留（断线通知丢失等场景；匹配逻辑对 queuedAt 缺失容忍）
+            foreach (var pair in queuedAt.ToArray())
+            {
+                if (now - pair.Value > MatchQueueTimeout)
+                {
+                    queuedAt.TryRemove(pair.Key, out _);
+                    removed++;
+                }
+            }
+
+            // 2) 空分类的匹配池/去重表/锁（防分类名洪泛累积：仅字母数字白名单 + 周期清理双保险）
+            foreach (var pair in matchPools.ToArray())
+            {
+                bool queuedEmpty = !queuedPlayers.TryGetValue(pair.Key, out var q) || q.IsEmpty;
+                if (pair.Value.IsEmpty && queuedEmpty)
+                {
+                    matchPools.TryRemove(pair.Key, out _);
+                    queuedPlayers.TryRemove(pair.Key, out _);
+                    categoryLocks.TryRemove(pair.Key, out _);
+                    removed++;
+                }
+            }
+
+            // 3) 房间锁条目（房间已不存在仍残留的锁；防 roomLocks 无界增长）
+            foreach (var pair in roomLocks.ToArray())
+            {
+                if (!rooms.ContainsKey(pair.Key))
+                {
+                    roomLocks.TryRemove(pair.Key, out _);
+                    try { pair.Value.Release(); } catch (SemaphoreFullException) { }
+                    removed++;
+                }
+            }
+
+            return removed;
+        }
+
         // 用于等待真实的 Battle 节点返回创建房间结果
         private readonly ConcurrentDictionary<string, TaskCompletionSource<CenterCreateSceneResponse>> pendingSceneCreations = new();
         private readonly ConcurrentDictionary<string, TaskCompletionSource<CenterDestroySceneResponse>> pendingSceneDestroys = new();
@@ -62,7 +137,7 @@ namespace Center.Handlers
         /// </summary>
         public async Task<CenterMatchResponse?> HandleMatchRequestAsync(long clientSessionId, CenterMatchRequest request, Network.ISession gatewaySession, Action<Network.ISession, long, int, CenterMatchResponse> sendToGatewayFunc)
         {
-            string category = string.IsNullOrWhiteSpace(request.CategoryId) ? "PVP" : request.CategoryId.Trim();
+            string category = NormalizeCategory(request.CategoryId);
             bool isWorldMap = category.Equals("World", StringComparison.OrdinalIgnoreCase);
 
             var pool = matchPools.GetOrAdd(category, _ => new ConcurrentQueue<long>());
@@ -241,20 +316,30 @@ namespace Center.Handlers
             else
             {
                 // 复用既有大世界房间：把本批匹配到的玩家并入现有成员表（不重置已有状态、不重复建房）。
-                foreach (var pid in matchedPlayers)
+                // P1 修复：按房间加锁（锁序 categoryLock→roomLock，与 Join/Leave 的房间操作串行化）
+                var worldRoomLock = GetRoomLock(reusableWorld.Info.RoomId);
+                worldRoomLock.Wait();
+                try
                 {
-                    reusableWorld.MemberStates.TryAdd(pid, new RoomMemberState
+                    foreach (var pid in matchedPlayers)
                     {
-                        ClientSessionId = pid,
-                        UserId = 0,
-                        IsReady = true,
-                        DisplayName = $"Player_{pid}",
-                        UniqueId = string.Empty
-                    });
+                        reusableWorld.MemberStates.TryAdd(pid, new RoomMemberState
+                        {
+                            ClientSessionId = pid,
+                            UserId = 0,
+                            IsReady = true,
+                            DisplayName = $"Player_{pid}",
+                            UniqueId = string.Empty
+                        });
+                    }
+                    reusableWorld.Info.CurrentPlayers = reusableWorld.MemberStates.Count;
+                    reusableWorld.Info.Members = BuildRoomMembers(reusableWorld);
+                    Shared.Log.Info($"大世界房间复用，并入 {matchedPlayers.Count} 名玩家 RoomId:{roomId} 当前人数:{reusableWorld.Info.CurrentPlayers}");
                 }
-                reusableWorld.Info.CurrentPlayers = reusableWorld.MemberStates.Count;
-                reusableWorld.Info.Members = BuildRoomMembers(reusableWorld);
-                Shared.Log.Info($"大世界房间复用，并入 {matchedPlayers.Count} 名玩家 RoomId:{roomId} 当前人数:{reusableWorld.Info.CurrentPlayers}");
+                finally
+                {
+                    worldRoomLock.Release();
+                }
             }
 
             var successResponse = new CenterMatchResponse

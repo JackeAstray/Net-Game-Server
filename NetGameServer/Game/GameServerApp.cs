@@ -21,6 +21,10 @@ namespace Game
         public static TcpClientWrapper DbClient { get; private set; } = null!;
         private static System.Threading.CancellationTokenSource? centerHeartbeatCts;
 
+        // P2 修复（对齐 Center/Login）：业务消息按键（客户端会话）串行执行——
+        // 多网关连接并行、同一会话 async 段交错会破坏共享状态（好友缓存/绑定/邀请）的复合读判写原子性。
+        private static readonly Framework.Core.OrderedTaskQueue sessionSerialQueue = new("Game-SessionSerial");
+
         // P2 修复（跨网关投递）：客户端会话 -> 网关会话 反向索引。
         // 多网关部署下，向"目标客户端会话"发消息时必须选中该客户端真正所在的网关连接；
         // 原实现一律沿用请求来源的网关会话，目标在另一网关时消息被发错网关而丢失。
@@ -236,6 +240,13 @@ namespace Game
                         return;
                     }
 
+                    // P2 修复：业务段按键（客户端会话）串行执行（对齐 Center/Login OrderedTaskQueue）。
+                    // 内部消息（originalSessionId=0）按网关连接会话串行，跨连接并发。
+                    long serialKey = originalSessionId > 0 ? originalSessionId : -session.SessionId;
+                    await sessionSerialQueue.EnqueueAsync(serialKey, async () =>
+                    {
+                        try
+                        {
                     // V5 修复：登记该客户端会话与网关连接的关系（网关断开时用于级联清理）。
                     // P2 修复：同时维护"客户端会话 -> 网关会话"反向索引，供跨网关向目标会话投递时选中正确网关。
                     if (originalSessionId > 0)
@@ -350,6 +361,12 @@ namespace Game
                             }
                         }
                     }
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Error($"Game 处理客户端数据异常 Session:{session.SessionId} Remote:{session.RemoteEndPoint} Exception:{ex}");
+                        }
+                    });
                 }
                 catch (Exception ex)
                 {

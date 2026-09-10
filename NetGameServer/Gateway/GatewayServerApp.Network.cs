@@ -344,6 +344,15 @@ namespace Gateway
                             }
                         }
 
+                        // P2：跨实例重连查询超时清理（Center 响应丢失时防条目永久残留）
+                        foreach (var key in pendingLocates.Keys.ToArray())
+                        {
+                            if (pendingLocates.TryGetValue(key, out var pl) && now - pl.CreatedAtUtc > PendingLocateTimeout)
+                            {
+                                pendingLocates.TryRemove(key, out _);
+                            }
+                        }
+
                         // TCP/WebSocket 空闲超时踢线（无任何收发超过阈值的连接）。
                         // 此前仅覆盖 TcpSession，WS 静默连接永远不会被清理（资源泄漏向量）；
                         // WS 接收循环已刷新 LastActivityTime，可安全复用同一阈值。

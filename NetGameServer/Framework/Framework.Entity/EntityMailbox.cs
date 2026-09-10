@@ -90,6 +90,7 @@ public sealed class EntityMailbox
             TargetNodeId = targetNodeId,
             MethodName = methodName,
             DeadlineUtc = DateTime.UtcNow.AddMilliseconds(Math.Max(1, timeoutMs)),
+            DeadlineTicks = Environment.TickCount64 + Math.Max(1, timeoutMs),
             Callback = onComplete ?? NoopCallback
         });
         SendRemote(methodName, a, callId);

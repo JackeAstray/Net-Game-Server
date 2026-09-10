@@ -155,6 +155,7 @@ public sealed class Entity
             return;
         }
 
+        (string Name, object? Old, object? New)? change = null;
         lock (dirty)
         {
             if (values.TryGetValue(name, out var old) && Equals(old, value))
@@ -176,8 +177,14 @@ public sealed class Entity
                 PersistDirtyChanged?.Invoke(this, true);
             }
 
-            // 属性变更事件（脚本层 OnPropertyChanged 回调，对标 KBE onPropertyChange）
-            PropertyChanged?.Invoke(name, old, value);
+            change = (name, old, value);
+        }
+
+        // 属性变更事件（脚本层 OnPropertyChanged 回调，对标 KBE onPropertyChange）。
+        // P2 修复：移出锁外触发（脚本回调慢/重入不再放大锁持有时间）。
+        if (change.HasValue)
+        {
+            PropertyChanged?.Invoke(change.Value.Name, change.Value.Old, change.Value.New);
         }
     }
 
@@ -257,13 +264,38 @@ public sealed class Entity
     {
         lock (dirty)
         {
-            var copy = new Dictionary<string, object?>(values.Count, StringComparer.Ordinal);
-            foreach (var (key, value) in values)
+            return CopyValuesLocked();
+        }
+    }
+
+    /// <summary>
+    /// 原子快照 + 清除持久化脏标记（P2 修复）：在单次锁内完成"拷贝全部属性 + MarkPersisted"，
+    /// 消除"快照与清脏之间发生 Set 导致脏标记被清、变更静默丢失"的 TOCTOU 窗口。
+    /// 供批量落库/单条落库在确认快照后一次性清脏。
+    /// </summary>
+    public Dictionary<string, object?> CopyValuesAndClearPersistDirty()
+    {
+        lock (dirty)
+        {
+            var copy = CopyValuesLocked();
+            if (persistDirty)
             {
-                copy[key] = DeepCopyForBackup(value);
+                persistDirty = false;
+                PersistDirtyChanged?.Invoke(this, false);
             }
             return copy;
         }
+    }
+
+    /// <summary>锁内快照（调用方必须已持有 dirty 锁）。</summary>
+    private Dictionary<string, object?> CopyValuesLocked()
+    {
+        var copy = new Dictionary<string, object?>(values.Count, StringComparer.Ordinal);
+        foreach (var (key, value) in values)
+        {
+            copy[key] = DeepCopyForBackup(value);
+        }
+        return copy;
     }
 
     /// <summary>备份快照深拷贝：仅深拷贝可变容器（List/数组），其余不可变值直接引用。</summary>

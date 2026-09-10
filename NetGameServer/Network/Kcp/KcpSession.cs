@@ -172,7 +172,12 @@ public sealed class KcpSession : ISession
     {
         try
         {
-            kcp.Dispose();
+            // P2 修复：持锁 Dispose——Input/Update/Send 均在 kcpGate 内访问 kcp，
+            // 无锁 Dispose 与持锁访问并发会破坏 KCP 内部状态（对象状态损坏/ObjectDisposedException）。
+            lock (kcpGate)
+            {
+                kcp.Dispose();
+            }
         }
         catch (Exception ex)
         {

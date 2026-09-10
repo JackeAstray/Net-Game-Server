@@ -95,6 +95,26 @@ public class CenterController : ControllerBase
 
     // ===== 配置中心（B4）：运行时覆盖的读写与持久化（经 ConfigHelper.SetRuntimeOverride 立即热更） =====
 
+    /// <summary>禁止运行时热更的敏感配置键特征（共享密钥/连接串/密码等，大小写不敏感）。</summary>
+    private static readonly string[] SensitiveConfigPatterns = new[]
+    {
+        "secret", "password", "connectionstrings", "apikey", "token", "privatekey"
+    };
+
+    /// <summary>是否敏感配置键：禁止经管理接口热更（防持 key 方覆盖认证/存储凭据）。</summary>
+    private static bool IsSensitiveConfigKey(string key)
+    {
+        string k = key.ToLowerInvariant();
+        foreach (var p in SensitiveConfigPatterns)
+        {
+            if (k.Contains(p, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     [HttpGet("config")]
     public IActionResult Config()
     {
@@ -110,6 +130,11 @@ public class CenterController : ControllerBase
             return BadRequest(new { success = false, message = "key 不能为空" });
         }
         string key = item.Key.Trim();
+        // P2 修复：敏感键（认证/连接凭据）禁止运行时热更，防管理面被利用篡改
+        if (IsSensitiveConfigKey(key))
+        {
+            return BadRequest(new { success = false, message = "敏感配置键不允许运行时修改" });
+        }
         Shared.ConfigHelper.SetRuntimeOverride(key, item.Value);
         var overrides = RuntimeConfigStore.Load();
         if (item.Value == null)
@@ -132,6 +157,11 @@ public class CenterController : ControllerBase
             return BadRequest(new { success = false, message = "key 不能为空" });
         }
         string trimmed = key.Trim();
+        // P2 修复：敏感键禁止删除（防恢复被覆盖前的恶意还原）
+        if (IsSensitiveConfigKey(trimmed))
+        {
+            return BadRequest(new { success = false, message = "敏感配置键不允许运行时删除" });
+        }
         Shared.ConfigHelper.SetRuntimeOverride(trimmed, null);
         var overrides = RuntimeConfigStore.Load();
         overrides.Remove(trimmed);

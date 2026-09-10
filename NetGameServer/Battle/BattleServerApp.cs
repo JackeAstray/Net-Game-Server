@@ -344,8 +344,11 @@ namespace Battle
             int grace = ConfigHelper.GetConfig<int>("ReconnectGraceSeconds");
             if (grace <= 0) return false; // 配置 <= 0：关闭重连，立即离场
 
-            // 断线即存档（崩溃/重连超时后仍可恢复）
-            PersistPlayer(entity);
+            // 断线即存档（崩溃/重连超时后仍可恢复）；观战实体只读占位不落库
+            if (!string.Equals(scene.Config.SceneType, "Spectate", StringComparison.OrdinalIgnoreCase))
+            {
+                PersistPlayer(entity);
+            }
             suspendedPlayers[clientSessionId] = DateTime.UtcNow.AddSeconds(grace).Ticks;
 
             tickEngine?.AddTimer(grace * 1000, () =>
@@ -387,7 +390,11 @@ namespace Battle
             var entity = scene.EntityManager.GetEntity(clientSessionId);
             if (entity != null)
             {
-                PersistPlayer(entity);
+                // 观战实体只读占位不落库
+                if (!string.Equals(scene.Config.SceneType, "Spectate", StringComparison.OrdinalIgnoreCase))
+                {
+                    PersistPlayer(entity);
+                }
                 NotifyEntityDestroyed(entity);
             }
 

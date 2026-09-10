@@ -16,6 +16,13 @@ namespace Battle.Handlers
         /// <summary>房间人数硬上限（服务端权威）：客户端可请求小于该值的容量，但不能无限制放大房间。</summary>
         private const int HardMaxPlayers = 200;
 
+        /// <summary>单节点场景数上限（加入/观战共用，防唯一 RoomId 洪泛创建无限场景）。</summary>
+        private const int MaxScenesPerNode = 500;
+
+        /// <summary>是否观战场景：观战实体为只读占位，不参与持久化/玩法结算。</summary>
+        private static bool IsSpectateScene(Battle.Handlers.BattleScene scene)
+            => string.Equals(scene.Config.SceneType, "Spectate", StringComparison.OrdinalIgnoreCase);
+
         public RoomHandler(SceneManager sceneManager, EntitySyncHandler entitySyncHandler, BattleReplayRecorder? replayRecorder = null, Action<long>? frameSyncClientRemoved = null)
         {
             this.sceneManager = sceneManager;
@@ -56,7 +63,6 @@ namespace Battle.Handlers
 
                 // P3 加固：单节点场景数上限（防客户端用唯一 RoomId 洪泛创建无限场景，
                 // 每场景会生成玩法实体、注册脚本/备份/持久化服务并进入每 tick 扫描）。
-                const int MaxScenesPerNode = 500;
                 if (sceneManager.GetSceneCount() >= MaxScenesPerNode)
                 {
                     Shared.Log.Warning($"Battle 场景数已达上限({MaxScenesPerNode})，拒绝加入 RoomId:{roomId}");
@@ -189,6 +195,13 @@ namespace Battle.Handlers
                     return Task.FromResult(new BattleSpectateResponse { Success = false, Message = "已在其他房间中，请先离开当前房间" });
                 }
 
+                // P1 修复：观战路径同样受场景数上限约束（此前绕过校验，唯一 RoomId 可无限建场景拖垮节点）
+                if (sceneManager.GetSceneCount() >= MaxScenesPerNode)
+                {
+                    Shared.Log.Warning($"Battle 场景数已达上限({MaxScenesPerNode})，拒绝观战 RoomId:{roomId}");
+                    return Task.FromResult(new BattleSpectateResponse { Success = false, Message = "房间数量已达上限" });
+                }
+
                 var scene = sceneManager.GetOrCreateScene(new SceneConfig
                 {
                     SceneId = roomId,
@@ -198,6 +211,12 @@ namespace Battle.Handlers
                     GridSize = 50.0f,
                     MaxPlayers = 0 // 观战场景不设玩家上限
                 });
+
+                // P1 加固：单观战场景观战者上限（防单场景无限观战实体/AOI 广播目标）
+                if (sceneManager.GetPlayerCount(scene.Config.SceneId) >= HardMaxPlayers)
+                {
+                    return Task.FromResult(new BattleSpectateResponse { Success = false, Message = "观战人数已达上限" });
+                }
 
                 // 观战者不占玩家名额：跳过 MaxPlayers 校验，但加入广播目标集合以接收场景广播
                 sceneManager.BindPlayerToScene(clientSessionId, roomId);
@@ -273,10 +292,14 @@ namespace Battle.Handlers
             }
 
             // 离开前持久化保存玩家属性（对标 KBE 实体落库，崩溃后可恢复）
+            // P2 修复：观战实体为只读占位，不落库（否则污染玩家存档）
             var leavingEntity = scene.EntityManager.GetEntity(clientSessionId);
             if (leavingEntity != null)
             {
-                Battle.BattleServerApp.PersistPlayer(leavingEntity);
+                if (!IsSpectateScene(scene))
+                {
+                    Battle.BattleServerApp.PersistPlayer(leavingEntity);
+                }
                 Battle.BattleServerApp.NotifyEntityDestroyed(leavingEntity);
             }
 

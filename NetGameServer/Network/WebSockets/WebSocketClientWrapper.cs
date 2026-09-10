@@ -71,6 +71,9 @@ public class WebSocketClientWrapper : INetworkClient
             return;
 
         var buffer = new byte[4096];
+        // P2 修复（与服务端 WebSocketServer 对齐）：客户端收到的 WS 消息带 4 字节长度前缀，
+        // 须经 LengthPrefixedPacketReader 解帧后派发（此前直接派发原始带前缀消息，收发链路不对称）。
+        var packetReader = new Routing.LengthPrefixedPacketReader();
 
         try
         {
@@ -89,7 +92,11 @@ public class WebSocketClientWrapper : INetworkClient
 
                 session.LastActivityTime = DateTime.UtcNow;
 
-                OnDataReceived?.Invoke(session, data);
+                packetReader.Append(data);
+                while (packetReader.TryReadPacket(out var packet))
+                {
+                    OnDataReceived?.Invoke(session, packet);
+                }
             }
         }
         catch (Exception ex)
