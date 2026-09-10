@@ -93,6 +93,9 @@ namespace Gateway
             private readonly ConcurrentQueue<byte[]> pendingPackets = new ConcurrentQueue<byte[]>();
             private readonly int maxPending;
             private volatile bool isConnected;
+            /// <summary>冲刷中标志（P1 修复）：OnConnected 冲刷缓冲期间挂起实时发送，
+            /// 避免"缓冲旧消息 + 实时新消息"交错乱序。冲刷完成后恢复直发。</summary>
+            private volatile bool flushing;
 
             public BufferedBackendSender(string backendName, Action<ReadOnlyMemory<byte>> sendAction, int maxPending = 512)
             {
@@ -104,19 +107,28 @@ namespace Gateway
             public void OnConnected()
             {
                 isConnected = true;
-                Shared.Log.Info($"Gateway->{backendName} 通道已连接，开始冲刷缓冲队列，当前待发:{pendingPackets.Count}");
-                FlushPending();
+                flushing = true;
+                try
+                {
+                    Shared.Log.Info($"Gateway->{backendName} 通道已连接，开始冲刷缓冲队列，当前待发:{pendingPackets.Count}");
+                    FlushPending();
+                }
+                finally
+                {
+                    flushing = false;
+                }
             }
 
             public void OnDisconnected()
             {
                 isConnected = false;
+                flushing = false;
                 Shared.Log.Warning($"Gateway->{backendName} 通道断开，后续消息将进入缓冲队列。当前待发:{pendingPackets.Count}");
             }
 
             public void SendOrBuffer(byte[] packet)
             {
-                if (isConnected)
+                if (isConnected && !flushing)
                 {
                     Shared.Log.Debug($"Gateway->{backendName} 实时发送 Length:{packet.Length}");
                     sendAction(packet);
@@ -124,7 +136,7 @@ namespace Gateway
                 }
 
                 pendingPackets.Enqueue(packet);
-                Shared.Log.Warning($"Gateway->{backendName} 未连接，消息入缓冲 Length:{packet.Length} 当前待发:{pendingPackets.Count}");
+                Shared.Log.Warning($"Gateway->{backendName} 未连接或冲刷中，消息入缓冲 Length:{packet.Length} 当前待发:{pendingPackets.Count}");
                 int droppedCount = 0;
                 while (pendingPackets.Count > maxPending && pendingPackets.TryDequeue(out _))
                 {

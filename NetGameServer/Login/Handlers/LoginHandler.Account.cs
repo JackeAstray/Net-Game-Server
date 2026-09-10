@@ -455,19 +455,26 @@ namespace Login.Handlers
         /// <returns>表示异步操作的任务。</returns>
         private async Task SyncUidGeneratorFromDbAsync()
         {
-            var maxUidResp = await CallDbAsync<Shared.Messages.Db.GetMaxUidResponse>(MessageIds.DbGetMaxUidReq, new Shared.Messages.Db.GetMaxUidRequest());
-            if (maxUidResp == null)
+            int currentRegionId = ConfigHelper.GetConfig<int>("RegionId") == 0 ? 1 : ConfigHelper.GetConfig<int>("RegionId");
+            long reserveBatch = ConfigHelper.GetConfig<long>("UidReserveBatch");
+            if (reserveBatch <= 0) reserveBatch = 1000;
+
+            // 原子领取发号段（根治多实例碰撞）：段耗尽/冲突后重新领取不重叠的段
+            var rangeResp = await CallDbAsync<Shared.Messages.Db.AllocateUidRangeResponse>(
+                MessageIds.DbAllocateUidRangeReq,
+                new Shared.Messages.Db.AllocateUidRangeRequest
+                {
+                    RegionId = currentRegionId,
+                    BatchSize = (int)Math.Min(reserveBatch, 1_000_000)
+                });
+            if (rangeResp == null || !rangeResp.Success)
             {
-                Log.Warning("UID 冲突后重新同步失败：获取最大 UID 响应为空。");
+                Log.Warning($"UID 冲突后重新领取发号段失败：{rangeResp?.Message ?? "空响应"}。");
                 return;
             }
 
-            int currentRegionId = ConfigHelper.GetConfig<int>("RegionId") == 0 ? 1 : ConfigHelper.GetConfig<int>("RegionId");
-            // 预留发号段（默认 1000）：本进程只在该段内发号，段耗尽后重新申请，避免多 Login/DB 实例发号碰撞
-            long reserveBatch = ConfigHelper.GetConfig<long>("UidReserveBatch");
-            if (reserveBatch <= 0) reserveBatch = 1000;
-            UIDGenerator.Initialize(currentRegionId, maxUidResp.MaxUid, reserveBatch);
-            Log.Info($"UID 冲突后已重新同步，区服ID:{currentRegionId}，最大序列:{maxUidResp.MaxUid}，预留段:{reserveBatch}");
+            UIDGenerator.InitializeRange(currentRegionId, rangeResp.StartSeq, rangeResp.EndSeq);
+            Log.Info($"UID 冲突后已重新领取发号段，区服ID:{currentRegionId}，段:[{rangeResp.StartSeq}, {rangeResp.EndSeq}]");
         }
 
         /// <summary>

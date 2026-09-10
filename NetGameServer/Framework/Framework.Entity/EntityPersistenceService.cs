@@ -128,7 +128,7 @@ public sealed class EntityPersistenceService : IDisposable
 
     private sealed record Snapshot(long EntityId, string EntityType, EntityDef Def, Dictionary<string, object?> Props, Entity? Source);
 
-    /// <summary>统计当前待落库实体数（快照前轻量遍历）。</summary>
+    /// <summary>统计当前待落库实体数（脏实体集合计数，免全量扫描）。</summary>
     private int SnapshotDirtyCount()
     {
         int count = 0;
@@ -136,13 +136,7 @@ public sealed class EntityPersistenceService : IDisposable
         lock (sync) { snapshotManagers = new List<EntityManager>(managers); }
         foreach (var manager in snapshotManagers)
         {
-            foreach (var entity in manager.GetAllEntities())
-            {
-                if (entity.IsPersistDirty)
-                {
-                    count++;
-                }
-            }
+            count += manager.DirtyPersistCount;
         }
         return count;
     }
@@ -176,11 +170,11 @@ public sealed class EntityPersistenceService : IDisposable
 
         foreach (var manager in snapshotManagers)
         {
-            foreach (var entity in manager.GetAllEntities())
+            foreach (var entity in manager.GetDirtyPersistEntities())
             {
                 if (!entity.IsPersistDirty)
                 {
-                    continue;
+                    continue; // 集合与实体标记间有延迟时兜底
                 }
                 if (batch.Count >= flushBatchSize)
                 {

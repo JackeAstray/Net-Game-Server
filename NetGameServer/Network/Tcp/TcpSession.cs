@@ -78,9 +78,9 @@ public class TcpSession : ISession
 
         try
         {
-            var payload = EnsureLengthPrefixed(data.Span);
-            // 复制进队（与旧实现同一次拷贝；发送本身不再阻塞）
-            Enqueue(payload.ToArray(), payload.Length, pooled: false);
+            // 一次拷贝入队（EnsureLengthPrefixed 返回已加前缀的独立缓冲，不再二次 ToArray）
+            var (buffer, length) = EnsureLengthPrefixed(data.Span);
+            Enqueue(buffer, length, pooled: false);
             LastActivityTime = DateTime.UtcNow;
         }
         catch (Exception ex)
@@ -211,26 +211,26 @@ public class TcpSession : ISession
     }
 
     /// <summary>
-    /// 返回以 4 字节小端整数表示长度前缀的 ReadOnlySpan&lt;byte&gt;。
-    /// 如果输入已有与数据长度匹配的前缀则返回原切片，否则返回包含前缀的新分配缓冲区的切片。
+    /// 返回带 4 字节小端长度前缀的独立缓冲。
+    /// 输入已含正确前缀时直接复制；否则分配新缓冲并写入前缀。
     /// </summary>
-    /// <remarks>前缀的判定为前 4 字节按小端解析为 Int32，并与 data.Length - 4 比较。仅在前缀缺失或不匹配时分配新的字节数组。</remarks>
+    /// <remarks>前缀的判定为前 4 字节按小端解析为 Int32，并与 data.Length - 4 比较。</remarks>
     /// <param name="data">要检查并确保带有 4 字节小端长度前缀的字节切片。</param>
-    /// <returns>包含 4 字节小端长度前缀的 ReadOnlySpan&lt;byte&gt;；可能为原始切片或新分配的字节数组的切片。</returns>
-    private static ReadOnlySpan<byte> EnsureLengthPrefixed(ReadOnlySpan<byte> data)
+    /// <returns>包含 4 字节小端长度前缀的缓冲及其有效长度。</returns>
+    private static (byte[] Buffer, int Length) EnsureLengthPrefixed(ReadOnlySpan<byte> data)
     {
         if (data.Length >= 4)
         {
             int declaredLength = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(0, 4));
             if (declaredLength == data.Length - 4)
             {
-                return data;
+                return (data.ToArray(), data.Length);
             }
         }
 
         byte[] framed = new byte[data.Length + 4];
         BinaryPrimitives.WriteInt32LittleEndian(framed.AsSpan(0, 4), data.Length);
         data.CopyTo(framed.AsSpan(4));
-        return framed;
+        return (framed, framed.Length);
     }
 }

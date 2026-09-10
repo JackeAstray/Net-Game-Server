@@ -25,6 +25,8 @@ namespace Login.Managers
         private readonly ConcurrentDictionary<int, long> userSessions = new ConcurrentDictionary<int, long>();
         private readonly ConcurrentDictionary<long, int> sessionUsers = new ConcurrentDictionary<long, int>();
         private readonly ConcurrentDictionary<int, CancellationTokenSource> offlineTasks = new();
+        /// <summary>离线处理执行中标志（P0 修复）：顶号/强退/5 分钟离线任务并发时仅一个执行者，防 OnUserOfflineAction 重复触发。</summary>
+        private readonly ConcurrentDictionary<int, byte> offlineProcessing = new();
         /// <summary>顶号/断开/强退共享锁：串行化 userSessions+sessionUsers 双字典的"读-删-写"临界区，防并发顶号产生幽灵会话。</summary>
         private readonly object sessionGate = new();
 
@@ -99,6 +101,12 @@ namespace Login.Managers
                     userSessions.TryRemove(userId, out _);
 
                     var cts = new CancellationTokenSource();
+                    // 覆盖前先取消旧实例，防 CancellationTokenSource 泄漏（重连再断线场景）
+                    if (offlineTasks.TryRemove(userId, out var previousCts))
+                    {
+                        previousCts.Cancel();
+                        previousCts.Dispose();
+                    }
                     offlineTasks[userId] = cts;
 
                     // 消除 Task.Delay 滥用，使用 CancellationTokenSource 来管理。一旦重连立即取消注销任务
@@ -110,9 +118,7 @@ namespace Login.Managers
                             if (!cts.Token.IsCancellationRequested && !userSessions.ContainsKey(userId))
                             {
                                 offlineTasks.TryRemove(userId, out _);
-                                Shared.Log.Info($"用户{userId}已离线5分钟。正在处理最终离线步骤。");
-                                // 离线处理真实数据，通知 DB 下线
-                                OnUserOfflineAction?.Invoke(userId);
+                                RunOfflineOnce(userId);
                             }
                         }
                         catch (TaskCanceledException)
@@ -163,8 +169,26 @@ namespace Login.Managers
                 SendToGatewayAction?.Invoke(sId, packet);
             }
 
-            // 通知 DB 从内存/库里抹除
-            OnUserOfflineAction?.Invoke(userId);
+            // 通知 DB 从内存/库里抹除（裁决唯一执行者，防与 5 分钟离线任务并发重复触发）
+            RunOfflineOnce(userId);
+        }
+
+        /// <summary>裁决离线处理唯一执行者：offlineProcessing.TryAdd 成功者负责调用 OnUserOfflineAction，结束后释放。</summary>
+        private void RunOfflineOnce(int userId)
+        {
+            if (!offlineProcessing.TryAdd(userId, 0))
+            {
+                return; // 已有执行者在处理
+            }
+            try
+            {
+                Shared.Log.Info($"用户{userId}正在处理最终离线步骤。");
+                OnUserOfflineAction?.Invoke(userId);
+            }
+            finally
+            {
+                offlineProcessing.TryRemove(userId, out _);
+            }
         }
 
         /// <summary>

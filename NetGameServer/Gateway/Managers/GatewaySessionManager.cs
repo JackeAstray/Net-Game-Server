@@ -32,6 +32,8 @@ namespace Gateway.Managers
         /// </summary>
         private readonly ConcurrentDictionary<long, Network.ISession> clientSessions = new();
         private readonly ConcurrentDictionary<long, int> sessionUsers = new();
+        /// <summary>userId -> 已解析会话 ID（顶号检测用：同账号新登录时关闭旧连接）。</summary>
+        private readonly ConcurrentDictionary<int, long> userSessions = new();
         private readonly ConcurrentDictionary<long, string> sessionUids = new();
         private readonly ConcurrentDictionary<string, long> uidSessions = new();
         private readonly ConcurrentDictionary<long, string> sessionNicknames = new();
@@ -81,7 +83,13 @@ namespace Gateway.Managers
         public void RemoveSession(long sessionId)
         {
             clientSessions.TryRemove(sessionId, out _);
-            sessionUsers.TryRemove(sessionId, out _);
+            if (sessionUsers.TryRemove(sessionId, out int removedUserId))
+            {
+                if (userSessions.TryGetValue(removedUserId, out long mapped) && mapped == sessionId)
+                {
+                    userSessions.TryRemove(removedUserId, out _);
+                }
+            }
 
             if (sessionUids.TryRemove(sessionId, out string? uid))
             {
@@ -233,7 +241,9 @@ namespace Gateway.Managers
         /// <summary>
         /// 将指定会话绑定到指定用户。
         /// </summary>
-        /// <remarks>如果 sessionId 或 userId 非正，则不执行任何操作。若会话已存在绑定，则用新的 userId 覆盖。</remarks>
+        /// <remarks>如果 sessionId 或 userId 非正，则不执行任何操作。若会话已存在绑定，则用新的 userId 覆盖。
+        /// 顶号防护（P0 修复）：同一 userId 已绑定其他会话时，先关闭旧会话连接并清理其绑定，
+        /// 防止"顶号后旧连接仍以已登录身份操作账号"（旧绑定仅在断开事件才会被清除，恶意客户端可无视踢下线通知）。</remarks>
         /// <param name="sessionId">要绑定的会话标识，必须大于 0。</param>
         /// <param name="userId">要绑定的用户标识，必须大于 0。</param>
         public void BindUser(long sessionId, int userId)
@@ -243,7 +253,40 @@ namespace Gateway.Managers
                 return;
             }
 
-            sessionUsers[sessionId] = userId;
+            long resolved = ResolveSessionId(sessionId);
+            if (userSessions.TryGetValue(userId, out long oldSessionId) && oldSessionId != resolved)
+            {
+                KickOutOldSession(userId, oldSessionId);
+            }
+
+            sessionUsers[resolved] = userId;
+            userSessions[userId] = resolved;
+        }
+
+        /// <summary>顶号：清理旧会话的全部身份绑定并关闭其连接（断开事件随后幂等清理会话主体）。</summary>
+        private void KickOutOldSession(int userId, long oldSessionId)
+        {
+            sessionUsers.TryRemove(oldSessionId, out _);
+            if (userSessions.TryGetValue(userId, out long mapped) && mapped == oldSessionId)
+            {
+                userSessions.TryRemove(userId, out _);
+            }
+            if (sessionUids.TryRemove(oldSessionId, out string? uid))
+            {
+                if (uidSessions.TryGetValue(uid, out long mappedUid) && mappedUid == oldSessionId)
+                {
+                    uidSessions.TryRemove(uid, out _);
+                }
+            }
+            sessionNicknames.TryRemove(oldSessionId, out _);
+            sessionCreatedAt.TryRemove(oldSessionId, out _);
+            sessionLastActivity.TryRemove(oldSessionId, out _);
+
+            if (clientSessions.TryGetValue(oldSessionId, out var oldSession))
+            {
+                Shared.Log.Warning($"Gateway 顶号关闭旧会话 SessionId:{oldSessionId} UserId:{userId} Remote:{oldSession.RemoteEndPoint}");
+                try { oldSession.Close(); } catch { /* 关闭异常不影响绑定结果 */ }
+            }
         }
 
         /// <summary>
@@ -253,7 +296,13 @@ namespace Gateway.Managers
         /// <param name="sessionId">要从映射中移除其关联用户的会话标识符。</param>
         public void UnbindUser(long sessionId)
         {
-            sessionUsers.TryRemove(sessionId, out _);
+            if (sessionUsers.TryRemove(sessionId, out int userId))
+            {
+                if (userSessions.TryGetValue(userId, out long mapped) && mapped == sessionId)
+                {
+                    userSessions.TryRemove(userId, out _);
+                }
+            }
         }
 
         /// <summary>
@@ -413,6 +462,7 @@ namespace Gateway.Managers
             if (sessionUsers.TryRemove(newSessionId, out int userId))
             {
                 sessionUsers[oldSessionId] = userId;
+                userSessions[userId] = oldSessionId;
             }
             if (sessionUids.TryRemove(newSessionId, out string? uid))
             {

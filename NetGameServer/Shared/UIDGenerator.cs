@@ -10,6 +10,8 @@ namespace Shared
     /// - 进程内 Interlocked 只保证单进程不重复；多个 Login/DB 实例各自从 DB 最大序号初始化后
     ///   独立自增，会跨实例碰撞。调用方应通过 reserveBatch 预留一段（如 1000），
     ///   本进程只在该段内发号，段耗尽时抛异常促使调用方重新向 DB 申请（见 GenerateLongUID）。
+    /// - 边界说明：预留段仅降低碰撞概率（多实例同基线会领到相同段）。严格无碰撞需 DB 提供
+    ///   "原子领取段"接口（如 UPDATE 计数器原子 +batch），调用方每次初始化/段耗尽走领取而非读 MAX。
     /// - 越界保护：序列号超过 9 位上限（99,999,999）时直接抛异常，避免静默侵入下一区服前缀空间。
     /// </summary>
     public static class UIDGenerator
@@ -51,6 +53,28 @@ namespace Shared
             currentCounter = Math.Max(0, currentMaxSequenceID);
             reservedThrough = reserveBatch > 0 ? currentCounter + reserveBatch : 0;
             Volatile.Write(ref initialized, 1);
+        }
+
+        /// <summary>
+        /// 以领取的发号段初始化发号器（原子领取根治方案）：本进程只在 [startSeq, endSeq] 段内发号，
+        /// 段耗尽 GenerateLongUID 抛异常促使调用方重新向 DB 领取新段。多实例并发领取互斥，不碰撞。
+        /// </summary>
+        /// <param name="regionId">区服 ID (1-9)</param>
+        /// <param name="startSeq">领取段起点（含），GenerateLongUID 返回的第一个值。</param>
+        /// <param name="endSeq">领取段终点（含）。</param>
+        public static void InitializeRange(int regionId, long startSeq, long endSeq)
+        {
+            if (regionId < 1 || regionId > 9)
+            {
+                Log.Error($"无效的区服ID: {regionId}. 区服ID必须在 1 到 9 之间");
+                return;
+            }
+
+            regionPrefix = regionId * 100000000L;
+            currentCounter = Math.Max(0, startSeq - 1);
+            reservedThrough = endSeq;
+            Volatile.Write(ref initialized, 1);
+            Log.Info($"UID 生成器按段初始化完成，区服ID:{regionId}，发号段:[{startSeq}, {endSeq}]");
         }
 
         /// <summary>

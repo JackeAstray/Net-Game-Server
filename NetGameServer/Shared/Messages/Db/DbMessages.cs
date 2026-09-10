@@ -11,6 +11,20 @@ namespace Shared.Messages.Db
         public long MaxUid { get; set; }
     }
 
+    public class AllocateUidRangeRequest
+    {
+        public int RegionId { get; set; }
+        public int BatchSize { get; set; }
+    }
+
+    public class AllocateUidRangeResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+        public long StartSeq { get; set; }
+        public long EndSeq { get; set; }
+    }
+
     public class LoginVerifyRequest
     {
         public string Account { get; set; } = string.Empty;

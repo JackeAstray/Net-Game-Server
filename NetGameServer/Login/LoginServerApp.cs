@@ -30,6 +30,8 @@ namespace Login
         }
 
         public static readonly System.Collections.Concurrent.ConcurrentDictionary<long, PendingDbRequest> PendingRequests = new System.Collections.Concurrent.ConcurrentDictionary<long, PendingDbRequest>();
+        /// <summary>会话串行队列（P1 修复）：同客户端会话业务消息按键串行，防 await 边界乱序。</summary>
+        private static readonly Framework.Core.OrderedTaskQueue sessionSerialQueue = new("Login-SessionSerial");
         private static System.Threading.CancellationTokenSource? centerHeartbeatCts;
         private static WebApplication? webApiApp;
         private static Task? webApiRunTask;
@@ -233,31 +235,36 @@ namespace Login
 
                 try
                 {
-                    // 新协议分发优先（强类型 + MemoryPack/JSON 双格式兼容）
-                    bool dispatched = await loginDispatcher.TryDispatch(
-                        new Login.Handlers.LoginSessionContext(session, clientSessionId), msgId, cleanPayload);
-                    if (dispatched)
+                    // P1 修复：业务消息按客户端会话按键串行（防登录/顶号/登出在 await 边界乱序）。
+                    // clientSessionId=0（内部消息）时按网关连接会话串行，跨连接并发。
+                    long serialKey = clientSessionId > 0 ? clientSessionId : -session.SessionId;
+                    await sessionSerialQueue.EnqueueAsync(serialKey, async () =>
                     {
-                        if (msgId == MessageIds.PlayerDisconnectNotif)
+                        // 新协议分发优先（强类型 + MemoryPack/JSON 双格式兼容）
+                        bool dispatched = await loginDispatcher.TryDispatch(
+                            new Login.Handlers.LoginSessionContext(session, clientSessionId), msgId, cleanPayload);
+                        if (dispatched)
                         {
-                            Shared.Log.Debug("Login 收到玩家断线通知，清理绑定 ClientSessionId:{ClientSessionId}", clientSessionId);
-                            RemoveClientGatewayBinding(clientSessionId);
+                            if (msgId == MessageIds.PlayerDisconnectNotif)
+                            {
+                                Shared.Log.Debug("Login 收到玩家断线通知，清理绑定 ClientSessionId:{ClientSessionId}", clientSessionId);
+                                RemoveClientGatewayBinding(clientSessionId);
+                            }
                         }
-                    }
-                    else if (messageHandlers.TryGetValue(msgId, out var handler))
-                    {
-                        Shared.Log.Debug("Login 开始处理消息 MsgId:{MsgId} ClientSessionId:{ClientSessionId} PayloadLength:{PayloadLength}", msgId, clientSessionId, cleanPayload.Length);
-                        await handler(cleanPayload, session, clientSessionId);
-                        Shared.Log.Debug("Login 完成处理消息 MsgId:{MsgId} ClientSessionId:{ClientSessionId}", msgId, clientSessionId);
+                        else if (messageHandlers.TryGetValue(msgId, out var handler))
+                        {
+                            Shared.Log.Debug("Login 开始处理消息 MsgId:{MsgId} ClientSessionId:{ClientSessionId} PayloadLength:{PayloadLength}", msgId, clientSessionId, cleanPayload.Length);
+                            await handler(cleanPayload, session, clientSessionId);
+                            Shared.Log.Debug("Login 完成处理消息 MsgId:{MsgId} ClientSessionId:{ClientSessionId}", msgId, clientSessionId);
 
-                        if (msgId == MessageIds.PlayerDisconnectNotif)
-                        {
-                            Shared.Log.Debug("Login 收到玩家断线通知，清理绑定 ClientSessionId:{ClientSessionId}", clientSessionId);
-                            RemoveClientGatewayBinding(clientSessionId);
+                            if (msgId == MessageIds.PlayerDisconnectNotif)
+                            {
+                                Shared.Log.Debug("Login 收到玩家断线通知，清理绑定 ClientSessionId:{ClientSessionId}", clientSessionId);
+                                RemoveClientGatewayBinding(clientSessionId);
+                            }
                         }
-                    }
-                    else
-                    {
+                        else
+                        {
                         Shared.Log.Warning($"收到未处理的消息类型 MsgId: {msgId}");
 
                         if (msgId >= 10000 && msgId < 20000)
@@ -325,6 +332,7 @@ namespace Login
                             }
                         }
                     }
+                });
                 }
                 catch (System.Exception ex)
                 {
@@ -372,7 +380,7 @@ namespace Login
             var dbHost = ConfigHelper.GetConfig<string>("DBHost") ?? "127.0.0.1";
             var dbClient = new TcpClientWrapper(dbHost, dbPort);
 
-            // 当与 DB 建立连接时，向 DB 请求当前最大 UID（用于 UID 生成器初始化）
+            // 当与 DB 建立连接时，向 DB 原子领取发号段（用于 UID 生成器初始化）
             dbClient.OnConnected += session =>
             {
                 Shared.Log.Info($"Login -> DB 已连接 (Host:{dbHost} Port:{dbPort}) SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
@@ -382,10 +390,18 @@ namespace Login
                 string dbAuthSecret = Framework.Core.Security.SecretConfig.Require("CenterNodeSharedSecret");
                 dbClient.SendInternalAuthHandshake(dbAuthSecret, $"Login-{ConfigHelper.GetConfig<string>("LoginHost") ?? "127.0.0.1"}");
 
-                var request = new Shared.Messages.Db.GetMaxUidRequest();
+                // 原子领取发号段（根治多实例 UID 碰撞）：不再"读 MAX + 本地预留段"
+                int currentRegionId = ConfigHelper.GetConfig<int>("RegionId") == 0 ? 1 : ConfigHelper.GetConfig<int>("RegionId");
+                long reserveBatch = ConfigHelper.GetConfig<long>("UidReserveBatch");
+                if (reserveBatch <= 0) reserveBatch = 1000;
+                var request = new Shared.Messages.Db.AllocateUidRangeRequest
+                {
+                    RegionId = currentRegionId,
+                    BatchSize = (int)Math.Min(reserveBatch, 1_000_000)
+                };
                 byte[] data = Shared.Json.SerializeToUtf8Bytes(request);
-                byte[] packet = Network.Routing.PacketBuilder.BuildPacket(Shared.Messages.MessageIds.DbGetMaxUidReq, data, out int totalLength);
-                Shared.Log.Info($"Login -> DB 发送获取最大UID请求 MsgId:{Shared.Messages.MessageIds.DbGetMaxUidReq} PacketLength:{totalLength}");
+                byte[] packet = Network.Routing.PacketBuilder.BuildPacket(Shared.Messages.MessageIds.DbAllocateUidRangeReq, data, out int totalLength);
+                Shared.Log.Info($"Login -> DB 领取发号段 MsgId:{Shared.Messages.MessageIds.DbAllocateUidRangeReq} Batch:{request.BatchSize} PacketLength:{totalLength}");
                 session.Send(packet.AsSpan(0, totalLength).ToArray());
                 System.Buffers.ArrayPool<byte>.Shared.Return(packet);
             };
@@ -429,7 +445,21 @@ namespace Login
                     return;
                 }
 
-                if (msgId == Shared.Messages.MessageIds.DbGetMaxUidRes)
+                if (msgId == Shared.Messages.MessageIds.DbAllocateUidRangeRes)
+                {
+                    var rangeResp = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.AllocateUidRangeResponse>(payload);
+                    if (rangeResp != null && rangeResp.Success)
+                    {
+                        int currentRegionId = ConfigHelper.GetConfig<int>("RegionId") == 0 ? 1 : ConfigHelper.GetConfig<int>("RegionId");
+                        Shared.UIDGenerator.InitializeRange(currentRegionId, rangeResp.StartSeq, rangeResp.EndSeq);
+                        Shared.Log.Info($"UID 生成器初始化完成（原子领取发号段），区服ID:{currentRegionId}，段:[{rangeResp.StartSeq}, {rangeResp.EndSeq}]");
+                    }
+                    else
+                    {
+                        Shared.Log.Error($"UID 生成器初始化失败：领取发号段失败，Message:{rangeResp?.Message ?? "空响应"}。注册将暂不可用。");
+                    }
+                }
+                else if (msgId == Shared.Messages.MessageIds.DbGetMaxUidRes)
                 {
                     var response = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.GetMaxUidResponse>(payload);
                     if (response != null)
@@ -729,6 +759,8 @@ namespace Login
             centerHeartbeatCts?.Cancel();
             centerHeartbeatCts?.Dispose();
             centerHeartbeatCts = null;
+
+            sessionSerialQueue.Stop(waitForDrain: false);
 
             var app = webApiApp;
             if (app != null)

@@ -20,6 +20,13 @@ public sealed class Entity
     // 与 dirty（客户端增量同步）分离——持久化关心"所有服务端属性变化"，dirty 只关心 SyncToClient 属性。
     private bool persistDirty;
 
+    /// <summary>
+    /// 持久化脏标记变化事件（true=首次置脏，false=已落库清除）。
+    /// 供 EntityManager 维护"待落库脏实体集合"，使 EntityPersistenceService 免全量扫描。
+    /// 回调在 <see cref="Entity.Set"/> 的锁内触发，实现须避免死锁（仅做集合增删）。
+    /// </summary>
+    internal event Action<Entity, bool>? PersistDirtyChanged;
+
     /// <summary>实体唯一 ID（场景内/节点内）。</summary>
     public long EntityId { get; }
 
@@ -40,7 +47,12 @@ public sealed class Entity
     {
         lock (dirty)
         {
+            if (!persistDirty)
+            {
+                return;
+            }
             persistDirty = false;
+            PersistDirtyChanged?.Invoke(this, false);
         }
     }
 
@@ -52,7 +64,12 @@ public sealed class Entity
     {
         lock (dirty)
         {
+            if (persistDirty)
+            {
+                return;
+            }
             persistDirty = true;
+            PersistDirtyChanged?.Invoke(this, true);
         }
     }
 
@@ -152,7 +169,12 @@ public sealed class Entity
             }
 
             // 持久化脏标记：任何属性变更都需周期落库（与客户端增量 dirty 分离）。
-            persistDirty = true;
+            // 仅在首次置脏时通知集合维护方，避免每属性变更都触发回调。
+            if (!persistDirty)
+            {
+                persistDirty = true;
+                PersistDirtyChanged?.Invoke(this, true);
+            }
 
             // 属性变更事件（脚本层 OnPropertyChanged 回调，对标 KBE onPropertyChange）
             PropertyChanged?.Invoke(name, old, value);

@@ -115,11 +115,13 @@ public class TcpClientWrapper : INetworkClient
             {
                 Shared.Log.Warning($"[TcpClientWrapper] 连接异常断开 Host:{host} Port:{port} SessionId:{session.SessionId} Exception:{ex}");
                 OnDisconnected?.Invoke(session, ex.Message);
+                session = null; // 连接生命周期结束：重连间隙发送走"无会话"路径
                 return;
             }
 
             Shared.Log.Info($"[TcpClientWrapper] 连接关闭 Host:{host} Port:{port} SessionId:{session.SessionId}");
             OnDisconnected?.Invoke(session, "连接关闭");
+            session = null; // 连接生命周期结束：重连间隙发送走"无会话"路径
         }
     }
 

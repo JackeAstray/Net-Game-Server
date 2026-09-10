@@ -44,20 +44,7 @@ namespace DB.Handlers
                 // 改为"先按长度降序、再按字典序降序"得到数值最大（纯数字、无前导零的定宽/变宽 UID 均正确）。
                 // P2 修复（空表）：Users 表为空或全无 UniqueId 时，MaxAsync 会抛 "Sequence contains no elements"，
                 // 产生异常日志噪音并回错包；先 Any 判定，空表返回 MaxUid=0（正是正确的初始序号，调用方默认值一致）。
-                long maxSequence = 0;
-                if (await dbContext.Users.AnyAsync(u => !string.IsNullOrWhiteSpace(u.UniqueId)))
-                {
-                    string? maxUniqueId = await dbContext.Users
-                        .Where(u => !string.IsNullOrWhiteSpace(u.UniqueId))
-                        .OrderByDescending(u => u.UniqueId.Length)
-                        .ThenByDescending(u => u.UniqueId)
-                        .Select(u => u.UniqueId)
-                        .FirstOrDefaultAsync();
-                    if (maxUniqueId != null && long.TryParse(maxUniqueId, out long maxUid))
-                    {
-                        maxSequence = maxUid % 100000000L;
-                    }
-                }
+                long maxSequence = await ComputeMaxUserSequenceAsync(dbContext);
 
                 // 构造响应消息格式
                 var response = new GetMaxUidResponse
@@ -76,6 +63,89 @@ namespace DB.Handlers
             {
                 Log.Error($"获取最大UID异常: {ex}");
                 SendFailureResponse(session, Shared.Messages.MessageIds.DbGetMaxUidRes, "获取最大UID失败，服务器内部错误");
+            }
+        }
+
+        /// <summary>
+        /// 计算 Users 表当前最大 UID 序列号（先按长度降序、再按字典序降序取数值最大；空表返回 0）。
+        /// 供 GetMaxUid 与发号计数器初始化复用。
+        /// </summary>
+        private static async Task<long> ComputeMaxUserSequenceAsync(DefaultDbContext dbContext)
+        {
+            if (await dbContext.Users.AnyAsync(u => !string.IsNullOrWhiteSpace(u.UniqueId)))
+            {
+                string? maxUniqueId = await dbContext.Users
+                    .Where(u => !string.IsNullOrWhiteSpace(u.UniqueId))
+                    .OrderByDescending(u => u.UniqueId.Length)
+                    .ThenByDescending(u => u.UniqueId)
+                    .Select(u => u.UniqueId)
+                    .FirstOrDefaultAsync();
+                if (maxUniqueId != null && long.TryParse(maxUniqueId, out long maxUid))
+                {
+                    return maxUid % 100000000L;
+                }
+            }
+            return 0;
+        }
+
+        /// <summary>
+        /// 原子领取发号段（根治多 Login/DB 实例 UID 碰撞）：
+        /// 对 UidCounters 单行表执行 SELECT ... FOR UPDATE 锁行，事务内递增并返回 [StartSeq, EndSeq] 段。
+        /// 多实例并发领取互斥，各实例拿到不重叠的发号段。
+        /// </summary>
+        public static async Task HandleAllocateUidRangeRequest(ISession session, AllocateUidRangeRequest? request)
+        {
+            if (request == null || request.BatchSize <= 0)
+            {
+                Log.Warning("收到无效的 AllocateUidRangeRequest。");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbAllocateUidRangeRes, "无效的发号段请求");
+                return;
+            }
+
+            // 钳制异常大批次，防单次请求独占整段序列空间
+            int batch = Math.Min(request.BatchSize, 1_000_000);
+            try
+            {
+                var factory = Program.ServiceProvider.GetRequiredService<IServiceScopeFactory>();
+                using var scope = factory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
+
+                await using var tx = await dbContext.Database.BeginTransactionAsync();
+                var counter = await dbContext.UidCounters
+                    .FromSqlRaw("SELECT * FROM UidCounters WHERE Id = 1 FOR UPDATE")
+                    .FirstOrDefaultAsync();
+                if (counter == null)
+                {
+                    // 初始化行：从 Users 表当前最大序列续接（兼容存量数据）
+                    long maxSeq = await ComputeMaxUserSequenceAsync(dbContext);
+                    counter = new Shared.Data.UidCounter { Id = 1, RegionId = request.RegionId, CurrentValue = maxSeq };
+                    dbContext.UidCounters.Add(counter);
+                }
+
+                long start = counter.CurrentValue + 1;
+                long end = start + batch - 1;
+                if (end > 99_999_999L)
+                {
+                    await tx.RollbackAsync();
+                    Log.Error($"UID 序列号越界（>99,999,999），拒绝领取段 Start:{start} Batch:{batch}");
+                    SendFailureResponse(session, Shared.Messages.MessageIds.DbAllocateUidRangeRes, "UID 序列号越界，请扩容区服");
+                    return;
+                }
+
+                counter.RegionId = request.RegionId;
+                counter.CurrentValue = end;
+                await dbContext.SaveChangesAsync();
+                await tx.CommitAsync();
+
+                var response = new AllocateUidRangeResponse { Success = true, StartSeq = start, EndSeq = end };
+                byte[] data = Shared.Json.SerializeToUtf8Bytes(response);
+                byte[] packet = Network.Routing.PacketBuilder.BuildPacket(Shared.Messages.MessageIds.DbAllocateUidRangeRes, data, out int totalLength);
+                Network.PacketSender.Send(session, packet, totalLength);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"领取发号段异常: {ex}");
+                SendFailureResponse(session, Shared.Messages.MessageIds.DbAllocateUidRangeRes, "领取发号段失败，服务器内部错误");
             }
         }
 

@@ -108,7 +108,11 @@ namespace DB
                         }
                     }
 
-                    Shared.UIDGenerator.Initialize(regionId, currentMaxSequence);
+                    // 与 Login 侧 UIDGenerator.Initialize 对齐：预留发号段（默认 1000），
+                    // 保证本进程发号不越过段边界（多实例碰撞风险由"读 MAX + 预留段"降级，根治需 DB 原子领取段）
+                    long uidReserveBatch = Shared.ConfigHelper.GetConfig<long>("UidReserveBatch");
+                    if (uidReserveBatch <= 0) uidReserveBatch = 1000;
+                    Shared.UIDGenerator.Initialize(regionId, currentMaxSequence, uidReserveBatch);
 
                     InitializeRedisConnection();
 
@@ -228,6 +232,7 @@ namespace DB
             // 创建路由器并注册各类数据库相关的消息处理器
             var router = new Routing.MessageRouter();
             router.RegisterHandler(MessageIds.DbGetMaxUidReq, async (session, data) => await Handlers.DbQueryHandler.HandleGetMaxUidRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.GetMaxUidRequest>(data.Span)));
+            router.RegisterHandler(MessageIds.DbAllocateUidRangeReq, async (session, data) => await Handlers.DbQueryHandler.HandleAllocateUidRangeRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.AllocateUidRangeRequest>(data.Span)));
             router.RegisterHandler(MessageIds.DbLoginVerifyReq, async (session, data) => await Handlers.DbQueryHandler.HandleLoginVerifyRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.LoginVerifyRequest>(data.Span)));
             router.RegisterHandler(MessageIds.DbRegisterVerifyReq, async (session, data) => await Handlers.DbQueryHandler.HandleRegisterVerifyRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.RegisterVerifyRequest>(data.Span)));
             router.RegisterHandler(MessageIds.DbAccountQueryReq, async (session, data) => await Handlers.DbQueryHandler.HandleAccountQueryRequest(session, Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Db.AccountQueryRequest>(data.Span)));

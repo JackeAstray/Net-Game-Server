@@ -11,6 +11,9 @@ namespace Center
     {
         private static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>>? handlers;
         private static System.Threading.CancellationTokenSource? maintenanceLoopCts;
+        /// <summary>会话串行队列（P1 修复）：同一客户端会话的业务消息按键串行执行，
+        /// 消除 AsyncEventGuard await 边界的并发交错（如顶号/登出/登录乱序）。</summary>
+        private static readonly Framework.Core.OrderedTaskQueue sessionSerialQueue = new("Center-SessionSerial");
 
         /// <summary>匹配/房间处理器实例（管理台房间接口用）。</summary>
         public static Center.Handlers.MatchHandler? Match { get; private set; }
@@ -173,83 +176,89 @@ namespace Center
                     return;
                 }
 
-                // 新协议分发优先（强类型 + MemoryPack/JSON 双格式兼容）
-                var centerCtx = new Center.Handlers.CenterSessionContext(session, originalSessionId)
+                // 新协议分发优先（强类型 + MemoryPack/JSON 双格式兼容）。
+                // P1 修复：业务分发/处理器整体按键（客户端会话）串行执行，防 await 边界并发交错。
+                // 内部消息（originalSessionId=0）按网关连接会话串行，跨连接并发。
+                long serialKey = originalSessionId > 0 ? originalSessionId : -session.SessionId;
+                await sessionSerialQueue.EnqueueAsync(serialKey, async () =>
                 {
-                    RoutedUserId = routedUserId,
-                    RoutedUid = routedUid,
-                    RoutedNickname = routedNickname
-                };
-                if (await centerDispatcher.TryDispatch(centerCtx, msgId, payload))
-                {
-                    Log.Debug($"Center 新协议分发完成 MsgId:{msgId} ClientSessionId:{originalSessionId}");
-                }
-                else if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
-                {
-                    try
+                    var centerCtx = new Center.Handlers.CenterSessionContext(session, originalSessionId)
                     {
-                        Log.Debug("Center 开始处理消息 MsgId:{MsgId} SessionId:{SessionId} OriginalSessionId:{OriginalSessionId} PayloadLength:{PayloadLength}", msgId, session.SessionId, originalSessionId, payload.Length);
-                        await handlerAction(payload, session, originalSessionId);
-                        Log.Debug("Center 完成处理消息 MsgId:{MsgId} SessionId:{SessionId} OriginalSessionId:{OriginalSessionId}", msgId, session.SessionId, originalSessionId);
+                        RoutedUserId = routedUserId,
+                        RoutedUid = routedUid,
+                        RoutedNickname = routedNickname
+                    };
+                    if (await centerDispatcher.TryDispatch(centerCtx, msgId, payload))
+                    {
+                        Log.Debug($"Center 新协议分发完成 MsgId:{msgId} ClientSessionId:{originalSessionId}");
                     }
-                    catch (Exception ex)
+                    else if (handlers != null && handlers.TryGetValue(msgId, out var handlerAction))
                     {
-                        Log.Error($"Center 处理消息 ({msgId}) 发生异常: " + ex);
+                        try
+                        {
+                            Log.Debug("Center 开始处理消息 MsgId:{MsgId} SessionId:{SessionId} OriginalSessionId:{OriginalSessionId} PayloadLength:{PayloadLength}", msgId, session.SessionId, originalSessionId, payload.Length);
+                            await handlerAction(payload, session, originalSessionId);
+                            Log.Debug("Center 完成处理消息 MsgId:{MsgId} SessionId:{SessionId} OriginalSessionId:{OriginalSessionId}", msgId, session.SessionId, originalSessionId);
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Error($"Center 处理消息 ({msgId}) 发生异常: " + ex);
+                        }
                     }
-                }
-                else
-                {
-                    Log.Warning($"Center 收到未知 MsgId {msgId}");
-
-                    if (originalSessionId > 0 && msgId >= 30000 && msgId < 40000)
+                    else
                     {
-                        int responseMsgId = msgId switch
-                        {
-                            Shared.Messages.MessageIds.CenterMatchReq => Shared.Messages.MessageIds.CenterMatchRes,
-                            Shared.Messages.MessageIds.CenterCreateRoomReq => Shared.Messages.MessageIds.CenterCreateRoomRes,
-                            Shared.Messages.MessageIds.CenterListRoomsReq => Shared.Messages.MessageIds.CenterListRoomsRes,
-                            Shared.Messages.MessageIds.CenterJoinRoomReq => Shared.Messages.MessageIds.CenterJoinRoomRes,
-                            Shared.Messages.MessageIds.CenterCloseRoomReq => Shared.Messages.MessageIds.CenterCloseRoomRes,
-                            Shared.Messages.MessageIds.CenterUpdateRoomSettingsReq => Shared.Messages.MessageIds.CenterUpdateRoomSettingsRes,
-                            Shared.Messages.MessageIds.CenterStartRoomGameReq => Shared.Messages.MessageIds.CenterStartRoomGameRes,
-                            _ => 0
-                        };
+                        Log.Warning($"Center 收到未知 MsgId {msgId}");
 
-                        if (responseMsgId > 0)
+                        if (originalSessionId > 0 && msgId >= 30000 && msgId < 40000)
                         {
-                            object unknownResponse = responseMsgId switch
+                            int responseMsgId = msgId switch
                             {
-                                Shared.Messages.MessageIds.CenterListRoomsRes => new Shared.Messages.Center.CenterListRoomsResponse
-                                {
-                                    Success = false,
-                                    Message = $"未支持的中心消息类型: {msgId}",
-                                    Rooms = Array.Empty<Shared.Messages.Center.RoomInfo>()
-                                },
-                                Shared.Messages.MessageIds.CenterCloseRoomRes => new Shared.Messages.Center.CenterCloseRoomResponse
-                                {
-                                    Success = false,
-                                    Message = $"未支持的中心消息类型: {msgId}"
-                                },
-                                _ => new Shared.Messages.Center.CenterMatchResponse
-                                {
-                                    Success = false,
-                                    Message = $"未支持的中心消息类型: {msgId}"
-                                }
+                                Shared.Messages.MessageIds.CenterMatchReq => Shared.Messages.MessageIds.CenterMatchRes,
+                                Shared.Messages.MessageIds.CenterCreateRoomReq => Shared.Messages.MessageIds.CenterCreateRoomRes,
+                                Shared.Messages.MessageIds.CenterListRoomsReq => Shared.Messages.MessageIds.CenterListRoomsRes,
+                                Shared.Messages.MessageIds.CenterJoinRoomReq => Shared.Messages.MessageIds.CenterJoinRoomRes,
+                                Shared.Messages.MessageIds.CenterCloseRoomReq => Shared.Messages.MessageIds.CenterCloseRoomRes,
+                                Shared.Messages.MessageIds.CenterUpdateRoomSettingsReq => Shared.Messages.MessageIds.CenterUpdateRoomSettingsRes,
+                                Shared.Messages.MessageIds.CenterStartRoomGameReq => Shared.Messages.MessageIds.CenterStartRoomGameRes,
+                                _ => 0
                             };
-                            byte[] unknownPayload = Shared.Json.SerializeToUtf8Bytes(unknownResponse);
-                            byte[] routedUnknownPayload = Shared.RouteMetadata.AttachClientSessionId(unknownPayload, originalSessionId);
-                            byte[] unknownPacket = Network.Routing.PacketBuilder.BuildPacket(responseMsgId, routedUnknownPayload, out int unknownLength);
-                            try
+
+                            if (responseMsgId > 0)
                             {
-                                session.Send(unknownPacket.AsSpan(0, unknownLength).ToArray());
-                            }
-                            finally
-                            {
-                                System.Buffers.ArrayPool<byte>.Shared.Return(unknownPacket);
+                                object unknownResponse = responseMsgId switch
+                                {
+                                    Shared.Messages.MessageIds.CenterListRoomsRes => new Shared.Messages.Center.CenterListRoomsResponse
+                                    {
+                                        Success = false,
+                                        Message = $"未支持的中心消息类型: {msgId}",
+                                        Rooms = Array.Empty<Shared.Messages.Center.RoomInfo>()
+                                    },
+                                    Shared.Messages.MessageIds.CenterCloseRoomRes => new Shared.Messages.Center.CenterCloseRoomResponse
+                                    {
+                                        Success = false,
+                                        Message = $"未支持的中心消息类型: {msgId}"
+                                    },
+                                    _ => new Shared.Messages.Center.CenterMatchResponse
+                                    {
+                                        Success = false,
+                                        Message = $"未支持的中心消息类型: {msgId}"
+                                    }
+                                };
+                                byte[] unknownPayload = Shared.Json.SerializeToUtf8Bytes(unknownResponse);
+                                byte[] routedUnknownPayload = Shared.RouteMetadata.AttachClientSessionId(unknownPayload, originalSessionId);
+                                byte[] unknownPacket = Network.Routing.PacketBuilder.BuildPacket(responseMsgId, routedUnknownPayload, out int unknownLength);
+                                try
+                                {
+                                    session.Send(unknownPacket.AsSpan(0, unknownLength).ToArray());
+                                }
+                                finally
+                                {
+                                    System.Buffers.ArrayPool<byte>.Shared.Return(unknownPacket);
+                                }
                             }
                         }
                     }
-                }
+                });
             });
 
             await tcpServer.StartAsync(port);
@@ -307,6 +316,7 @@ namespace Center
             maintenanceLoopCts?.Cancel();
             maintenanceLoopCts?.Dispose();
             maintenanceLoopCts = null;
+            sessionSerialQueue.Stop(waitForDrain: false);
             Log.Info("Center 后台维护循环已停止。");
             return Task.CompletedTask;
         }
