@@ -110,18 +110,40 @@ public sealed class LeaderElection : IDisposable
                 lock (electionGate)
                 {
                     if (isLeader) continue;
-                    // 尝试抢占（原 Leader 崩溃后锁自动释放）
-                    var fs = new FileStream(lockFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-                    // 持有锁：把底层句柄保存，替代原 lockStream
-                    lockStream?.Dispose();
-                    lockStream = fs;
-                    isLeader = true;
-                    WriteLeaderMarker();
-                    Log.Info($"Leader 选举: {nodeId} 接管成为 Leader（原 Leader 已下线）");
-                    LeadershipChanged?.Invoke(true);
-                    // V20 修复：追踪接管后启动的心跳任务（Dispose 时统一回收）
-                    var takeoverHeartbeat = Task.Run(HeartbeatLoopAsync);
-                    backgroundTasks.Add(takeoverHeartbeat);
+                    FileStream? acquired = null;
+                    try
+                    {
+                        // 尝试抢占（原 Leader 崩溃后锁自动释放）
+                        acquired = new FileStream(lockFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+                        // 持有锁：把底层句柄保存，替代原 lockStream
+                        lockStream?.Dispose();
+                        lockStream = acquired;
+                        acquired = null; // 所有权已转移给 lockStream
+                        isLeader = true;
+                        WriteLeaderMarker();
+                        Log.Info($"Leader 选举: {nodeId} 接管成为 Leader（原 Leader 已下线）");
+                        LeadershipChanged?.Invoke(true);
+                        // V20 修复：追踪接管后启动的心跳任务（Dispose 时统一回收）
+                        var takeoverHeartbeat = Task.Run(HeartbeatLoopAsync);
+                        backgroundTasks.Add(takeoverHeartbeat);
+                    }
+                    catch (IOException)
+                    {
+                        // 锁仍被占用（抢占失败）：回滚已替换的句柄，保持 Standby 继续等待
+                        acquired?.Dispose();
+                        lockStream?.Dispose();
+                        lockStream = null;
+                        isLeader = false;
+                    }
+                    catch (Exception)
+                    {
+                        // 写标记等异常：回滚为 Standby 并重新抛出，避免自认 Leader 但锁不可用（防双主）
+                        acquired?.Dispose();
+                        lockStream?.Dispose();
+                        lockStream = null;
+                        isLeader = false;
+                        throw;
+                    }
                 }
             }
             catch (IOException)

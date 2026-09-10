@@ -20,8 +20,10 @@ public sealed class FileEntityPersistenceStore : IEntityPersistenceStore
     private static readonly Regex EntityTypePattern =
         new("^[A-Za-z0-9_]+$", RegexOptions.Compiled);
 
-    /// <summary>每实体写锁：同一实体的并发 Save 串行化，避免 FileMode.Create 冲突。</summary>
-    private readonly ConcurrentDictionary<long, object> saveLocks = new();
+    /// <summary>分片写锁：固定数量（2 的幂），按 entityId 取模分片。
+    /// 同一实体并发 Save 串行化；替代每实体一锁的无界字典（实体 ID 单调增长会导致字典永不回收）。</summary>
+    private const int LockStripes = 1024;
+    private readonly object[] saveLocks = System.Linq.Enumerable.Range(0, LockStripes).Select(_ => new object()).ToArray();
 
     public string Name => "File";
 
@@ -61,7 +63,7 @@ public sealed class FileEntityPersistenceStore : IEntityPersistenceStore
         File.Move(tmp, path, overwrite: true);
     }
 
-    private object GetSaveLock(long entityId) => saveLocks.GetOrAdd(entityId, static _ => new object());
+    private object GetSaveLock(long entityId) => saveLocks[(int)(entityId & (LockStripes - 1))];
 
     public void Save(string entityType, long entityId, byte[] serializedProps)
     {

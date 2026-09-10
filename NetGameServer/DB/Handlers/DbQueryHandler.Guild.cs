@@ -47,7 +47,9 @@ namespace DB.Handlers
                 return;
             }
 
-            await RunPerUser("guild-create:" + name, async () =>
+            // 按用户串行（与加入/我的公会同 key）：同一用户并发创建不同名公会时第二个请求会看到已加入被拒，
+            // 消除"一人一公会"检查的并发窗口；名称唯一性由 Name 唯一索引兜底。
+            await RunPerUser("guild-member:" + request.UserId, async () =>
             {
                 using var scope = await CreateScopeAsync();
                 var context = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
@@ -74,6 +76,8 @@ namespace DB.Handlers
                         Declaration = declaration,
                         CreatedAt = DateTime.UtcNow
                     };
+                    // 公会+Owner 成员原子写入：二次 SaveChanges 前崩溃会留下无 Owner 的孤儿公会
+                    await using var transaction = await context.Database.BeginTransactionAsync();
                     context.Guilds.Add(guild);
                     await context.SaveChangesAsync();
 
@@ -85,6 +89,7 @@ namespace DB.Handlers
                         JoinedAt = DateTime.UtcNow
                     });
                     await context.SaveChangesAsync();
+                    await transaction.CommitAsync();
 
                     SendDbResponse(session, MessageIds.DbGuildCreateRes, new DbGuildCreateResponse
                     {

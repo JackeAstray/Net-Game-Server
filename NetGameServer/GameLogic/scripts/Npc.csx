@@ -62,7 +62,8 @@ public class NpcScript : EntityScriptBase
         // 注：原版基于 frame 计算正弦偏移；改为基于实时 tick（ElapseMs）更稳定
         // 保留 frame 参数仅为兼容接口
         float baseX = baseXs.TryGetValue(entity.EntityId, out var bx) ? bx : 0f;
-        float newX = baseX + (float)Math.Sin(Environment.TickCount64 / 1000.0) * 30;
+        // baseX 兼作相位偏移：所有 NPC 不再同一时刻同相摆动（原版相位全同步，移动模式完全一致）
+        float newX = baseX + (float)Math.Sin(Environment.TickCount64 / 1000.0 + baseX) * 30;
         entity.Set("Position", new Float3(newX, 0, pos.Z));
     }
 

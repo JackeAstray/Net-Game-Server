@@ -230,26 +230,23 @@ namespace DB.Handlers
 
                 var response = new DbGetBlacklistResponse();
 
-                var blacklistRows = await dbContext.Blacklists.Where(b => b.UserId == request.UserId).ToListAsync();
-                var blockedUserIds = blacklistRows.Select(b => b.BlockedUserId).Distinct().ToList();
-                var blockedUsers = blockedUserIds.Count == 0
-                    ? new System.Collections.Generic.Dictionary<int, Shared.Data.User>()
-                    : await dbContext.Users
-                        .Where(u => blockedUserIds.Contains(u.Id))
-                        .ToDictionaryAsync(u => u.Id, u => u);
+                // 单次 LEFT JOIN 合并两次查询 + AsNoTracking（行为等价：保留无用户记录，字段为空串）
+                var blacklistRows = await (
+                    from b in dbContext.Blacklists.AsNoTracking()
+                    join u in dbContext.Users.AsNoTracking() on b.BlockedUserId equals u.Id into gj
+                    from u in gj.DefaultIfEmpty()
+                    where b.UserId == request.UserId
+                    select new { Black = b, User = u }
+                ).ToListAsync();
 
                 response.Success = true;
                 response.Message = "获取成功";
-                response.Blacklists = blacklistRows.Select(b =>
+                response.Blacklists = blacklistRows.Select(x => new DbBlacklistItem
                 {
-                    blockedUsers.TryGetValue(b.BlockedUserId, out var user);
-                    return new DbBlacklistItem
-                    {
-                        BlockedUserId = b.BlockedUserId,
-                        BlockedUniqueId = user?.UniqueId ?? string.Empty,
-                        BlockedNickname = user?.Nickname ?? string.Empty,
-                        AddTime = b.AddTime
-                    };
+                    BlockedUserId = x.Black.BlockedUserId,
+                    BlockedUniqueId = x.User?.UniqueId ?? string.Empty,
+                    BlockedNickname = x.User?.Nickname ?? string.Empty,
+                    AddTime = x.Black.AddTime
                 }).ToList();
 
                 SendDbResponse(session, Shared.Messages.MessageIds.DbGetBlacklistRes, response, requestId);
@@ -519,31 +516,27 @@ namespace DB.Handlers
                     return;
                 }
 
-                var applyRows = await dbContext.FriendRequests
-                    .Where(r => r.ReceiverUserId == request.UserId && r.Status == "Pending")
-                    .OrderByDescending(r => r.CreateTimeUtc)
-                    .ToListAsync();
-
-                var requesterIds = applyRows.Select(r => r.RequesterUserId).Distinct().ToList();
-                var requesters = requesterIds.Count == 0
-                    ? new System.Collections.Generic.Dictionary<int, Shared.Data.User>()
-                    : await dbContext.Users.Where(u => requesterIds.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u);
+                // 单次 LEFT JOIN 合并两次查询 + AsNoTracking（行为等价：保留无用户记录，字段为空串）
+                var applyRows = await (
+                    from r in dbContext.FriendRequests.AsNoTracking()
+                    join u in dbContext.Users.AsNoTracking() on r.RequesterUserId equals u.Id into gj
+                    from u in gj.DefaultIfEmpty()
+                    where r.ReceiverUserId == request.UserId && r.Status == "Pending"
+                    orderby r.CreateTimeUtc descending
+                    select new { Apply = r, Requester = u }
+                ).ToListAsync();
 
                 response.Success = true;
                 response.Message = "获取成功";
-                response.Applies = applyRows.Select(r =>
+                response.Applies = applyRows.Select(x => new DbFriendApplyItem
                 {
-                    requesters.TryGetValue(r.RequesterUserId, out var requester);
-                    return new DbFriendApplyItem
-                    {
-                        ApplyId = r.Id,
-                        RequesterUserId = r.RequesterUserId,
-                        RequesterUniqueId = requester?.UniqueId ?? string.Empty,
-                        RequesterNickname = requester?.Nickname ?? string.Empty,
-                        Message = r.Message ?? string.Empty,
-                        Status = r.Status ?? string.Empty,
-                        CreateTimeUtc = r.CreateTimeUtc
-                    };
+                    ApplyId = x.Apply.Id,
+                    RequesterUserId = x.Apply.RequesterUserId,
+                    RequesterUniqueId = x.Requester?.UniqueId ?? string.Empty,
+                    RequesterNickname = x.Requester?.Nickname ?? string.Empty,
+                    Message = x.Apply.Message ?? string.Empty,
+                    Status = x.Apply.Status ?? string.Empty,
+                    CreateTimeUtc = x.Apply.CreateTimeUtc
                 }).ToList();
 
                 SendDbResponse(session, Shared.Messages.MessageIds.DbGetFriendApplyListRes, response, requestId);

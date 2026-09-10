@@ -25,6 +25,8 @@ namespace Login.Managers
         private readonly ConcurrentDictionary<int, long> userSessions = new ConcurrentDictionary<int, long>();
         private readonly ConcurrentDictionary<long, int> sessionUsers = new ConcurrentDictionary<long, int>();
         private readonly ConcurrentDictionary<int, CancellationTokenSource> offlineTasks = new();
+        /// <summary>顶号/断开/强退共享锁：串行化 userSessions+sessionUsers 双字典的"读-删-写"临界区，防并发顶号产生幽灵会话。</summary>
+        private readonly object sessionGate = new();
 
         private SessionManager() { }
 
@@ -36,6 +38,8 @@ namespace Login.Managers
         /// <returns>返回一个表示操作是否成功的任务</returns>
         public async Task<bool> OnUserLoginAsync(User user, long clientSessionId)
         {
+            lock (sessionGate)
+            {
             // 取消可能存在的该用户离线倒计时任务
             if (offlineTasks.TryRemove(user.Id, out var cts))
             {
@@ -69,6 +73,7 @@ namespace Login.Managers
 
             userSessions[user.Id] = clientSessionId;
             sessionUsers[clientSessionId] = user.Id;
+            }
             return true;
         }
 
@@ -81,6 +86,8 @@ namespace Login.Managers
         /// <param name="clientSessionId">断开连接的客户端会话ID</param>
         public void OnSessionDisconnected(long clientSessionId)
         {
+            lock (sessionGate)
+            {
             if (sessionUsers.TryGetValue(clientSessionId, out var userId))
             {
                 Shared.Log.Info($"用户{userId}断开连接。正在处理离线状态。");
@@ -115,6 +122,7 @@ namespace Login.Managers
                     });
                 }
             }
+            }
         }
 
         /// <summary>
@@ -129,10 +137,18 @@ namespace Login.Managers
                 cts.Dispose();
             }
 
-            userSessions.TryRemove(userId, out var sId);
+            long sId;
+            lock (sessionGate)
+            {
+            userSessions.TryRemove(userId, out sId);
             if (sId != 0)
             {
                 sessionUsers.TryRemove(sId, out _);
+            }
+            }
+
+            if (sId != 0)
+            {
                 // 主动踢下线通知
                 var kickMessage = new Shared.Messages.Login.KickedOffMessage
                 {

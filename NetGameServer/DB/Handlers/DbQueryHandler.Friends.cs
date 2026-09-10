@@ -313,27 +313,25 @@ namespace DB.Handlers
 
                 var response = new DbGetFriendsResponse();
 
-                var friendsList = await dbContext.Friends.Where(f => f.UserId == request.UserId).ToListAsync();
-                var friendUserIds = friendsList.Select(f => f.FriendUserId).Distinct().ToList();
-                var friendUsers = friendUserIds.Count == 0
-                    ? new System.Collections.Generic.Dictionary<int, Shared.Data.User>()
-                    : await dbContext.Users
-                        .Where(u => friendUserIds.Contains(u.Id))
-                        .ToDictionaryAsync(u => u.Id, u => u);
+                // 单次 LEFT JOIN 合并两次查询（原 Friends 全量 + Users IN 子句），AsNoTracking 免跟踪开销；
+                // LEFT JOIN 保留已删用户的旧好友记录（UniqueId/Nickname 为空串），与原行为等价
+                var friendsList = await (
+                    from f in dbContext.Friends.AsNoTracking()
+                    join u in dbContext.Users.AsNoTracking() on f.FriendUserId equals u.Id into gj
+                    from u in gj.DefaultIfEmpty()
+                    where f.UserId == request.UserId
+                    select new { Friend = f, User = u }
+                ).ToListAsync();
 
                 response.Success = true;
                 response.Message = "获取成功";
-                response.Friends = friendsList.Select(f =>
+                response.Friends = friendsList.Select(x => new DbFriendItem
                 {
-                    friendUsers.TryGetValue(f.FriendUserId, out var user);
-                    return new DbFriendItem
-                    {
-                        FriendUserId = f.FriendUserId,
-                        FriendUniqueId = user?.UniqueId ?? string.Empty,
-                        FriendNickname = user?.Nickname ?? string.Empty,
-                        Remark = f.Remark,
-                        AddTime = f.AddTime
-                    };
+                    FriendUserId = x.Friend.FriendUserId,
+                    FriendUniqueId = x.User?.UniqueId ?? string.Empty,
+                    FriendNickname = x.User?.Nickname ?? string.Empty,
+                    Remark = x.Friend.Remark,
+                    AddTime = x.Friend.AddTime
                 }).ToList();
 
                 SendDbResponse(session, Shared.Messages.MessageIds.DbGetFriendsRes, response, requestId);

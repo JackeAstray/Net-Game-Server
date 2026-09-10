@@ -20,7 +20,12 @@ public sealed class RedisEntityPersistenceStore : IEntityPersistenceStore
 
     public RedisEntityPersistenceStore(string connectionString, int database = 0)
     {
-        this.redis = ConnectionMultiplexer.Connect(connectionString);
+        // 启动不因 Redis 不可达而卡死/抛异常：AbortOnConnectFail=false + 5s 连接超时，
+        // Redis 恢复后 StackExchange.Redis 自动重连。
+        var options = ConfigurationOptions.Parse(connectionString);
+        options.AbortOnConnectFail = false;
+        options.ConnectTimeout = 5000;
+        this.redis = ConnectionMultiplexer.Connect(options);
         this.database = database;
     }
 

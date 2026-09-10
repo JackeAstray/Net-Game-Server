@@ -12,6 +12,10 @@ public sealed class PostgreSqlEntityPersistenceStore : IEntityPersistenceStore
 {
     private readonly string connectionString;
 
+    /// <summary>进程级建表仅执行一次（原每次 Save 都发 CREATE TABLE IF NOT EXISTS DDL，浪费往返）。</summary>
+    private static bool tableEnsured;
+    private static readonly object tableGate = new();
+
     public string Name => "PostgreSql";
 
     public PostgreSqlEntityPersistenceStore(string connectionString)
@@ -49,11 +53,29 @@ public sealed class PostgreSqlEntityPersistenceStore : IEntityPersistenceStore
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>进程内只建表一次（double-checked locking）。</summary>
+    private void EnsureTableOnce(Npgsql.NpgsqlConnection conn)
+    {
+        if (tableEnsured)
+        {
+            return;
+        }
+        lock (tableGate)
+        {
+            if (tableEnsured)
+            {
+                return;
+            }
+            EnsureTable(conn);
+            tableEnsured = true;
+        }
+    }
+
     public void Save(string entityType, long entityId, byte[] serializedProps)
     {
         using var conn = new Npgsql.NpgsqlConnection(connectionString);
         conn.Open();
-        EnsureTable(conn);
+        EnsureTableOnce(conn);
         using var cmd = new Npgsql.NpgsqlCommand(UpsertSql, conn);
         cmd.Parameters.AddWithValue("@type", entityType);
         cmd.Parameters.AddWithValue("@id", entityId);

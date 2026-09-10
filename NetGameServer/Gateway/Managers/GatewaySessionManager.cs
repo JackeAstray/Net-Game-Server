@@ -137,12 +137,17 @@ namespace Gateway.Managers
         {
             var state = sessionInboundRates.GetOrAdd(sessionId, _ => new SessionRateState { WindowStartMs = Environment.TickCount64 });
             long now = Environment.TickCount64;
-            if (now - state.WindowStartMs >= 1000)
+
+            // P6 加固：窗口重置与计数递增原子化（原实现多线程下 ++ 丢失/限速失效）。
+            // 窗口过期时仅一个线程能 CAS 成功并清零计数，其余线程直接进入新窗口计数。
+            long window = Volatile.Read(ref state.WindowStartMs);
+            if (window + 1000 <= now &&
+                Interlocked.CompareExchange(ref state.WindowStartMs, now, window) == window)
             {
-                state.WindowStartMs = now;
-                state.Count = 0;
+                Volatile.Write(ref state.Count, 0);
             }
-            return ++state.Count <= limitPerSecond;
+
+            return Interlocked.Increment(ref state.Count) <= limitPerSecond;
         }
 
         /// <summary>
@@ -201,8 +206,17 @@ namespace Gateway.Managers
                     {
                         // 每会话独立池化副本：共享缓冲不能交给多个 SendFromPool（会竞争归还）
                         byte[] copy = System.Buffers.ArrayPool<byte>.Shared.Rent(totalLength);
-                        packet.AsSpan(0, totalLength).CopyTo(copy);
-                        tcp.SendFromPool(copy, totalLength);
+                        try
+                        {
+                            packet.AsSpan(0, totalLength).CopyTo(copy);
+                            tcp.SendFromPool(copy, totalLength);
+                        }
+                        catch
+                        {
+                            // 拷贝/发送异常时归还副本，防池化缓冲泄漏
+                            System.Buffers.ArrayPool<byte>.Shared.Return(copy);
+                            throw;
+                        }
                     }
                     else
                     {

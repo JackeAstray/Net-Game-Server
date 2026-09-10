@@ -120,31 +120,9 @@ internal static class CenterHttpServer
         app.UseMiddleware<CenterApiKeyAuthMiddleware>(apiKeys, Array.Empty<string>());
 
         // 管理台首页（对标 KBE guiconsole 的 Web 简化版）：轮询 health/nodes/summary/rooms
-        // dashboard 也需要 Key 保护：客户端需在 URL 上加 ?key=xxx 或请求头 X-Api-Key
-        app.MapGet("/", (HttpContext ctx) =>
-        {
-            // dashboard 也走 ApiKeyAuthMiddleware 的 AllowAnonymousPaths 之一
-            // 简单做法：直接走 middleware 之外的快速 401
-            var provided = ctx.Request.Headers["X-Api-Key"].ToString();
-            if (string.IsNullOrEmpty(provided))
-            {
-                ctx.Response.StatusCode = 401;
-                return Results.Content(
-                    "<h1>Center Dashboard 需要 X-Api-Key 请求头</h1>",
-                    "text/html; charset=utf-8");
-            }
-            bool ok = false;
-            foreach (var k in apiKeys)
-            {
-                if (k == provided) { ok = true; break; }
-            }
-            if (!ok)
-            {
-                ctx.Response.StatusCode = 401;
-                return Results.Content("<h1>X-Api-Key 无效</h1>", "text/html; charset=utf-8");
-            }
-            return Results.Content(DashboardHtml, "text/html; charset=utf-8");
-        });
+        // 鉴权由 CenterApiKeyAuthMiddleware 统一完成（恒定时间比较 + 限流），此处不再重复校验，
+        // 避免冗余的普通字符串比较引入计时侧信道。客户端需在请求头带 X-Api-Key。
+        app.MapGet("/", (HttpContext ctx) => Results.Content(DashboardHtml, "text/html; charset=utf-8"));
 
         app.MapControllers();
 

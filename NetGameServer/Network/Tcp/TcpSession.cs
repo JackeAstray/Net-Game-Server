@@ -183,6 +183,11 @@ public class TcpSession : ISession
                     System.Buffers.ArrayPool<byte>.Shared.Return(leftover.Buffer);
                 }
             }
+            // 写者任务结束后复位：会话复用（重连/重建写者）时 StartWriter 能重新启动，否则只入队不发送
+            lock (writerGate)
+            {
+                writerTask = null;
+            }
         }
     }
 

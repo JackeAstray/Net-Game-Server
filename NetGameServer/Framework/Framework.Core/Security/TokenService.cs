@@ -56,6 +56,11 @@ public sealed class TokenService
         {
             return null;
         }
+        // 超长 token 拒绝：防畸形但 base64 合法的超大 payload 触发巨量解码分配（放大攻击面）
+        if (token.Length > 4096)
+        {
+            return null;
+        }
 
         var parts = token.Split('.');
         if (parts.Length != 2)

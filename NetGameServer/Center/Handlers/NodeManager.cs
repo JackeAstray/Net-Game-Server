@@ -395,7 +395,10 @@ namespace Center.Handlers
                 };
                 string json = Shared.Json.Serialize(snapshot);
                 Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(filePath))!);
-                File.WriteAllText(filePath, json);
+                // 原子替换：先写临时文件再 Move，崩溃时不产生半写快照（半写 JSON 会导致恢复失败丢全部注册表）
+                string tmpPath = filePath + ".tmp";
+                File.WriteAllText(tmpPath, json);
+                File.Move(tmpPath, filePath, overwrite: true);
             }
             catch (Exception ex)
             {

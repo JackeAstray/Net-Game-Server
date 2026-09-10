@@ -186,9 +186,13 @@ namespace Battle.Handlers
             }
 
             var newSurroundings = new HashSet<(int, int)>();
-            for (int x = newGrid.x - r; x <= newGrid.x + r; x++)
-                for (int z = newGrid.z - r; z <= newGrid.z + r; z++)
-                    newSurroundings.Add((x, z));
+            if (newGrid.x != int.MinValue)
+            {
+                // 防 int.MinValue 下溢回绕为正数导致遍历异常网格范围
+                for (int x = newGrid.x - r; x <= newGrid.x + r; x++)
+                    for (int z = newGrid.z - r; z <= newGrid.z + r; z++)
+                        newSurroundings.Add((x, z));
+            }
 
             enterEntities = new List<long>();
             leaveEntities = new List<long>();

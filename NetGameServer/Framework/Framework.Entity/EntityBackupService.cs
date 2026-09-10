@@ -98,12 +98,20 @@ public sealed class EntityBackupService : IDisposable
     {
         tick++;
 
+        // 快照脱离锁：AddManager/RemoveManager 可能在其他线程（场景销毁）执行，
+        // 无锁遍历 List 会抛集合修改异常。快照数组很小（管理器数量级），每 tick 分配可接受。
+        EntityManager[] managersSnapshot;
+        lock (managers)
+        {
+            managersSnapshot = managers.ToArray();
+        }
+
         // 全量列表缓存：仅当实体集合变更时重建（数量 + 各管理器版本指纹）。
         // 用版本号（而非仅总数）检测，覆盖"增删抵消但集合内容变化"的陈旧缓存场景：
         // 否则新实体永远不会被备份，崩溃恢复会丢数据。
         int total = 0;
         long fingerprint = 0;
-        foreach (var manager in managers)
+        foreach (var manager in managersSnapshot)
         {
             total += manager.Count;
             fingerprint += manager.Version;
@@ -112,7 +120,7 @@ public sealed class EntityBackupService : IDisposable
         if (fingerprint != cachedFingerprint)
         {
             allEntities.Clear();
-            foreach (var manager in managers)
+            foreach (var manager in managersSnapshot)
             {
                 foreach (var entity in manager.GetAllEntities())
                 {

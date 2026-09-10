@@ -103,6 +103,9 @@ public sealed class HealthServer : IDisposable
             {
                 client.NoDelay = true;
                 var stream = client.GetStream();
+                // 防 slowloris：限制读写时长，避免慢速连接长期占用 64 个处理槽导致探针被拒
+                stream.ReadTimeout = 5000;
+                stream.WriteTimeout = 5000;
                 // 只读请求行即可（健康探针 GET /healthz HTTP/1.1）
                 byte[] requestLine = await ReadRequestLineAsync(stream);
                 string path = ParsePath(requestLine);

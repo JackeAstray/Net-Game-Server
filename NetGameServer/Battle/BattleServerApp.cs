@@ -20,6 +20,7 @@ namespace Battle
         private static Battle.Handlers.SceneManager? sceneManager;
         private static Framework.Tick.TickEngine? tickEngine;
         private static Battle.Handlers.EntitySyncHandler? entitySyncHandler;
+        private static Battle.Handlers.FrameSyncManager? frameSyncManager;
         private static TcpClientWrapper? centerClient;
 
         // 实体位置路由缓存（迭代 21，对标 ET Location）：entityId -> nodeId，迁移后修正 stale 路由
@@ -90,9 +91,10 @@ namespace Battle
         private static long gameplayIdNodePrefix = -1;
 
         /// <summary>
-        /// D4 玩法实体 ID 前缀：在 (1L&lt;&lt;40) 高位基址上叠加节点派生段 [32,40)，
+        /// D4 玩法实体 ID 前缀：在 (1L&lt;&lt;48) 高位基址上叠加节点派生段 [32,48)，
         /// 保证不同 Battle 节点生成的玩法实体 ID 互不冲突 → 玩家迁入目标节点后，
         /// 随迁的 Skill/Item 不会与目标节点本地玩法实体撞 ID（v1 节点级计数器会撞）。
+        /// 节点段取 16 位（原 8 位在 ~16 节点时 birthday 碰撞概率已 ~23%，迁移会静默失败）。
         /// </summary>
         private static long GetGameplayIdNodePrefix()
         {
@@ -104,7 +106,7 @@ namespace Battle
                     hash ^= c;
                     hash *= 16777619;
                 }
-                gameplayIdNodePrefix = (1L << 40) + ((long)(hash & 0xFF) << 32);
+                gameplayIdNodePrefix = (1L << 48) + ((long)(hash & 0xFFFF) << 32);
             }
             return gameplayIdNodePrefix;
         }
@@ -352,7 +354,8 @@ namespace Battle
                 if (suspendedPlayers.TryRemove(clientSessionId, out _))
                 {
                     var sc = sceneManager?.GetScene(scene.SceneId);
-                    if (sc != null)
+                    // 实体可能已被其他路径（GM 踢出/迁移/房间销毁）提前离场，此处只处理仍挂起在场景中的
+                    if (sc != null && sc.EntityManager.GetEntity(clientSessionId) != null)
                     {
                         var gw = GetGatewaySessionByClient(clientSessionId);
                         LeaveScene(sc, clientSessionId, gw ?? gatewaySession);
@@ -369,6 +372,8 @@ namespace Battle
         {
             if (suspendedPlayers.TryRemove(clientSessionId, out _))
             {
+                // 重连后客户端可能重置帧号，清理旧帧状态避免新输入被当重放误拒
+                frameSyncManager?.RemoveClient(clientSessionId);
                 Log.Info($"玩家 {clientSessionId} 重连成功，实体恢复在线");
             }
         }
@@ -711,7 +716,7 @@ namespace Battle
             }
             if (scene.EntityManager.GetEntity(entityId) != null)
             {
-                Log.Warning($"实体迁移恢复失败：实体已存在 EntityId:{entityId} SceneId:{sceneId}");
+                Log.Warning($"实体迁移恢复失败：实体已存在 EntityId:{entityId} SceneId:{sceneId}（疑似玩法实体 ID 节点段碰撞，请检查 GetGameplayIdNodePrefix 派生）");
                 return null;
             }
             var def = ResolveEntityDef(entityType);
@@ -1294,6 +1299,7 @@ namespace Battle
 
             // 帧同步管理器：客户端输入入队，tick 引擎聚合广播权威帧
             frameSyncManager = new Battle.Handlers.FrameSyncManager(sceneManager, tickEngine);
+            BattleServerApp.frameSyncManager = frameSyncManager;
             frameSyncManager.SetSendAction((targetSessionId, msgId, payload) =>            {
                 var gatewaySession = GetGatewaySessionByClient(targetSessionId);
                 if (gatewaySession != null)

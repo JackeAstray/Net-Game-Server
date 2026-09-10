@@ -39,6 +39,11 @@ namespace Center.Handlers
                 GatewayNodeId = gatewayNodeId ?? string.Empty,
                 ExpiresAtUtc = DateTime.UtcNow.Add(grace)
             };
+            // 同 userId 换新会话重连挂起时，先清理旧会话条目，防 bySessionId 残留孤儿记录
+            if (byUserId.TryGetValue(userId, out long oldSessionId) && oldSessionId != clientSessionId)
+            {
+                bySessionId.TryRemove(oldSessionId, out _);
+            }
             bySessionId[clientSessionId] = entry;
             byUserId[userId] = clientSessionId;
         }

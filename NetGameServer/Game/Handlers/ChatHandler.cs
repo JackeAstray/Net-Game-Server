@@ -16,6 +16,7 @@ namespace Game.Handlers
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, long> lastChatAt = new();
         private const int MaxChatContentLength = 200;
         private const long MinChatIntervalMs = 1000;
+        private static long lastSweepTick;
 
         public ChatHandler(NetworkManager networkManager)
         {
@@ -147,8 +148,11 @@ namespace Game.Handlers
             }
 
             long nowTick = Environment.TickCount64;
-            // V13 修复：偶发清理超期限频记录（断开时已主动删除，这里兜底防无界增长）
-            if (lastChatAt.Count >= 1024 && (lastChatAt.Count & 255) == 0)
+            // V13 修复：周期清理超期限频记录（时间驱动而非计数驱动——原条件在 Count 稳定时永不触发，
+            // 断开时已主动删除，这里兜底防无界增长）
+            long lastSweep = Volatile.Read(ref lastSweepTick);
+            if (nowTick - lastSweep > MinChatIntervalMs * 16 &&
+                Interlocked.CompareExchange(ref lastSweepTick, nowTick, lastSweep) == lastSweep)
             {
                 SweepStaleLastChatAt();
             }

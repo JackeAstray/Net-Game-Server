@@ -324,8 +324,13 @@ namespace DB.Handlers
                 using var scope = factory.CreateScope();
                 var dbContext = scope.ServiceProvider.GetRequiredService<DefaultDbContext>();
 
-                int totalCount = await dbContext.Users.CountAsync();
-                int onlineCount = await dbContext.Users.CountAsync(u => u.IsLoggedIn);
+                // 单条聚合 SQL 一次取回（原两次独立 CountAsync 非同一快照，total/online 可能来自不同时间点）
+                var stats = await dbContext.Users
+                    .GroupBy(_ => 1)
+                    .Select(g => new { Total = g.Count(), Online = g.Count(u => u.IsLoggedIn) })
+                    .FirstOrDefaultAsync();
+                int totalCount = stats?.Total ?? 0;
+                int onlineCount = stats?.Online ?? 0;
                 int offlineCount = totalCount - onlineCount;
 
                 var response = new OnlineStatsResponse
