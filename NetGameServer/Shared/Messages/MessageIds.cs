@@ -45,8 +45,10 @@ namespace Shared.Messages
         public const int DbCreateFriendApplyReq = 1017;
         public const int DbGetFriendApplyListReq = 1018;
         public const int DbHandleFriendApplyReq = 1019;
-        public const int DbAllocateUidRangeReq = 1020;
-        public const int DbAllocateUidRangeRes = 1120;
+        // P1 修复：原 1020/1120 与 DbGuildCreateReq/Res 撞号——新协议分发器（RouterTable）优先于旧路由，
+        // Login 的 UID 发号请求（旧 JSON 格式 1020）会被误路由到公会创建。改 1028/1128（生成版未占用）。
+        public const int DbAllocateUidRangeReq = 1028;
+        public const int DbAllocateUidRangeRes = 1128;
 
         // === DB 好友/聊天等响应消息 (1100-1199) ===
         public const int DbAddFriendRes = 1106;

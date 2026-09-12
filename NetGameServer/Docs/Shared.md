@@ -6,15 +6,15 @@
 
 ## 职责边界
 
-- ✅ 公共配置加载（`ConfigHelper`：appsettings + 环境变量 `NG_` 前缀 + 内存覆盖 + 节缓存 + 校验 + 热重载）
+- ✅ 公共配置加载（`ConfigHelper`：appsettings + 环境变量（无前缀）+ 内存覆盖 + 节缓存 + 校验 + 热重载）
 - ✅ 公共 JSON 序列化辅助（`Shared.Json.SerializeToUtf8Bytes` / `DeserializeFromUtf8Bytes`）
 - ✅ 统一日志接口（`Shared.Log` 包装 Serilog；`RemoteLog` 远程日志）
 - ✅ 路由元数据辅助（`RouteMetadata`：Gateway↔后端）
 - ✅ UID / UUID 生成器（`UIDGenerator` 玩家全局递增 UID、`UUIDHelper`）
 - ✅ Redis 客户端辅助（`RedisHelper`）
-- ✅ 节点启动参数（`NodeLaunchArgs`：--port / --host / --center-host / --node-id / --instance-id / --machine-id / --supervised-by）
-- ✅ 业务消息 DTO（Login / Game / Chat / Friend / Center / Battle / Db / Social / Special）
-- ✅ 业务数据模型（User / Friend / Blacklist / FriendRequest / ChatMessage / MessageIds）
+- ✅ 节点启动参数（`NodeLaunchArgs`：--port / --host / --center-host / --center-port / --config / --node-id / --instance-id / --machine-id / --supervised-by）
+- ✅ 业务消息 DTO（Login / Game / Chat / Friend / Center / Battle / Db / Social）
+- ✅ 业务数据模型（User / Friend / Blacklist / FriendRequest / ChatMessage / Guild / UidCounter / MessageIds）
 - ❌ 不引用任何业务节点（`Battle` / `Game` / `Center` / ...）
 - ❌ 不写业务逻辑
 
@@ -26,18 +26,18 @@ Shared 是 **class library**，不直接启动；被 `Battle` / `Game` / `Center
 
 | 文件 | 职责 |
 |---|---|
-| `Shared/ConfigHelper.cs` | 配置加载（appsettings + env `NG_*` + 内存源）+ 节缓存 + 校验 + 热重载 |
+| `Shared/ConfigHelper.cs` | 配置加载（appsettings + env 无前缀 + 内存源）+ 节缓存 + 校验 + 热重载（`NG_` 前缀属 `Framework.Core.Config` 的另一套配置） |
 | `Shared/Json.cs` | 统一 JSON 序列化辅助（兼容旧 JSON 客户端） |
 | `Shared/Log.cs` | 日志接口（Serilog 门面） |
 | `Shared/RemoteLog.cs` | 远程日志上报 |
-| `Shared/RouteMetadata.cs` | 路由元数据（`__clientSessionId` / `__userId` / `__uid` / `__broadcast`） |
-| `Shared/UIDGenerator.cs` | 玩家 UID 全局递增 |
+| `Shared/RouteMetadata.cs` | 路由元数据（`__clientSessionId` / `__userId` / `__uid` / `__nickname` / `__broadcast` / `__targetSessionId` / `__requestId`） |
+| `Shared/UIDGenerator.cs` | 玩家 UID 全局递增（按段发号 + Volatile 快照） |
 | `Shared/UUIDHelper.cs` | UUID 生成 |
-| `Shared/RedisHelper.cs` | Redis 客户端辅助（缓存 / 分布式限流计数器） |
+| `Shared/RedisHelper.cs` | Redis 客户端辅助（缓存 / 分布式限流计数器，连接失败自动重建重连） |
 | `Shared/NodeLaunchArgs.cs` | 节点启动 args 通用解析（被 Machine / Supervisor / 各节点 Program.cs 共用） |
-| `Shared/Messages/MessageIds.cs` | 协议 MsgId 常量（由 `Framework.Protocol.Generator` 从 `Framework.Protocol/Messages/*.cs` 的 `[GameMessage]` 声明编译期生成） |
-| `Shared/Messages/*` | 业务消息 DTO（按域分目录：Battle / Center / Chat / Db / Login / Social / Special） |
-| `Shared/Data/*` | 业务数据模型（User / Friend / Blacklist / FriendRequest / ChatMessage） |
+| `Shared/Messages/MessageIds.cs` | 旧手写 MsgId 常量（`Shared.Messages` 命名空间，DB/旧 JSON 路由使用；新协议常量由源生成器产出到 `Framework.Protocol.Generated.MessageIds`，两套并存） |
+| `Shared/Messages/*` | 业务消息 DTO（按域分目录：Battle / Center / Chat / Db / Login / Social） |
+| `Shared/Data/*` | 业务数据模型（User / Friend / Blacklist / FriendRequest / ChatMessage / Guild / UidCounter） |
 
 ## 注意事项
 

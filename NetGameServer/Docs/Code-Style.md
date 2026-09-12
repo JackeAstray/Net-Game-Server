@@ -11,7 +11,7 @@
 
 **用途**：所有 `OutputType=Exe` 的项目入口（节点服务器、工具、测试套件）。
 
-每个 `Program.cs` 显式包成 `namespace <目录名>;` + `internal static class Program` + `static async Task<int> Main(string[] args)`。
+每个 `Program.cs` 显式包成 `namespace <目录名>;` + `internal class Program` + `static async Task Main(string[] args)`。
 这样：
 
 - 入口语义显式（一眼看出这是进程入口，不是普通类）
@@ -29,7 +29,7 @@
 **禁止**：
 
 - ❌ 顶级语句（`OutputType=Exe` 项目里也用 `class + static Main`，不要依赖 .NET 自动合成入口）
-- ❌ `internal static class Program` 同时被其他项目的验证套件通过 `XXX.Program.Main(...)` 跨项目调用 —— 跨项目被调用的工具入口必须是 `public static class Program` + `public static Main`（如 `Tools/Supervisor` / `Tools/Machine` / `Tools/ClientGen`，分别被 `Tests/SupervisorVerify` / `Tests/MachineVerify` / `Tests/ClientGenVerify` 调用）
+- ❌ 需要被其他项目**代码调用**的入口用非 public 可见性 —— 跨项目被代码调用的工具入口必须是 `public static class Program` + `public static Main`（如 `Tools/Supervisor` / `Tools/Machine`，分别被 `Tests/SupervisorVerify` / `Tests/MachineVerify` 直接调用）；`Tools/ClientGen` 为进程级调用（`private static int Main`，被 `Tests/ClientGenVerify` 以子进程方式执行）不在此列
 - ❌ 嵌套在 `Program` 内的 public DTO 类被外部依赖时仍藏在 `Program` 里（应抽到独立 `.cs`）
 
 ### 1.2 模板
@@ -42,18 +42,17 @@ namespace Gateway;   // 根命名空间 = 目录名
 /// <summary>
 /// 网关服务器入口：一句话描述。
 /// </summary>
-internal static class Program
+internal class Program
 {
-    static async Task<int> Main(string[] args)
+    static async Task Main(string[] args)
     {
         // 业务代码（顶级语句风格的代码块直接放在这里）
         ...
-        return 0;
     }
 }
 ```
 
-工具/同步入口用 `static int Main(string[] args)`（无 `async`）；异步入口用 `static async Task<int> Main`。
+工具/同步入口用 `static int Main(string[] args)`（无 `async`）；异步入口用 `static async Task Main`。
 
 ### 1.3 `Program.cs` 与其他 `.cs` 的关系
 
@@ -63,7 +62,7 @@ internal static class Program
 
 | 类型 | 文件 | 写法 | 例子 |
 |---|---|---|---|
-| 入口 | `*/Program.cs` | `namespace + internal static class Program` + `static (async Task<int>)? Main` | `Gateway/Program.cs` |
+| 入口 | `*/Program.cs` | `namespace + internal class Program` + `static (async Task)? Main` | `Gateway/Program.cs` |
 | 业务 | `*/Handlers/*.cs` / `*/Managers/*.cs` | `namespace + class` | `Battle/Handlers/RoomHandler.cs` |
 | 框架 | `Framework/*/*.cs` | `namespace + class` | `Framework/Framework.Entity/Entity.cs` |
 | 脚本 | `GameLogic/scripts/*.csx` | `EntityScriptBase` 继承 + 顶级 `return new XxxScript()` | `Skill.csx` |

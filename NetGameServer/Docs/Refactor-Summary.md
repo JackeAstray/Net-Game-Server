@@ -18,11 +18,11 @@
 
 **最终态（归档数据）**：
 
-- 底层框架 5 个项目（`Framework.Core` / `Framework.Protocol` / `Framework.Entity` / `Framework.Tick` / `Framework.Scripting`）
-- `Protogen` 协议代码生成器
+- 底层框架 **7** 个项目（`Framework.Core` / `Framework.Protocol` / `Framework.Protocol.Generator` / `Framework.Entity` / `Framework.Persistence` / `Framework.Tick` / `Framework.Scripting`）
+- 协议生成器：早期 `Protogen`（`.def + 代码生成`）已被 **Roslyn 源生成器**（`Framework.Protocol.Generator`，`[GameMessage]` 声明）取代
 - `GameLogic/scripts` 脚本层（5 个示例 csx）
-- 6 套验证套件（Protocol / Network / ScriptHost / Logger / Supervisor / Machine）
-- 协议 defs 142 条消息
+- **8** 套验证套件（Protocol / Network / ScriptHost / Logger / Supervisor / Machine / Lifecycle / ClientGen）
+- 协议消息：原 `.def` 142 条已迁移为 `[GameMessage]` 声明（现 193 处）
 - 全部 **0 错误构建**
 
 ---

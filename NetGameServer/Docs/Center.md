@@ -9,7 +9,7 @@
 
 - ✅ 节点注册 / 心跳（10s 间隔）/ 心跳过期剔除
 - ✅ 平滑加权负载均衡（`GetBestBattleNode`，对标 Nginx SWRR，迭代 14）
-- ✅ 房间匹配（`MatchHandler`：按 `SceneType` / `MaxPlayers` / `CustomRules`）
+- ✅ 房间匹配（`MatchHandler`：按 `CategoryId` 排队匹配；房间创建/更新携带 `SceneType` / `MaxPlayers` / `CustomRules`）
 - ✅ 队伍管理（`PartyManager`：创建/加入/离开/解散/踢人/就位，队长离队自动转让，断线自动清理）
 - ✅ 实体迁移协调（91003 中继 + 91004 回执 + 91005 通知 Gateway 切换路由）
 - ✅ Gateway 集群挂起会话目录（B1：90012 挂起登记 / 90013 注销 / 90014 查询 + 90015 响应，跨实例断线重连接管）
@@ -32,9 +32,9 @@
 | `Center/Handlers/NodeManager.cs` | 节点注册表 / 心跳 / `GetBestBattleNode`（SWRR） / `pendingEntityCallSource`（EntityCall 中继） |
 | `Center/Handlers/CenterDispatcher.cs` | 强类型消息分发（含 91001/91002 中继 + 91007~91010 位置服务）；`CenterSessionContext` 内部消息上下文定义于此文件内 |
 | `Center/Handlers/EntityLocationService.cs` | 实体位置注册表（91007 登记 / 91008 注销 / 91009 查询 / 91010 响应，TTL 清扫） |
-| `Center/Handlers/MatchHandler.cs` | 房间匹配（创建/加入/聊天/离开） |
+| `Center/Handlers/MatchHandler.cs` | 房间匹配（创建/加入/聊天/离开；partial 拆为 `MatchHandler.cs` / `MatchHandler.Rooms.cs` / `MatchHandler.SceneSync.cs`） |
 | `Center/Handlers/PartyManager.cs` | 队伍管理（创建/加入/离开/解散/踢人/就位；31001~31015 客户端消息） |
-| `Center/Controllers/CenterController.cs` | 管理台 REST：`/api/center/health` / `nodes` / `summary` / `rooms` / `cluster` / `config`（配置中心：GET 列覆盖、POST 热更+落盘、DELETE 删） |
+| `Center/Controllers/CenterController.cs` | 管理台 REST：`/api/center/health` / `nodes` / `summary` / `rooms` / `cluster` / `config`（配置中心）+ `metrics-trend`（30 分钟趋势）/ `node-metrics`（节点指标聚合）/ `config-history` / `config-rollback` |
 | `Center/CenterHttpServer.cs` | 管理台 HTTPS（B6）：配 `CenterHttpTlsPfx`/`CenterHttpTlsPassword`/`CenterHttpTlsPort` 后启用（默认 HTTPS 端口 = HTTP+1） |
 
 ## 注意事项
@@ -46,8 +46,10 @@
 - **实体迁移原子性**：源 Battle 发的 91003 经 Center 中继到目标 Battle，
   Center 不知道恢复是否成功——只透传 91004 回执。**不持久化迁移状态**。
 - **EntityCall 中继**：`pendingEntityCallSource` 存 `CallId → sourceNodeId`，
-  91002 回执时按 CallId 反查目标节点回包；超时由 Battle tick 周期清扫
-  （Center 不主动清超时——超时回调必须在调用方）。
+  91002 回执时按 CallId 反查目标节点回包；Center 维护循环 `SweepPending(30s)` 主动清扫
+  `pendingEntityCallSource` 与 `pendingMigrationSource`（超时回调仍在调用方 Battle tick 处理）。
+- **匹配房间并发**：房间操作按 `categoryLock → roomLock` 锁序串行（`roomLocks` 按房间维度），
+  防同房间并发 Join/Leave/Close 竞态；房间移除时释放锁；`NormalizeCategory` 白名单 + `SweepStaleMatchState` 周期清扫排队表。
 - **Leader 选举**：`Framework.Core.LeaderElection`（`Tools/SupervisorVerify` 验证过），
   多 Center 实例时通过文件锁争锁，单实例无需关注。
 - **实体位置服务（迭代 21，对标 ET Location）**：Battle 在实体生成/绑定/迁移完成时发

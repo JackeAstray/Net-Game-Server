@@ -9,7 +9,7 @@
 ## 职责边界
 
 - ✅ 账号创建后的业务数据管理（背包/好友/公会/聊天等）
-- ✅ 业务消息强类型分发（`RegisterAsync<TReq, TRes>`）
+- ✅ 业务消息强类型分发（`GameDispatcher.RegisterSync<T>` MemoryPack/JSON 双格式优先 + 旧 JSON 路由 `RegisterRequest<TReq>` 回退）
 - ✅ 跨业务协调（业务 A 调业务 B 的方法，**同节点内**直接方法调用，**跨节点**走 EntityCall）
 - ✅ 与 Battle 节点通过 `clientSessionId` 协作（Battle 持主实体/场景，Game 持业务/持久化）
 - ❌ 不做战斗判定（Battle 节点）
@@ -36,9 +36,10 @@
 
 ## 注意事项
 
-- **强类型 vs JSON**：业务方法签名 `(ClientSessionWrapper, XxxRequest? req)`，
-  由 `MessageDispatcher` 统一反序列化（MemoryPack/JSON 双格式自动判别），
-  **不要**在方法内再 `Json.Deserialize` 一次（迭代 13 已 D1 化）。
+- **强类型 vs JSON**：业务方法签名 `(ClientSessionWrapper, XxxRequest? req)`。
+  新协议消息（`[GameMessage]`）走 `GameDispatcher`（MemoryPack/JSON 双格式自动判别）；
+  旧手写 JSON 消息（好友/公会等）走 `RegisterRequest<TReq>` 旧路由（`Json.DeserializeFromUtf8Bytes`）。
+  两条分发路径并存，新协议优先——**不要**在方法内再 `Json.Deserialize` 一次（迭代 13 已 D1 化）。
 - **partial 拆分**：单 Handler > 500 行应按业务域拆 partial（`FriendHandler.FriendOps.cs` / `.ApplyOps.cs` / ...），
   避免单文件 1000+ 行。
 - **跨节点 EntityCall**：跨 Battle/Game 节点调方法用 `EntityCall.CallAsync`（迭代 13），

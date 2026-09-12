@@ -8,8 +8,8 @@
 
 ## 职责边界
 
-- ✅ 场景管理（AOI / 帧同步 / 玩法实体生命周期）
-- ✅ 观战（只读加入 40012/40013：复用广播链路，不占玩家名额、不生成玩法实体）
+- ✅ 场景管理（AOI / 帧同步 / 玩法实体生命周期；容量闸门：单节点场景数 ≤500、房间人数硬上限 200、观战者上限 200；帧同步多级配额：单包 64 输入 / 单帧 256 / 单客户端每帧 8 / 每场景队列 512，FrameId 防重放 + NaN 清洗）
+- ✅ 观战（只读加入 40012/40013：复用广播链路，不占玩家名额、不生成玩法实体、单场景上限 200）
 - ✅ 战斗回放（40014/40015：低频采样快照录制 + 导出，每场景环形缓冲上限防泄漏）
 - ✅ 玩家主实体 + 属主玩法实体（Skill/Item）同包随迁（迭代 15）
 - ✅ EntityCall 接收（91001 中继过来的远端方法调用）
@@ -34,7 +34,7 @@
 | `Battle/BattleServerApp.cs` | 节点主类（partial）：网络/入站队列/迁移/玩法实体 |
 | `Battle/Handlers/MessageRouter.cs` | 强类型 `MessageDispatcher` 注册（含 CenterCreateScene/CenterDestroyScene 内部消息） |
 | `Battle/Handlers/RoomHandler.cs` | 加入/离开房间 |
-| `Battle/Handlers/EntitySyncHandler.cs` | AOI 脏属性增量同步（All / AOI / OwnClient 作用域） |
+| `Battle/Handlers/EntitySyncHandler.cs` | AOI 脏属性增量同步（AllClients / OwnClient / CellPublic / CellPrivate 作用域） |
 | `Battle/Handlers/BattleMainHandler.cs` | 场景创建/销毁 + 玩法实体生成（`SpawnSceneGameplayEntities`） |
 | `Battle/Entities/PlayerEntityDef.cs` | 玩家实体定义 |
 | `Battle/Entities/GameplayEntityDefs.cs` | 玩法实体定义（Npc/Quest/Skill/Item） |
@@ -48,10 +48,11 @@
   在 `EntityCallHub` 注册回调，Battle tick 周期 `SweepExpired`。
 - **实体迁移 v2**：`StartEntityMigration` 序列化玩家主实体 + 收集属主玩法实体同包发送；
   目标节点 `RestoreMigratedEntity(entityId, type, sceneId, props, ownerClientId: ...)` 恢复属主绑定。
-- **玩法实体 ID**：`NextGameplayEntityId()` 加节点派生段 [32,40)（FNV-1a hash），跨节点不撞 ID。
+- **玩法实体 ID**：`NextGameplayEntityId()` 高位基址 `1L<<48` + 节点派生段 [32,48) 16 位（FNV-1a hash），跨节点不撞 ID。
   NetworkVerify 用 `>= (1L<<40)` 过滤玩法实体——不要改基址。
 - **孤儿回收**：`RecycleOwnedEntities(scene, clientSessionId)` 在 `CompleteMigrateOut` /
   `LeaveScene` / `RoomHandler.HandleLeaveRoomRequestAsync` 三路径自动调用。
+- **回放缓冲**：每场景环形缓冲上限 360 帧（~12 分钟 @2s 采样），防内存泄漏。
 - **脚本层（csx）**：`GameLogic/scripts/*.csx` 按 EntityType 绑定，**保存即热更新**（`ScriptHost` 防抖）。
   脚本可写 `entity.Mailbox.Call/CallAsync` 调自己或同场景其他实体的方法（迭代 17）。
 

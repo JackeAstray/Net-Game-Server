@@ -28,7 +28,9 @@
 
 - 客户端 → 网关：`[MsgId(4)][Payload]`（外层使用长度帧）
 - 网关 → 客户端：`[MsgId(4)][Payload]`（外层使用长度帧）
-- `MsgId` 取自 `Shared/Messages/MessageIds.cs`（由 `Framework.Protocol.Generator` 源生成器编译期生成）
+- 新协议消息的 `MsgId` 由 `Framework.Protocol.Generator` 源生成器编译期产出到 `Framework.Protocol.Generated.MessageIds`；
+  **注意双源并存**：旧手写 `Shared/Messages/MessageIds.cs`（`Shared.Messages` 命名空间）仍被 DB/旧 JSON 路由使用，
+  两套常量需保持同步，新增 `[GameMessage]` 消息只走生成版。
 
 ## 2. Gateway ↔ 业务服务（Login/Game/Center/Battle）
 
@@ -64,4 +66,4 @@
 - 禁止在网关与业务服链路中省略 `ClientSessionId`
 - 禁止通过修改服务端协议去兼容客户端异常报文（客户端应匹配服务端协议）
 - 禁止在同一链路长期保留多套协议实现（双轨只允许作为迁移期临时手段，由 `jsonFallback` 承担 JSON 兼容）
-- 禁止手改 `Framework/Framework.Protocol/Generated/*.g.cs`（构建时重生成）
+- 禁止手改源生成器产物（`Framework.Protocol.Generated.*` 由 Roslyn 源生成器在**编译期**产出，不落盘到仓库，构建时自动重生成）
