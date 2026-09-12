@@ -20,7 +20,7 @@
 | 客户端 ↔ Gateway | `[MsgId(4)][Payload]` | 4 字节长度帧 | — |
 | Gateway ↔ 后端（Login/Game/Center/Battle） | `[ClientSessionId(8)][MsgId(4)][Payload]` | 4 字节长度帧 | `ClientSessionId`：会话路由 |
 | 后端 ↔ DB | `[MsgId(4)][Payload(尾部附 __requestId 路由元数据)]` | 4 字节长度帧 | `__requestId`：请求-响应匹配 |
-| 后端 ↔ 后端（内部消息） | `[ClientSessionId(8)][MsgId(4)][Payload]` | 4 字节长度帧 | `internal="true"` 标记（90001~90010 / 90999 / 91001~91010 等），Gateway 拒绝伪造 |
+| 后端 ↔ 后端（内部消息） | `[ClientSessionId(8)][MsgId(4)][Payload]` | 4 字节长度帧 | `internal="true"` 标记（90001~90015 节点间+挂起目录 / 90999 认证 / 91001~91010 EntityCall·迁移·位置；DB 1000~1127；Login 10000、10014），Gateway 拒绝伪造 |
 
 ---
 

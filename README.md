@@ -170,7 +170,10 @@ AOI 网格自身的正确性与性能由 `Tests/ProtocolVerify` 第 15.9 节覆�
 - **客户端 ↔ Gateway**：`[MsgId(4)][Payload]`，外层长度帧
 - **Gateway ↔ 后端**：`[ClientSessionId(8)][MsgId(4)][Payload]`
 - **后端 ↔ DB**：`[MsgId(4)][Payload(尾部附 __requestId 路由元数据)]`，请求-响应经 `__requestId` 关联
-- 内部消息（90001~90010 / 90999 / 91001~91010 等 `Internal=true`；DB 1000~1127 / Login 10000、10014）走 `internal="true"`，Gateway 拒绝伪造
+- **内部消息**（`internal="true"`，Gateway 拒绝客户端伪造）：
+  - Center 节点间 `90001~90015`（90001~90011 注册/心跳/建销毁场景/房间同步；90012~90015 挂起会话目录 B1）+ `90999` 认证握手
+  - EntityCall/实体迁移/位置 `91001~91010`（跨进程调用 / 91003~91005 迁移 / 91007~91010 位置登记查询）
+  - DB `1000~1127`（响应 = 请求 + 100）、Login `10000`/`10014`
 
 完整约束与禁止项见 [Protocol.md](NetGameServer/Docs/Protocol.md)。
 
