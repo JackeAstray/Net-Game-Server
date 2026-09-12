@@ -5,8 +5,6 @@
 
 支持 TCP / UDP / KCP / WebSockets 多协议接入，可用于卡牌、MMO、实时竞技等多种在线游戏。
 
----
-
 ## 核心能力
 
 | 能力 | 一句话描述 | 详见 |
@@ -31,8 +29,6 @@
 | 平滑加权 LB | `GetBestBattleNode` Nginx-SWRR（权重=100-load） | [Center.md](NetGameServer/Docs/Center.md) |
 | 防重放 | SessionGuard 时间窗 + TokenService SessionSeq + NonceService | [KBE-Gap-Review.md](NetGameServer/Docs/KBE-Gap-Review.md) |
 | Bots 压测 | TCP/WS + RTT p50/p95/p99 + 时间同步 offset + ramp-up | [KBE-Gap-Review.md](NetGameServer/Docs/KBE-Gap-Review.md) |
-
----
 
 ## 架构
 
@@ -59,8 +55,6 @@
 - 所有节点启动后向 Center 注册并维持心跳（默认 10s 间隔）
 - Battle 可多实例，Center 按 SWRR 选节点
 
----
-
 ## 文档导航
 
 ### 节点模块
@@ -80,15 +74,11 @@
 - [Refactor-Summary.md](NetGameServer/Docs/Refactor-Summary.md) — P0~P3 重构历史归档（只读）
 - [GameLogic/scripts/README.md](NetGameServer/GameLogic/scripts/README.md) — 业务脚本层（csx）规范
 
----
-
 ## 环境要求
 
 - 必需：[.NET 10.0 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
 - 可选：MySQL / SQL Server / PostgreSQL（替换 DB 默认文件持久化）、Redis（缓存/分布式限流）、Nginx / YARP（Gateway 集群反向代理）
 - 可选：[Docker + docker compose](https://docs.docker.com/compose/)（`deploy/docker-compose.yml` 一键集群，自带 MySQL/Redis）
-
----
 
 ## 快速开始
 
@@ -163,8 +153,6 @@ Bots --count 200 --host 127.0.0.1 --port 31300 --duration 10 --scene battle --ra
 ```
 AOI 网格自身的正确性与性能由 `Tests/ProtocolVerify` 第 15.9 节覆盖（2000 实体 vs 暴力枚举一致性）。
 
----
-
 ## 协议约束（速记）
 
 - **客户端 ↔ Gateway**：`[MsgId(4)][Payload]`，外层长度帧
@@ -176,8 +164,6 @@ AOI 网格自身的正确性与性能由 `Tests/ProtocolVerify` 第 15.9 节覆�
   - DB `1000~1127`（响应 = 请求 + 100）、Login `10000`/`10014`
 
 完整约束与禁止项见 [Protocol.md](NetGameServer/Docs/Protocol.md)。
-
----
 
 ## 贡献
 
