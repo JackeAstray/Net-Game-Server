@@ -6,7 +6,7 @@ namespace Machine;
 
 /// <summary>
 /// Machine 进程（对标 KBE machine/kbengine.xml，迭代 20）：
-/// 读 topology.json 描述的节点拓扑，按依赖顺序拉起各节点进程，
+/// 读 machine.json 描述的节点拓扑，按依赖顺序拉起各节点进程，
 /// 给每个实例注入 --node-id / --port / --instance-id / --machine-id / --supervised-by。
 /// 进程崩溃按指数退避重启（与 Supervisor 一致策略）；启动时按依赖 + TCP 探针等待前置节点就绪。
 /// 状态输出机器可读标记（START/RESTART/EXIT_OK/PROBE_OK/SUMMARY）便于 MachineVerify 断言。

@@ -10,6 +10,7 @@
 #   Gateway 31300 / Login 31302 / Game 31304 / DB 31305 / Center 31306 / Battle 31307
 #   MySQL 3306 + Redis 6379（DB 节点业务库）；PostgreSQL 5432 默认不启动（profile: postgres）。
 # 默认共享密钥：可在 .env 中设置 CenterNodeSharedSecret 覆盖，生产务必更换。
+# 注意：默认值不能含占位符特征（change/placeholder/example 等），SecretConfig 会 fail-closed 拒绝。
 # =====================================================================
 
 name: netgame-cluster
@@ -19,7 +20,7 @@ x-common-node: &common-node
     context: ..
     dockerfile: deploy/Dockerfile
   environment: &common-env
-    CenterNodeSharedSecret: "${CenterNodeSharedSecret:-netgame-dev-shared-secret-change-me}"
+    CenterNodeSharedSecret: "${CenterNodeSharedSecret:-netgame-dev-9f3a7c1e5b2d8f4a6c0e9b3d7f1a5c2e}"
     Logging__MinimumLevel: "Information"
     # 健康检查端口（业务端口+10000）供宿主机 curl 访问：容器内须监听 0.0.0.0，
     # 否则 TcpListener 默认绑 127.0.0.1 无法被端口映射到达（生产可改回回环 + 探针走 exec）

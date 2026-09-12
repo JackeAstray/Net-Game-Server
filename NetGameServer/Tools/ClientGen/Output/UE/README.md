@@ -37,4 +37,4 @@ Payload = 消息体（MemoryPack 兼容二进制）。也可直接发送 JSON �
 
 ## 字段类型
 bool / int32 / int64 / float / string / bytes / list:T / map<string,string> / 结构体。
-与服务器 `Framework.Protocol.Generated`（MemoryPack）逐字节兼容，由 ClientGen 从 `.def` 生成。
+与服务器 `Framework.Protocol.Generated`（MemoryPack）逐字节兼容，由 ClientGen 从服务器 `[GameMessage]`/`[GameStruct]` 声明生成。

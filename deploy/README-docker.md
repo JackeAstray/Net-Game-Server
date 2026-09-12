@@ -22,7 +22,8 @@ compose 已统一注入 `HealthListenAddress=0.0.0.0`，使健康端口可从宿
 
 ```bash
 # 前置：Docker Desktop / docker compose v2
-# 可选：设置共享密钥（默认 netgame-dev-shared-secret-change-me，生产务必改）
+# 可选：设置共享密钥（默认 netgame-dev-9f3a...（开发固定值，生产务必用随机密钥覆盖）。
+# 注意：密钥不能含占位符特征（change/placeholder/example 等），节点启动会 fail-closed 拒绝）
 echo "CenterNodeSharedSecret=$(openssl rand -base64 32)" > .env
 
 docker compose -f deploy/docker-compose.yml up -d --build
