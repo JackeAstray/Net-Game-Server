@@ -42,10 +42,12 @@ public sealed class CenterApiKeyAuthMiddleware
     {
         var bucket = rateBuckets.GetOrAdd(key, _ => new RateBucket { WindowStartTicks = DateTime.UtcNow.Ticks });
         long nowTicks = DateTime.UtcNow.Ticks;
-        if (nowTicks - bucket.WindowStartTicks >= RateWindowTicks)
+        // 窗口推进原子化：仅一个线程 CAS 成功并清零计数，防并发洪泛下窗口重置错乱
+        long window = Volatile.Read(ref bucket.WindowStartTicks);
+        if (nowTicks - window >= RateWindowTicks &&
+            Interlocked.CompareExchange(ref bucket.WindowStartTicks, nowTicks, window) == window)
         {
-            bucket.WindowStartTicks = nowTicks;
-            bucket.Count = 0;
+            Volatile.Write(ref bucket.Count, 0);
         }
         return Interlocked.Increment(ref bucket.Count) <= MaxRequestsPerMinute;
     }
@@ -56,7 +58,8 @@ public sealed class CenterApiKeyAuthMiddleware
 
         foreach (var allowed in allowAnonymousPaths)
         {
-            if (path.StartsWith(allowed, StringComparison.OrdinalIgnoreCase))
+            // 精确匹配：禁止 "/" 之类的前缀规则意外放行 /api/center/* 敏感接口
+            if (path.Equals(allowed, StringComparison.OrdinalIgnoreCase))
             {
                 return next(context);
             }

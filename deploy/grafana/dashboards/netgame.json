@@ -1,0 +1,79 @@
+{
+  "uid": "netgame-overview",
+  "title": "Net-Game-Server 总览",
+  "tags": ["netgame"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "节点在线数",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 6 } ] } }
+      },
+      "targets": [ { "expr": "count(up{job=\"netgame-nodes\"})", "refId": "A" } ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "全部节点存活",
+      "gridPos": { "h": 4, "w": 8, "x": 4, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }
+      },
+      "targets": [ { "expr": "up{job=\"netgame-nodes\"}", "refId": "A" } ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "业务指标快照（非进程指标）",
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": {} },
+      "targets": [ { "expr": "{__name__=~\"netgame_.*\", __name__!~\"netgame_process_.*\"}", "refId": "A" } ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "进程内存（按实例）",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "fillOpacity": 10, "stacking": { "mode": "none" } } } },
+      "targets": [ { "expr": "netgame_process_managed_memory_bytes", "refId": "A" } ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "进程运行时长（按实例）",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "targets": [ { "expr": "netgame_process_uptime_seconds", "refId": "A" } ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "线程数（按实例）",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "targets": [ { "expr": "netgame_process_threads", "refId": "A" } ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "全部业务 gauge（按实例）",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "targets": [ { "expr": "{__name__=~\"netgame_.*\", __name__!~\"netgame_process_.*\"}", "refId": "A" } ]
+    }
+  ]
+}

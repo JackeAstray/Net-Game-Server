@@ -540,8 +540,8 @@ namespace Login.Handlers
             const int length = 8;
             Span<byte> randomBytes = stackalloc byte[length];
             System.Security.Cryptography.RandomNumberGenerator.Fill(randomBytes);
-            // 取每个字节的低 5 位（0-31）映射到 32 字符集
-            // 为避免字节值 > chars.Length 产生偏置分布，使用拒绝采样：超出 32 倍数则重取
+            // 取每个字节按 32 字符集取模映射（chars.Length=32，256%32==0，无偏置）。
+            // 注意：若修改字符集使其长度不是 2 的幂，取模会产生偏置，需改回拒绝采样。
             char[] result = new char[length];
             for (int i = 0; i < length; i++)
             {
@@ -594,7 +594,6 @@ namespace Login.Handlers
                 {
                     // 可靠性：设置连接/IO 超时（毫秒），避免 SMTP 不可达时"找回密码"请求长时间挂起。
                     // MailKit 用 Timeout 统一覆盖连接建立与 IO（默认 2 分钟），对在线 HTTP 请求而言过长，统一降为 15s。
-                    client.Timeout = 15000;
                     client.Timeout = 15000;
                     // SSL 安全修复：不再设置"接受所有证书"回调。
                     // MailKit 默认只信任系统 CA 证书，移除任意 ServerCertificateValidationCallback。
@@ -684,11 +683,12 @@ namespace Login.Handlers
         }
 
         /// <summary>
-        /// 周期清理已过期的一次性验证码登记；队列超过容量上限时整体清空（防随机账号刷满内存）。
+        /// 周期清理已过期的一次性验证码登记与找回密码冷却表；队列超过容量上限时整体清空（防随机账号刷满内存）。
         /// </summary>
         private static void SweepExpiredPendingResets()
         {
-            if (pendingPasswordResets.Count < 512) return;
+            bool needSweep = pendingPasswordResets.Count >= 512 || findPasswordCooldowns.Count >= 512;
+            if (!needSweep) return;
             var now = DateTime.UtcNow;
             foreach (var key in pendingPasswordResets.Keys.ToList())
             {
@@ -697,10 +697,23 @@ namespace Login.Handlers
                     pendingPasswordResets.TryRemove(key, out _);
                 }
             }
+            // 冷却表同样按阈值清扫，防随机账号刷接口导致字典无界增长
+            foreach (var key in findPasswordCooldowns.Keys.ToList())
+            {
+                if (findPasswordCooldowns.TryGetValue(key, out var nextAllowed) && nextAllowed <= now)
+                {
+                    findPasswordCooldowns.TryRemove(key, out _);
+                }
+            }
             if (pendingPasswordResets.Count > PendingResetMaxEntries)
             {
                 pendingPasswordResets.Clear();
                 Log.Warning("找回密码待确认队列超过容量上限，已清空");
+            }
+            if (findPasswordCooldowns.Count > PendingResetMaxEntries)
+            {
+                findPasswordCooldowns.Clear();
+                Log.Warning("找回密码冷却表超过容量上限，已清空");
             }
         }
     }

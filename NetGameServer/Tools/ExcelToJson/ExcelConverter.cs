@@ -145,7 +145,7 @@ public static class ExcelConverter
                     // 数组字段：解析为真正的 List，JsonConvert 直接输出合法 JSON 数组
                     if (IsArrayType(fieldType))
                     {
-                        row[field] = ParseArrayField(ToStringInvariant(rowdata), fieldType);
+                        row[field] = ParseArrayField(ToStringInvariant(rowdata), fieldType, errors, i, j);
                     }
                     else if (fieldType == "int" || fieldType == "int32")
                     {
@@ -205,8 +205,8 @@ public static class ExcelConverter
         return fieldType.Contains("[") || fieldType == "string[]";
     }
 
-    /// <summary>将数组字段字符串解析为真正的 List（产出 JSON 数组，与参考一致）。</summary>
-    private static object ParseArrayField(string raw, string fieldType)
+    /// <summary>将数组字段字符串解析为真正的 List（产出 JSON 数组，与参考一致）。解析失败记录错误并返回默认值。</summary>
+    private static object ParseArrayField(string raw, string fieldType, List<string>? errors, int i, int j)
     {
         var result = new List<object>();
         if (string.IsNullOrEmpty(raw)) return result;
@@ -229,23 +229,29 @@ public static class ExcelConverter
             }
             else if (fieldType == "int[]" || fieldType == "[int]" || fieldType == "int32[]")
             {
-                result.Add(int.TryParse(t, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : 0);
+                result.Add(int.TryParse(t, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)
+                    ? v : FailDefault(0, errors, i, j, t));
             }
             else if (fieldType == "float[]" || fieldType == "[float]")
             {
-                result.Add(float.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0f);
+                result.Add(float.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)
+                    ? v : FailDefault(0f, errors, i, j, t));
             }
             else if (fieldType == "double[]" || fieldType == "[double]")
             {
-                result.Add(double.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0d);
+                result.Add(double.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)
+                    ? v : FailDefault(0d, errors, i, j, t));
             }
             else if (fieldType == "long[]" || fieldType == "[long]")
             {
-                result.Add(long.TryParse(t, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : 0L);
+                result.Add(long.TryParse(t, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)
+                    ? v : FailDefault(0L, errors, i, j, t));
             }
             else if (fieldType == "bool[]" || fieldType == "[bool]")
             {
-                result.Add(bool.TryParse(t, out var v) && v);
+                // 仅 true/false 合法；其他值视为错误并记录（此前非 "true" 一律静默 false，掩盖拼写错误）
+                result.Add(bool.TryParse(t, out var v)
+                    ? v : FailDefault(false, errors, i, j, t));
             }
             else
             {

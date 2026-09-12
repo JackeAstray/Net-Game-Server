@@ -1,0 +1,46 @@
+# =====================================================================
+# Net-Game-Server systemd 服务模板（Linux 生产）
+# 用法（以 Center 为例，每个节点复制一份改 ExecStart）：
+#   sudo cp netgame-node@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now netgame-node@center
+#
+# 节点名 ↔ 可执行文件：
+#   logger → Logger     db → DB       center → Center
+#   login  → Login      game → Game   battle → Battle    gateway → Gateway
+#
+# 说明：
+#   - 进程看护与拓扑依赖已由 Machine 承担；systemd 用于"机器级"兜底
+#     （开机自启 + 崩溃即拉 + 资源隔离），两者可叠加使用。
+#   - 多 Battle 实例：systemctl start netgame-node@battle-1 等，或用
+#     Machine 的 replicas（推荐，端口步进自动展开）。
+#   - 各节点用环境变量注入共享密钥与端口，避免明文落在 unit 文件。
+# =====================================================================
+[Unit]
+Description=Net-Game-Server node %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 工作目录 = 发布目录（每个节点的 appsettings.json / Publish 文件所在）
+WorkingDirectory=/opt/netgame/Publish/%i
+ExecStart=/opt/netgame/Publish/%i/%i.exe
+Restart=always
+RestartSec=2
+# 崩溃指数退避的上限兜底：防止单节点崩溃-重启打满 CPU
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+# 集群共享密钥（与部署时的 .env CenterNodeSharedSecret 一致）
+Environment=CenterNodeSharedSecret=replace-with-real-secret
+# 端口覆盖示例（各节点默认端口见 appsettings.json）
+# Environment=GATEWAY_PORT=31300
+
+[Install]
+WantedBy=multi-user.target

@@ -65,6 +65,9 @@ namespace Bots
 
         private sealed class Bot
         {
+            /// <summary>每 bot 保留的时间同步样本上限（防长时压测内存线性膨胀）。</summary>
+            private const int MaxSamplesPerBot = 100_000;
+
             private readonly BotOptions opts;
             private readonly int botId;
             private readonly BotStats stats = new();
@@ -215,7 +218,7 @@ namespace Bots
                             // 简化解码：按字节头 4 字节判 msgId
                             if (packet.Length >= 4)
                             {
-                                int msgId = BitConverter.ToInt32(packet.Span.Slice(0, 4));
+                                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(packet.Span.Slice(0, 4));
                                 if (msgId == 40011) // ServerTimeSync
                                 {
                                     long now = Environment.TickCount64;
@@ -227,8 +230,9 @@ namespace Bots
                                             sync.Value.serverRecvMs, sync.Value.serverSendMs);
                                         lock (stats)
                                         {
-                                            stats.RttSamples.Add(rtt);
-                                            stats.OffsetSamples.Add(offset);
+                                            // 样本有界：防止长时间压测下内存线性膨胀
+                                            if (stats.RttSamples.Count < MaxSamplesPerBot) stats.RttSamples.Add(rtt);
+                                            if (stats.OffsetSamples.Count < MaxSamplesPerBot) stats.OffsetSamples.Add(offset);
                                         }
                                         Interlocked.Exchange(ref lastServerSendMs, sync.Value.serverSendMs);
                                     }
@@ -274,9 +278,9 @@ namespace Bots
                 {
                     // 极简解析：固定布局 [int64 x4]（与生成 ServerTimeSync 字段顺序一致）
                     if (payload.Length < 32) return null;
-                    long clientSend = BitConverter.ToInt64(payload.Slice(0, 8));
-                    long serverRecv = BitConverter.ToInt64(payload.Slice(8, 8));
-                    long serverSend = BitConverter.ToInt64(payload.Slice(16, 8));
+                    long clientSend = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(payload.Slice(0, 8));
+                    long serverRecv = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(payload.Slice(8, 8));
+                    long serverSend = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(payload.Slice(16, 8));
                     return (clientSend, serverRecv, serverSend);
                 }
                 catch { return null; }

@@ -107,6 +107,8 @@ services:
     environment:
       <<: *common-env
       CenterHttpPort: "31316"
+    # 覆盖锚点 depends_on：Center 不能依赖自身（依赖环），其余节点仍等待 center 先启动
+    depends_on: {}
     ports: ["31306:31306", "31316:31316", "41306:41306"]
 
   gateway:
@@ -147,6 +149,30 @@ services:
       EntityCallDirectRouting: "false"
       EntityCallLocationCacheTtlMs: "30000"
     ports: ["31307:31307", "41307:41307"]
+
+  # ---------- 监控（Prometheus 抓取各节点 /metrics，Grafana 可视化 + 内置告警） ----------
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["9090:9090"]
+    restart: unless-stopped
+    networks: [cluster]
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      # 生产务必覆盖：GF_SECURITY_ADMIN_PASSWORD 或挂载独立 provisioning 的 admin 配置
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on:
+      prometheus: { condition: service_started }
+    restart: unless-stopped
+    networks: [cluster]
 
 volumes:
   mysql-data:

@@ -297,6 +297,8 @@ namespace Center
                         CenterServerApp.SuspendedSessions?.SweepExpired(DateTime.UtcNow);
                         // P2：清扫匹配/房间/分类锁状态（防客户端可控分类洪泛累积）
                         CenterServerApp.Match?.SweepStaleMatchState(DateTime.UtcNow);
+                        // 节点趋势采样（管理台趋势图数据源）
+                        Center.MetricsSampler.Sample(DateTime.UtcNow);
                     }
                     catch (OperationCanceledException)
                     {

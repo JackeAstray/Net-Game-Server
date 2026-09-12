@@ -132,11 +132,15 @@ public static class Program
     {
         string configPath = "machine.json";
         int testDurationSeconds = 0;
+        int httpPort = 31321;
+        string? httpToken = null;
         string? emitSupervisorConfigPath = null;
         for (int i = 0; i < args.Length; i++)
         {
             if (args[i] == "--config" && i + 1 < args.Length) configPath = args[++i];
-            else if (args[i] == "--test-duration" && i + 1 < args.Length) testDurationSeconds = int.Parse(args[++i]);
+            else if (args[i] == "--test-duration" && i + 1 < args.Length && int.TryParse(args[i + 1], out int parsedDuration)) testDurationSeconds = parsedDuration;
+            else if (args[i] == "--http-port" && i + 1 < args.Length && int.TryParse(args[i + 1], out int parsedHttpPort)) httpPort = parsedHttpPort;
+            else if (args[i] == "--http-token" && i + 1 < args.Length) httpToken = args[++i];
             else if (args[i] == "--emit-supervisor-config" && i + 1 < args.Length) emitSupervisorConfigPath = args[++i];
         }
 
@@ -195,6 +199,12 @@ public static class Program
 
         // 启动 worker：每个 ready 信号触发后启动后续层
         _ = Task.Run(async () => await StartLoopAsync(managed, startOrder, topology, stopping.Token));
+
+        // HTTP 控制台：本机可视化托管进程状态与控制（--http-port 0 禁用；测试模式不启动）
+        if (testDurationSeconds <= 0 && httpPort > 0)
+        {
+            _ = Task.Run(async () => await HttpConsole.RunAsync(managed, topology, httpPort, httpToken, stopping.Token));
+        }
 
         if (testDurationSeconds > 0)
         {
@@ -346,7 +356,8 @@ public static class Program
         }
     }
 
-    private static void StartProcess(ManagedInstance managed, Topology topology, CancellationToken stoppingToken = default)
+    /// <summary>internal 供 HttpConsole 手动启动/重启指令调用。</summary>
+    internal static void StartProcess(ManagedInstance managed, Topology topology, CancellationToken stoppingToken = default)
     {
         // P2 修复：停机中不再启动新进程（防 Ctrl+C 竞态窗口内拉起孤儿进程）。
         if (stoppingToken.IsCancellationRequested || managed.Stopping)

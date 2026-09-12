@@ -117,7 +117,8 @@ internal static class CenterHttpServer
                 "Center HTTP 管理接口未配置 ApiKey（CenterHttpApiKeys/HttpApiKeys），所有 /api/center/* 将返回 401。" +
                 "生产环境必须配置。");
         }
-        app.UseMiddleware<CenterApiKeyAuthMiddleware>(apiKeys, Array.Empty<string>());
+        // 管理台首页匿名放行（静态 HTML 无敏感数据，数据接口仍需 Key）；/api/center/* 全部强鉴权
+        app.UseMiddleware<CenterApiKeyAuthMiddleware>(apiKeys, new[] { "/" });
 
         // 管理台首页（对标 KBE guiconsole 的 Web 简化版）：轮询 health/nodes/summary/rooms
         // 鉴权由 CenterApiKeyAuthMiddleware 统一完成（恒定时间比较 + 限流），此处不再重复校验，
@@ -145,21 +146,159 @@ th,td{border:1px solid #333;padding:5px 8px;text-align:left}th{background:#222}
 </style></head>
 <body>
 <h1>Net-Game-Server 管理台 <span id="ts"></span></h1>
+<div class="card">API Key：<input id="apikey" type="password" style="width:340px" placeholder="输入 X-Api-Key（保存在浏览器本地）"><button onclick="saveKey()">保存</button></div>
 <div class="card" id="health"></div>
-<div class="card"><h2>节点</h2><table><thead><tr><th>节点ID</th><th>类型</th><th>地址</th><th>负载</th><th>心跳</th><th>连接</th></tr></thead><tbody id="nodes"></tbody></table></div>
+<div class="card"><h2>节点趋势（最近 30 分钟）</h2><svg id="trend" width="100%" height="150" viewBox="0 0 800 150" preserveAspectRatio="none"></svg><div id="trendlegend" style="font-size:12px;color:#888"></div></div>
+<div class="card"><h2>节点</h2><table><thead><tr><th>节点ID</th><th>类型</th><th>地址</th><th>负载</th><th>心跳</th><th>连接</th><th>内存</th><th>运行时长</th><th>线程</th></tr></thead><tbody id="nodes"></tbody></table></div>
 <div class="card"><h2>机器/进程总览（KBE machine 化，迭代 20）</h2><table><thead><tr><th>机器ID</th><th>托管方</th><th>总节点</th><th>Battle</th><th>Game</th><th>Gateway</th><th>Login</th><th>DB</th><th>Center</th><th>在线</th></tr></thead><tbody id="machines"></tbody></table></div>
 <div class="card"><h2>房间</h2><table><thead><tr><th>房间ID</th><th>名称</th><th>类型</th><th>Battle节点</th><th>人数</th><th>状态</th><th>房主</th></tr></thead><tbody id="rooms"></tbody></table></div>
+<div class="card"><h2>配置中心（运行时覆盖）</h2>
+<div>Key <input id="cfgkey" style="width:220px"> Value <input id="cfgval" style="width:280px" placeholder="留空保存 = 删除该键"> <button onclick="saveConfig()">保存/更新</button></div>
+<table><thead><tr><th>Key</th><th>Value</th><th>操作</th></tr></thead><tbody id="cfgrows"></tbody></table>
+<h2 style="margin-top:12px">变更历史与回滚</h2>
+<table><thead><tr><th>版本</th><th>操作</th><th>Key</th><th>旧值</th><th>新值</th><th>时间</th><th>操作</th></tr></thead><tbody id="cfghistory"></tbody></table>
+</div>
 <script>
+function saveKey(){
+  localStorage.setItem('ngs_api_key', document.getElementById('apikey').value.trim());
+  document.getElementById('ts').textContent='API Key 已保存';
+}
+(function(){
+  document.getElementById('apikey').value = localStorage.getItem('ngs_api_key') || '';
+})();
+async function fetchJson(url){
+  const key = localStorage.getItem('ngs_api_key') || '';
+  const headers = key ? {'X-Api-Key': key} : {};
+  const res = await fetch(url, {headers});
+  if (!res.ok) throw new Error(url + ' HTTP ' + res.status);
+  return res.json();
+}
+function fmtBytes(b){
+  if (b >= 1024*1024*1024) return (b/1024/1024/1024).toFixed(1)+' GiB';
+  if (b >= 1024*1024) return (b/1024/1024).toFixed(1)+' MiB';
+  return (b/1024).toFixed(1)+' KiB';
+}
+async function saveConfig(){
+  const key = document.getElementById('cfgkey').value.trim();
+  const val = document.getElementById('cfgval').value;
+  if (!key){ document.getElementById('ts').textContent='key 不能为空'; return; }
+  try{
+    const r = await fetchJson('/api/center/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({key, value: val})});
+    document.getElementById('ts').textContent = r.success ? '配置已保存: '+key : '保存失败: '+(r.message||'');
+    document.getElementById('cfgval').value='';
+    refresh();
+  }catch(e){ document.getElementById('ts').textContent='保存失败: '+e; }
+}
+async function deleteConfig(key){
+  try{
+    const r = await fetchJson('/api/center/config/'+encodeURIComponent(key), {method:'DELETE'});
+    document.getElementById('ts').textContent = r.success ? '已删除: '+key : '删除失败: '+(r.message||'');
+    refresh();
+  }catch(e){ document.getElementById('ts').textContent='删除失败: '+e; }
+}
+async function rollbackTo(version){
+  if(!confirm('回滚到版本 '+version+'？将撤销其后全部配置变更')) return;
+  try{
+    const r = await fetchJson('/api/center/config-rollback', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({version})});
+    document.getElementById('ts').textContent = '回滚完成，撤销 '+r.undone+' 条变更';
+    refresh();
+  }catch(e){ document.getElementById('ts').textContent='回滚失败: '+e; }
+}
+function renderConfig(cfg){
+  const tb=document.querySelector('#cfgrows'); tb.textContent='';
+  const map = (cfg && cfg.overrides) || {};
+  const keys = Object.keys(map);
+  if (keys.length===0){
+    const tr=document.createElement('tr');
+    const td=document.createElement('td'); td.colSpan=3; td.textContent='（无运行时覆盖，全部使用配置文件默认值）';
+    tr.appendChild(td); tb.appendChild(tr);
+    return;
+  }
+  for(const k of keys){
+    const tr=document.createElement('tr');
+    const td1=document.createElement('td'); td1.textContent=k;
+    const td2=document.createElement('td'); td2.textContent=String(map[k]);
+    const td3=document.createElement('td');
+    const b=document.createElement('button'); b.textContent='删除'; b.onclick=()=>deleteConfig(k);
+    td3.appendChild(b);
+    tr.append(td1,td2,td3);
+    tb.appendChild(tr);
+  }
+}
+function renderHistory(hist){
+  const tb=document.querySelector('#cfghistory'); tb.textContent='';
+  if(!hist || hist.length===0){
+    const tr=document.createElement('tr');
+    const td=document.createElement('td'); td.colSpan=7; td.textContent='（暂无变更历史）';
+    tr.appendChild(td); tb.appendChild(tr);
+    return;
+  }
+  for(const e of hist){
+    const tr=document.createElement('tr');
+    const cells=[e.version, e.op, e.key, e.valueBefore==null?'-':e.valueBefore, e.valueAfter==null?'-':e.valueAfter, e.timeUtc?new Date(e.timeUtc).toLocaleTimeString():'-'];
+    for(const v of cells){
+      const td=document.createElement('td'); td.textContent=String(v); tr.appendChild(td);
+    }
+    const td3=document.createElement('td');
+    if(e.op!=='rollback'){
+      const b=document.createElement('button'); b.textContent='回滚到此'; b.onclick=()=>rollbackTo(e.version);
+      td3.appendChild(b);
+    }
+    tr.appendChild(td3);
+    tb.appendChild(tr);
+  }
+}
+function drawLine(svg, pts, color, w){
+  if (pts.length < 2) return;
+  const d = pts.map((p,i)=> (i===0?'M':'L') + p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+  const el = document.createElementNS('http://www.w3.org/2000/svg','path');
+  el.setAttribute('d', d);
+  el.setAttribute('fill','none');
+  el.setAttribute('stroke', color);
+  el.setAttribute('stroke-width', String(w||2));
+  svg.appendChild(el);
+}
+function renderTrend(t){
+  const svg = document.getElementById('trend');
+  svg.textContent = '';
+  const legend = document.getElementById('trendlegend'); legend.textContent='';
+  if (!t || t.length < 2){ legend.textContent = '样本不足（启动后每 10 秒采集一点）'; return; }
+  const W=800, H=150, PAD=8;
+  const series = [
+    {key:'nodeCount', label:'节点数', color:'#4caf50'},
+    {key:'connectedCount', label:'在线', color:'#2196f3'},
+    {key:'totalLoad', label:'总负载', color:'#ff9800'},
+    {key:'roomCount', label:'房间数', color:'#e91e63'}
+  ];
+  let maxV = 4;
+  for(const s of series) for(const p of t) maxV = Math.max(maxV, p[s.key]);
+  maxV = Math.ceil(maxV * 1.1) || 1;
+  const x = (i)=> PAD + (W - 2*PAD) * (i/(t.length-1));
+  const y = (v)=> H - PAD - (H - 2*PAD) * (v/maxV);
+  for(const s of series){
+    drawLine(svg, t.map((p,i)=>[x(i), y(p[s.key])]), s.color, 2);
+    const sw = document.createElement('span');
+    sw.textContent = s.label + '=' + t[t.length-1][s.key] + '  ';
+    legend.appendChild(sw);
+  }
+}
 async function refresh(){
   try{
-    const [h,n,s,c,r]=await Promise.all([
-      fetch('/api/center/health').then(x=>x.json()),
-      fetch('/api/center/nodes').then(x=>x.json()),
-      fetch('/api/center/summary').then(x=>x.json()),
-      fetch('/api/center/cluster').then(x=>x.json()),
-      fetch('/api/center/rooms').then(x=>x.json())
+    const [h,n,s,c,r,t,m,cfg,hist]=await Promise.all([
+      fetchJson('/api/center/health'),
+      fetchJson('/api/center/nodes'),
+      fetchJson('/api/center/summary'),
+      fetchJson('/api/center/cluster'),
+      fetchJson('/api/center/rooms'),
+      fetchJson('/api/center/metrics-trend'),
+      fetchJson('/api/center/node-metrics'),
+      fetchJson('/api/center/config'),
+      fetchJson('/api/center/config-history')
     ]);
     document.getElementById('ts').textContent='更新于 '+new Date().toLocaleTimeString()+'（每5秒自动刷新）';
+    renderTrend(t);
+    renderConfig(cfg);
+    renderHistory(hist);
     // XSS 修复：使用 textContent 而非 innerHTML 拼接用户可控字段
     const health=document.getElementById('health');
     health.textContent='';
@@ -167,9 +306,15 @@ async function refresh(){
     s1.textContent='状态: '+(h.status==='ok'?'正常':'异常')+' | Leader: '+(h.isLeader?'是':'否')+' | 节点数: '+h.nodeCount+' | '+s.battle+' Battle / '+s.game+' Game / '+s.gateway+' Gateway / '+s.login+' Login';
     health.appendChild(s1);
     const nt=document.querySelector('#nodes'); nt.textContent='';
+    const nm = {};
+    for(const mt of m){ nm[mt.nodeId] = mt; }
     for(const node of n){
       const tr=document.createElement('tr');
-      const tds=[node.nodeId, node.nodeType, node.host+':'+node.port, node.currentLoad, new Date(node.lastHeartbeat).toLocaleTimeString(), node.isConnected?'在线':'离线'];
+      const met = nm[node.nodeId];
+      const mem = (met && met.reachable) ? fmtBytes(met.memoryBytes) : '-';
+      const up = (met && met.reachable) ? Math.round(met.uptimeSeconds) + 's' : '-';
+      const thr = (met && met.reachable) ? met.threads : '-';
+      const tds=[node.nodeId, node.nodeType, node.host+':'+node.port, node.currentLoad, new Date(node.lastHeartbeat).toLocaleTimeString(), node.isConnected?'在线':'离线', mem, up, thr];
       for(const v of tds){
         const td=document.createElement('td');
         td.textContent=String(v);  // XSS 修复：纯文本插入

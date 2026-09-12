@@ -15,6 +15,9 @@ public sealed class TokenService
     private readonly TimeSpan defaultTtl;
     private readonly int maxClockSkewSeconds;
 
+    /// <summary>uid 字段长度上限（防超长账户串放大 token 体积与签名计算成本）。</summary>
+    private const int MaxUidLength = 256;
+
     /// <param name="secret">HMAC 密钥（生产环境从配置读取，禁止默认值上线）</param>
     /// <param name="defaultTtl">Token 默认有效期</param>
     /// <param name="maxClockSkewSeconds">允许的时钟偏移（秒）</param>
@@ -32,6 +35,11 @@ public sealed class TokenService
     /// <param name="ttl">可选有效期。</param>
     public string Issue(int userId, string uid, long seq, TimeSpan? ttl = null)
     {
+        // P2 修复：uid 长度上限，超限直接拒绝（fail-fast），防放大 token 体积与签名成本
+        if (string.IsNullOrEmpty(uid) || uid.Length > MaxUidLength)
+        {
+            throw new ArgumentException($"uid 长度非法（空或超过 {MaxUidLength}）", nameof(uid));
+        }
         long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         long expires = now + (long)(ttl ?? defaultTtl).TotalSeconds;
         // P2 修复：uid 为任意账户串，若含分隔符 '|' 会导致 Verify 拆段错误而永久失效。

@@ -15,12 +15,21 @@ namespace Logger
         public static async Task<int> Main(string[] args)
         {
             int port = 31320;
-            if (args.Length > 1 && args[0] == "--port")
+            int httpPort = 31321;
+            string? httpToken = null;
+            for (int i = 0; i < args.Length; i++)
             {
-                int parsedPort;
-                if (int.TryParse(args[1], out parsedPort))
+                if (args[i] == "--port" && i + 1 < args.Length && int.TryParse(args[i + 1], out int parsedPort))
                 {
                     port = parsedPort;
+                }
+                else if (args[i] == "--http-port" && i + 1 < args.Length && int.TryParse(args[i + 1], out int parsedHttpPort))
+                {
+                    httpPort = parsedHttpPort;
+                }
+                else if (args[i] == "--http-token" && i + 1 < args.Length)
+                {
+                    httpToken = args[++i];
                 }
             }
 
@@ -39,11 +48,19 @@ namespace Logger
                 server.LogReceived += OnLogReceived;
                 server.Start();
 
+                var cts = new CancellationTokenSource();
+                // HTTP 日志查看器（--http-port 0 禁用）
+                if (httpPort > 0)
+                {
+                    _ = Task.Run(() => HttpLogViewer.RunAsync(server.LogDir, httpPort, httpToken, cts.Token));
+                }
+
                 // 保持运行直到 Ctrl+C
                 TaskCompletionSource<bool> exitSignal = new TaskCompletionSource<bool>();
                 Console.CancelKeyPress += (object? sender, ConsoleCancelEventArgs e) =>
                 {
                     e.Cancel = true;
+                    cts.Cancel();
                     exitSignal.TrySetResult(true);
                 };
                 await exitSignal.Task;

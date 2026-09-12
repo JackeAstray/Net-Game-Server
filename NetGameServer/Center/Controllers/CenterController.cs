@@ -47,6 +47,20 @@ public class CenterController : ControllerBase
         return Ok(rooms);
     }
 
+    /// <summary>节点趋势采样（维护循环每心跳周期写入，管理台画趋势图）。</summary>
+    [HttpGet("metrics-trend")]
+    public IActionResult MetricsTrend()
+    {
+        return Ok(MetricsSampler.GetTrend());
+    }
+
+    /// <summary>节点运行指标聚合（尽力而为拉取各节点 /metrics，10s 缓存；health 端口默认回环时不可达）。</summary>
+    [HttpGet("node-metrics")]
+    public async Task<IActionResult> NodeMetrics()
+    {
+        return Ok(await NodeMetricsService.GetAsync());
+    }
+
     /// <summary>
     /// 按机器聚合的节点列表（KBE machine 化，迭代 20）：
     /// 从 NodeManager 节点注册表读，按 MachineId 分组；空 MachineId 归到 "unassigned" 组。
@@ -137,6 +151,7 @@ public class CenterController : ControllerBase
         }
         Shared.ConfigHelper.SetRuntimeOverride(key, item.Value);
         var overrides = RuntimeConfigStore.Load();
+        string? before = overrides.TryGetValue(key, out var old) ? old : null;
         if (item.Value == null)
         {
             overrides.Remove(key);
@@ -146,6 +161,7 @@ public class CenterController : ControllerBase
             overrides[key] = item.Value;
         }
         RuntimeConfigStore.Save(overrides);
+        ConfigHistory.Record(key, before, item.Value, "set");
         return Ok(new { success = true, key, value = item.Value });
     }
 
@@ -162,16 +178,49 @@ public class CenterController : ControllerBase
         {
             return BadRequest(new { success = false, message = "敏感配置键不允许运行时删除" });
         }
-        Shared.ConfigHelper.SetRuntimeOverride(trimmed, null);
         var overrides = RuntimeConfigStore.Load();
+        string? before = overrides.TryGetValue(trimmed, out var old) ? old : null;
+        Shared.ConfigHelper.SetRuntimeOverride(trimmed, null);
         overrides.Remove(trimmed);
         RuntimeConfigStore.Save(overrides);
+        ConfigHistory.Record(trimmed, before, null, "delete");
         return Ok(new { success = true, key = trimmed });
+    }
+
+    /// <summary>配置变更历史（新→旧，含前后值与版本号）。</summary>
+    [HttpGet("config-history")]
+    public IActionResult GetConfigHistory()
+    {
+        return Ok(ConfigHistory.Snapshot());
+    }
+
+    /// <summary>回滚到指定版本：撤销其后全部配置变更（敏感键在写入时已被拒绝，历史中不会出现）。</summary>
+    [HttpPost("config-rollback")]
+    public IActionResult ConfigRollback([FromBody] RollbackRequest req)
+    {
+        if (req == null || req.Version < 1)
+        {
+            return BadRequest(new { success = false, message = "version 必须 ≥ 1" });
+        }
+        int undone = ConfigHistory.RollbackTo(req.Version, (key, value) =>
+        {
+            Shared.ConfigHelper.SetRuntimeOverride(key, value);
+            var overrides = RuntimeConfigStore.Load();
+            if (value == null) overrides.Remove(key);
+            else overrides[key] = value;
+            RuntimeConfigStore.Save(overrides);
+        });
+        return Ok(new { success = true, undone });
     }
 
     public sealed class ConfigItem
     {
         public string Key { get; set; } = string.Empty;
         public string? Value { get; set; }
+    }
+
+    public sealed class RollbackRequest
+    {
+        public int Version { get; set; }
     }
 }

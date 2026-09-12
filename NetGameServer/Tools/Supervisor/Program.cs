@@ -31,7 +31,8 @@ public static class Program
         public int? RestartDelayMs { get; set; }
     }
 
-    private sealed class ManagedProcess
+    /// <summary>internal 供 HttpConsole 读取状态与控制指令。</summary>
+    internal sealed class ManagedProcess
     {
         public required ProcessConfig Config { get; init; }
         public Process? Process;
@@ -39,6 +40,8 @@ public static class Program
         public int RestartCount;
         public volatile bool Stopping;
         public string LogFile = string.Empty;
+        /// <summary>持久日志 writer（进程生命周期内复用，避免每行日志开关文件）。</summary>
+        public StreamWriter? LogWriter;
         public List<long> RestartTimestampsUtc = new(); // T2：分钟级重启限流时间戳（UTC Ticks）
     }
 
@@ -46,10 +49,14 @@ public static class Program
     {
         string configPath = "supervisor.json";
         int testDurationSeconds = 0;
+        int httpPort = 31322;
+        string? httpToken = null;
         for (int i = 0; i < args.Length; i++)
         {
             if (args[i] == "--config" && i + 1 < args.Length) configPath = args[++i];
-            else if (args[i] == "--test-duration" && i + 1 < args.Length) testDurationSeconds = int.Parse(args[++i]);
+            else if (args[i] == "--test-duration" && i + 1 < args.Length && int.TryParse(args[i + 1], out int parsedDuration)) testDurationSeconds = parsedDuration;
+            else if (args[i] == "--http-port" && i + 1 < args.Length && int.TryParse(args[i + 1], out int parsedHttpPort)) httpPort = parsedHttpPort;
+            else if (args[i] == "--http-token" && i + 1 < args.Length) httpToken = args[++i];
         }
 
         if (!File.Exists(configPath))
@@ -89,6 +96,12 @@ public static class Program
             StartProcess(m, config);
         }
 
+        // HTTP 控制台：本机可视化托管进程状态与控制（--http-port 0 禁用；测试模式不启动）
+        if (testDurationSeconds <= 0 && httpPort > 0)
+        {
+            _ = Task.Run(async () => await HttpConsole.RunAsync(managed, config, httpPort, httpToken, stopping.Token));
+        }
+
         if (testDurationSeconds > 0)
         {
             // 测试/CI 冒烟模式：到时自动汇总并关闭全部子进程
@@ -121,7 +134,8 @@ public static class Program
         return 0;
     }
 
-    private static void StartProcess(ManagedProcess managed, SupervisorConfig config)
+    /// <summary>internal 供 HttpConsole 手动启动/重启指令调用。</summary>
+    internal static void StartProcess(ManagedProcess managed, SupervisorConfig config)
     {
         managed.StartCount++;
         var psi = new ProcessStartInfo
@@ -139,6 +153,10 @@ public static class Program
             psi.RedirectStandardOutput = true;
             psi.RedirectStandardError = true;
             managed.LogFile = Path.Combine(config.LogDirectory!, $"{managed.Config.Name}.log");
+            // 重启时旧 writer 可能未关闭（防句柄泄漏），先关再开
+            managed.LogWriter?.Dispose();
+            Directory.CreateDirectory(config.LogDirectory!);
+            managed.LogWriter = new StreamWriter(managed.LogFile, append: true) { AutoFlush = true };
         }
 
         try
@@ -168,10 +186,10 @@ public static class Program
     private static void AppendLog(ManagedProcess managed, string? line)
     {
         // P3 修复：未配置 LogFile（LogDirectory 为空）时直接跳过，避免每条日志都走 File.AppendAllText("") 抛异常再被静默吞掉。
-        if (line == null || string.IsNullOrWhiteSpace(managed.LogFile)) return;
+        if (line == null || managed.LogWriter == null) return;
         try
         {
-            File.AppendAllText(managed.LogFile, $"[{DateTime.Now:HH:mm:ss}] {line}{Environment.NewLine}");
+            managed.LogWriter.WriteLine($"[{DateTime.Now:HH:mm:ss}] {line}");
         }
         catch
         {
@@ -250,6 +268,12 @@ public static class Program
                 {
                 }
             }
+        }
+        foreach (var m in managed)
+        {
+            m.LogWriter?.Flush();
+            m.LogWriter?.Dispose();
+            m.LogWriter = null;
         }
         await Task.CompletedTask;
     }

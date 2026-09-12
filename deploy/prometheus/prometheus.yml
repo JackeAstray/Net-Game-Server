@@ -1,0 +1,20 @@
+# Net-Game-Server Prometheus 抓取配置
+# 各节点 /metrics 由 Shared/HealthServer 提供，挂载于健康端口（业务端口+10000）。
+# 容器内服务名即 DNS 名（compose 网络 cluster）。
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+scrape_configs:
+  - job_name: netgame-nodes
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - gateway:41300
+          - login:41302
+          - game:41304
+          - db:41305
+          - center:41306
+          - battle:41307
+        labels:
+          cluster: netgame

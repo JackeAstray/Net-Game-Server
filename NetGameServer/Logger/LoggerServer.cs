@@ -160,8 +160,10 @@ public sealed class LoggerServer : IDisposable
             return true;
         }
 
-        entry.Count++;
-        return entry.Count <= MaxPacketsPerNodePerSecond;
+        if (entry.Count >= MaxPacketsPerNodePerSecond) return false;
+        // ValueTuple 是值类型，必须整体写回，否则 Count++ 只改副本、限流永不生效
+        nodeRates[nodeId] = (entry.WindowStartTicks, entry.Count + 1);
+        return true;
     }
 
     private void AppendToFileWithRotation(string fileName, string line)
