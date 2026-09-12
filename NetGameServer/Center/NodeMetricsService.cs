@@ -23,26 +23,47 @@ public static class NodeMetricsService
     private static readonly object gate = new();
     private static List<NodeMetric>? cache;
     private static long cacheTimeTicks;
+    /// <summary>进行中的抓取任务（P2 修复：缓存过期瞬间只允许一个请求刷新，其余等待同一任务，防 cache stampede）。</summary>
+    private static Task<object>? inflight;
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(10);
     private static readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(2) };
 
-    public static async Task<object> GetAsync()
+    public static Task<object> GetAsync()
     {
         lock (gate)
         {
             if (cache != null && Environment.TickCount64 - cacheTimeTicks < (long)CacheTtl.TotalMilliseconds)
             {
-                return Build(cache);
+                return Task.FromResult(Build(cache));
+            }
+            if (inflight != null)
+            {
+                return inflight;
+            }
+            inflight = RefreshAsync();
+            return inflight;
+        }
+    }
+
+    private static async Task<object> RefreshAsync()
+    {
+        try
+        {
+            var list = await ScrapeAsync();
+            lock (gate)
+            {
+                cache = list;
+                cacheTimeTicks = Environment.TickCount64;
+            }
+            return Build(list);
+        }
+        finally
+        {
+            lock (gate)
+            {
+                inflight = null;
             }
         }
-
-        var list = await ScrapeAsync();
-        lock (gate)
-        {
-            cache = list;
-            cacheTimeTicks = Environment.TickCount64;
-        }
-        return Build(list);
     }
 
     private static async Task<List<NodeMetric>> ScrapeAsync()

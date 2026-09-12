@@ -13,6 +13,9 @@ namespace Logger;
 /// </summary>
 internal static class HttpLogViewer
 {
+    /// <summary>并发请求上限（P3：防本机洪泛耗尽线程池；查看器为低频轮询，64 充足）。</summary>
+    private static readonly System.Threading.SemaphoreSlim handlerLimit = new(64);
+
     public static async Task RunAsync(string logDir, int port, string? token, CancellationToken stoppingToken)
     {
         var listener = new HttpListener();
@@ -42,7 +45,12 @@ internal static class HttpLogViewer
                 catch (OperationCanceledException) { break; }
                 catch (HttpListenerException) { break; }
 
-                _ = Task.Run(() => HandleAsync(ctx, logDir, token));
+                _ = Task.Run(async () =>
+                {
+                    await handlerLimit.WaitAsync();
+                    try { await HandleAsync(ctx, logDir, token); }
+                    finally { handlerLimit.Release(); }
+                });
             }
         }
         finally
@@ -115,7 +123,9 @@ internal static class HttpLogViewer
     /// <summary>扫描指定日期的日志文件（含滚动 .1/.2/.3），按节点/级别/关键字过滤，最新在前。</summary>
     private static string QueryLogs(string logDir, string? node, string? level, string? keyword, string dateStr, int max)
     {
-        var logs = new List<object>();
+        // P2 修复：环形缓冲只保留最近 max 条，防大日志文件全量驻留内存
+        var logs = new LinkedList<object>();
+        long totalMatches = 0;
         try
         {
             string pattern = $"*.{dateStr}.log*";
@@ -139,7 +149,9 @@ internal static class HttpLogViewer
                         !lineLevel.Equals(level, StringComparison.OrdinalIgnoreCase)) continue;
                     if (!string.IsNullOrWhiteSpace(keyword) &&
                         !lineText.Contains(keyword, StringComparison.OrdinalIgnoreCase)) continue;
-                    logs.Add(new { time = line[..Math.Min(12, line.Length)], level = lineLevel, text = lineText });
+                    totalMatches++;
+                    logs.AddLast(new { time = line[..Math.Min(12, line.Length)], level = lineLevel, text = lineText });
+                    if (logs.Count > max) logs.RemoveFirst();
                 }
             }
         }
@@ -152,7 +164,6 @@ internal static class HttpLogViewer
             Console.Error.WriteLine($"[Logger] 日志查询失败: {ex.Message}");
         }
 
-        var tail = logs.AsEnumerable().Reverse().Take(max);
         return JsonSerializer.Serialize(new
         {
             ok = true,
@@ -160,9 +171,9 @@ internal static class HttpLogViewer
             level = level ?? "",
             keyword = keyword ?? "",
             date = dateStr,
-            count = logs.Count,
-            returned = tail.Count(),
-            logs = tail
+            count = totalMatches,
+            returned = logs.Count,
+            logs = logs.AsEnumerable().Reverse()
         });
     }
 
@@ -172,7 +183,7 @@ internal static class HttpLogViewer
         if (line.Length <= 12) return ("", null);
         string rest = line[12..];
         int tab = rest.IndexOf('\t');
-        if (tab < 0) return ("", rest);
+        if (tab < 0) return ("", rest.TrimStart()); // 无 tab 行：剥时间前缀后的空格，整行当 text
         return (rest[..tab].Trim(), rest);
     }
 

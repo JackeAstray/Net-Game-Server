@@ -13,6 +13,10 @@ public class PipelineTcpServer : INetworkServer
     private Socket? listenSocket;
     private readonly CancellationTokenSource cts = new();
 
+    /// <summary>连接数上限（P3 修复：演示服务端原无上限，防资源耗尽 DoS）。</summary>
+    private const int MaxConnections = 256;
+    private int activeConnections;
+
     // 实现 INetworkServer 事件
     public event SessionConnectedHandler? OnSessionConnected;
     public event DataReceivedHandler? OnDataReceived;
@@ -56,6 +60,14 @@ public class PipelineTcpServer : INetworkServer
             while (!cts.Token.IsCancellationRequested)
             {
                 var clientSocket = await listenSocket!.AcceptAsync(cts.Token);
+                // 连接数上限：超限立即关闭，拒绝资源耗尽
+                if (Interlocked.Increment(ref activeConnections) > MaxConnections)
+                {
+                    Interlocked.Decrement(ref activeConnections);
+                    clientSocket.Close();
+                    Shared.Log.Warning($"[PipelineTcpServer] 连接数已达上限({MaxConnections})，拒绝新连接");
+                    continue;
+                }
                 var session = new PipelineTcpSession(clientSocket);
                 Shared.Log.Info($"[PipelineTcpServer] Session {session.SessionId} connected from {session.RemoteEndPoint}");
 
@@ -86,6 +98,7 @@ public class PipelineTcpServer : INetworkServer
         var processingTask = ReadPipeAsync(session, pipe.Reader, cts.Token);
 
         await Task.WhenAll(readingTask, processingTask);
+        Interlocked.Decrement(ref activeConnections);
 
         // 触发断开事件
         OnSessionDisconnected?.Invoke(session, "Socket Closed/Error");

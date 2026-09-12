@@ -343,12 +343,15 @@ public sealed class EntityPersistenceService : IDisposable
         // P3 加固：置位关闭标记（此后 FlushDirtyIfDue/SaveEntityAsync 不再启动新写入），
         // 等待在途批量落库完成，再执行最终 flush，最后释放存储——防在途/剩余脏数据被丢弃。
         disposed = true;
+        // P1 修复：仅当成功取得 gate 才执行 flush 并在 finally 释放；
+        // Wait 超时说明在途落库仍持有 gate，此时并发 flush 会破坏串行约束，且无条件 Release 会凭空多放一个 permit。
+        bool acquired = flushGate.Wait(TimeSpan.FromSeconds(10));
         try
         {
-            // 等待在途批量落库完成（获取 gate 即表示无在途写入）。
-            if (!flushGate.Wait(TimeSpan.FromSeconds(10)))
+            if (!acquired)
             {
-                Framework.Core.Log.Warning("实体持久化关服等待在途落库超时");
+                Framework.Core.Log.Warning("实体持久化关服等待在途落库超时，跳过最终 flush（可能残留脏数据）");
+                return;
             }
             // 已持有 gate：执行最终 flush（FlushDirtyLockedCoreAsync 假定持有 gate，不会死锁）。
             // F4 修复：单次批量落库有上限（flushBatchSize），此前只 flush 一次——脏实体数超过上限时
@@ -371,7 +374,10 @@ public sealed class EntityPersistenceService : IDisposable
         }
         finally
         {
-            try { flushGate.Release(); } catch { /* 已释放则忽略 */ }
+            if (acquired)
+            {
+                try { flushGate.Release(); } catch { /* 已释放则忽略 */ }
+            }
         }
         store.Dispose();
         if (shardStores != null)

@@ -21,7 +21,6 @@ namespace Game.Handlers
     {
         private static readonly ConcurrentDictionary<long, PendingGuildRequest> PendingGuildRequests = new();
         private static readonly ConcurrentDictionary<long, int> PendingBySession = new();
-        private static long requestIdSeed = DateTime.UtcNow.Ticks;
         private static long lastPendingSweepTicks;
 
         private const int MaxPendingPerSession = 16;
@@ -262,7 +261,7 @@ namespace Game.Handlers
             }
 
             long clientSessionId = session.SessionId;
-            long requestId = Interlocked.Increment(ref requestIdSeed);
+            long requestId = DbRequestIds.Next();
 
             int pendingCount = PendingBySession.AddOrUpdate(clientSessionId, 1, (_, v) => v + 1);
             if (pendingCount > MaxPendingPerSession || PendingGuildRequests.Count >= MaxTotalPending)

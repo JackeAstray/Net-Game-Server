@@ -24,6 +24,9 @@ internal static class HttpConsole
         public string? Instance { get; set; }
     }
 
+    /// <summary>并发请求上限（P3：防本机洪泛耗尽线程池；控制台为低频轮询，64 充足）。</summary>
+    private static readonly System.Threading.SemaphoreSlim handlerLimit = new(64);
+
     public static async Task RunAsync(
         List<ManagedInstance> managed,
         Topology topology,
@@ -58,7 +61,12 @@ internal static class HttpConsole
                 catch (OperationCanceledException) { break; }
                 catch (HttpListenerException) { break; }
 
-                _ = Task.Run(() => HandleAsync(ctx, managed, topology, token));
+                _ = Task.Run(async () =>
+                {
+                    await handlerLimit.WaitAsync();
+                    try { await HandleAsync(ctx, managed, topology, token); }
+                    finally { handlerLimit.Release(); }
+                });
             }
         }
         finally
@@ -192,8 +200,9 @@ internal static class HttpConsole
 
         string message;
         int statusCode = (int)HttpStatusCode.OK;
-        // 控制指令串行化，避免与崩溃自动重启/退出回调并发竞态
-        lock (managed)
+        // 控制指令串行化：锁实例对象（与 StartProcess/OnProcessExited 共用同一把锁），
+        // 防 HTTP 指令与崩溃自动重启并发启动双进程、计数错乱。
+        lock (target)
         {
             switch (req.Action.ToLowerInvariant())
             {

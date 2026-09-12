@@ -21,7 +21,6 @@ namespace Game.Handlers
         private static readonly ConcurrentDictionary<int, DateTime> InviteRateLimit = new();
         private static readonly ConcurrentDictionary<long, PendingInvite> PendingInvites = new();
         private static readonly ConcurrentDictionary<int, ConcurrentDictionary<long, byte>> PendingInvitesByInvitee = new();
-        private static long requestIdSeed = DateTime.UtcNow.Ticks;
         private static long inviteIdSeed = DateTime.UtcNow.Ticks;
         private static readonly TimeSpan InviteMinInterval = TimeSpan.FromSeconds(3);
         private static readonly TimeSpan InviteDedupWindow = TimeSpan.FromSeconds(20);
@@ -214,7 +213,7 @@ namespace Game.Handlers
                 return false;
             }
 
-            long requestId = System.Threading.Interlocked.Increment(ref requestIdSeed);
+            long requestId = DbRequestIds.Next();
 
             // P6 加固：待处理 DB 请求配额（单会话 + 全局），超限拒绝，防请求洪泛撑爆待处理字典。
             int pendingCount = PendingBySession.AddOrUpdate(clientSessionId, 1, (_, v) => v + 1);

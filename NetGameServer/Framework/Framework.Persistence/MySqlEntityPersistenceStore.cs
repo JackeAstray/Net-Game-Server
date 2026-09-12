@@ -12,8 +12,8 @@ public sealed class MySqlEntityPersistenceStore : IEntityPersistenceStore
 {
     private readonly string connectionString;
 
-    /// <summary>进程级建表仅执行一次（原每次 Save 都发 CREATE TABLE IF NOT EXISTS DDL，浪费往返）。</summary>
-    private static bool tableEnsured;
+    /// <summary>实例级建表仅执行一次（P1 修复：原 static 标记在分片/多库场景下第二个实例跳过建表导致 SQL 报错）。</summary>
+    private bool tableEnsured;
     private static readonly object tableGate = new();
 
     public string Name => "MySql";
@@ -37,9 +37,10 @@ public sealed class MySqlEntityPersistenceStore : IEntityPersistenceStore
 
     private const string CountSql = "SELECT COUNT(*) FROM entity_persistence WHERE entity_type = @type";
 
-    private async Task EnsureTableAsync(MySqlConnector.MySqlConnection conn)
+    /// <summary>同步建表 DDL（P2 修复：原异步 + GetAwaiter().GetResult() 是同步阻塞异步反模式，改为与 PostgreSql 对齐）。</summary>
+    private void EnsureTable(MySqlConnector.MySqlConnection conn)
     {
-        await using var cmd = conn.CreateCommand();
+        using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             CREATE TABLE IF NOT EXISTS entity_persistence (
                 entity_type VARCHAR(64) NOT NULL,
@@ -49,10 +50,10 @@ public sealed class MySqlEntityPersistenceStore : IEntityPersistenceStore
                 PRIMARY KEY (entity_type, entity_id)
             )
             """;
-        await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+        cmd.ExecuteNonQuery();
     }
 
-    /// <summary>进程内只建表一次（double-checked locking）。</summary>
+    /// <summary>实例内只建表一次（double-checked locking）。</summary>
     private void EnsureTableOnce(MySqlConnector.MySqlConnection conn)
     {
         if (tableEnsured)
@@ -65,7 +66,7 @@ public sealed class MySqlEntityPersistenceStore : IEntityPersistenceStore
             {
                 return;
             }
-            EnsureTableAsync(conn).GetAwaiter().GetResult();
+            EnsureTable(conn);
             tableEnsured = true;
         }
     }

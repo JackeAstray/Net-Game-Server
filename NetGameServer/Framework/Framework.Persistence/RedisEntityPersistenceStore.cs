@@ -13,7 +13,8 @@ namespace Framework.Persistence;
 /// </summary>
 public sealed class RedisEntityPersistenceStore : IEntityPersistenceStore
 {
-    private readonly ConnectionMultiplexer redis;
+    /// <summary>惰性连接（P2 修复：原构造函数同步 Connect 最长阻塞 5s；首次使用时才建立）。</summary>
+    private readonly Lazy<ConnectionMultiplexer> redis;
     private readonly int database;
 
     public string Name => "Redis";
@@ -21,17 +22,20 @@ public sealed class RedisEntityPersistenceStore : IEntityPersistenceStore
     public RedisEntityPersistenceStore(string connectionString, int database = 0)
     {
         // 启动不因 Redis 不可达而卡死/抛异常：AbortOnConnectFail=false + 5s 连接超时，
-        // Redis 恢复后 StackExchange.Redis 自动重连。
-        var options = ConfigurationOptions.Parse(connectionString);
-        options.AbortOnConnectFail = false;
-        options.ConnectTimeout = 5000;
-        this.redis = ConnectionMultiplexer.Connect(options);
+        // Redis 恢复后 StackExchange.Redis 自动重连。连接推迟到首次读写时建立。
+        this.redis = new Lazy<ConnectionMultiplexer>(() =>
+        {
+            var options = ConfigurationOptions.Parse(connectionString);
+            options.AbortOnConnectFail = false;
+            options.ConnectTimeout = 5000;
+            return ConnectionMultiplexer.Connect(options);
+        });
         this.database = database;
     }
 
     private static string Key(string entityType) => $"entity_persistence:{entityType}";
 
-    private IDatabase Db => redis.GetDatabase(database);
+    private IDatabase Db => redis.Value.GetDatabase(database);
 
     public void Save(string entityType, long entityId, byte[] serializedProps)
     {
@@ -66,6 +70,9 @@ public sealed class RedisEntityPersistenceStore : IEntityPersistenceStore
 
     public void Dispose()
     {
-        redis.Dispose();
+        if (redis.IsValueCreated)
+        {
+            redis.Value.Dispose();
+        }
     }
 }

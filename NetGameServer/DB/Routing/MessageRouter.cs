@@ -9,6 +9,14 @@ namespace DB.Routing
     {
         private readonly ConcurrentDictionary<int, Func<ISession, ReadOnlyMemory<byte>, Task>> handlers = new();
 
+        /// <summary>缓存的处理器委托（P3 修复：方法组每次求值都是新委托实例，-= 失效会重复订阅、同一数据包处理多次）。</summary>
+        private readonly Network.DataReceivedHandler rawDataHandler;
+
+        public MessageRouter()
+        {
+            rawDataHandler = HandleRawData;
+        }
+
         /// <summary>
         /// 按会话保序的任务队列（对标 KBE Buffered_DBTasks）：
         /// 同一调用方（Login/Game 连接）的 DB 请求严格按序执行，不同调用方并发执行。
@@ -22,8 +30,8 @@ namespace DB.Routing
         /// <param name="server"></param>
         public void BindServer(INetworkServer server)
         {
-            server.OnDataReceived -= HandleRawData;
-            server.OnDataReceived += HandleRawData;
+            server.OnDataReceived -= rawDataHandler;
+            server.OnDataReceived += rawDataHandler;
         }
 
         /// <summary>

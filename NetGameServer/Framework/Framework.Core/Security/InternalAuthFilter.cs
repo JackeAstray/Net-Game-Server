@@ -92,7 +92,13 @@ public static class SecretConfig
     /// 允许占位符密钥的开关。仅供集成测试/开发模式使用；
     /// 生产代码必须保持 false。
     /// </summary>
-    public static bool AllowPlaceholderSecrets { get; private set; }
+    // P2 加固：volatile 支撑，防跨线程撕裂读/可见性问题（完整根治=生产路径不读测试开关，见 Require）
+    private static volatile bool allowPlaceholderSecrets;
+    public static bool AllowPlaceholderSecrets
+    {
+        get => allowPlaceholderSecrets;
+        private set => allowPlaceholderSecrets = value;
+    }
 
     /// <summary>
     /// 按优先级从多个文档化来源解析共享密钥：

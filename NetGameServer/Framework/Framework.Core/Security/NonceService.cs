@@ -10,7 +10,7 @@ namespace Framework.Core.Security;
 public sealed class NonceService
 {
     private readonly ConcurrentDictionary<string, long> nonces = new(StringComparer.Ordinal);
-    private long lastCleanupTicks;
+    private long lastCleanupTicks; // P3：仅 Interlocked 读写（并发 RegisterOnce）
 
     /// <summary>清理间隔（默认 60s）：仅在 <see cref="RegisterOnce"/> 命中时按需触发，避免独立 timer。</summary>
     private static readonly long CleanupIntervalTicks = TimeSpan.FromSeconds(60).Ticks;
@@ -57,13 +57,13 @@ public sealed class NonceService
                 removed++;
             }
         }
-        lastCleanupTicks = n.Ticks;
+        System.Threading.Interlocked.Exchange(ref lastCleanupTicks, n.Ticks);
         return removed;
     }
 
     private void MaybeCleanup(DateTime now)
     {
-        if (now.Ticks - lastCleanupTicks < CleanupIntervalTicks)
+        if (now.Ticks - System.Threading.Interlocked.Read(ref lastCleanupTicks) < CleanupIntervalTicks)
         {
             return;
         }

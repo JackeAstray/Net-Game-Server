@@ -13,7 +13,8 @@ public sealed class PostgreSqlEntityPersistenceStore : IEntityPersistenceStore
     private readonly string connectionString;
 
     /// <summary>进程级建表仅执行一次（原每次 Save 都发 CREATE TABLE IF NOT EXISTS DDL，浪费往返）。</summary>
-    private static bool tableEnsured;
+    /// <summary>实例级建表仅执行一次（P1 修复：原 static 标记在分片/多库场景下第二个实例跳过建表导致 SQL 报错）。</summary>
+    private bool tableEnsured;
     private static readonly object tableGate = new();
 
     public string Name => "PostgreSql";

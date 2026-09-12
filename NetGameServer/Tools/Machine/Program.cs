@@ -118,6 +118,8 @@ public static class Program
         public int RestartCount;
         public volatile bool Stopping;
         public string LogFile = string.Empty;
+        /// <summary>持久日志 writer（进程生命周期内复用，避免每行日志开关文件）。</summary>
+        public StreamWriter? LogWriter;
         public DateTime? LastStartedAtUtc;
         public DateTime? LastExitedAtUtc;
         public int? LastExitCode;
@@ -359,135 +361,161 @@ public static class Program
     /// <summary>internal 供 HttpConsole 手动启动/重启指令调用。</summary>
     internal static void StartProcess(ManagedInstance managed, Topology topology, CancellationToken stoppingToken = default)
     {
-        // P2 修复：停机中不再启动新进程（防 Ctrl+C 竞态窗口内拉起孤儿进程）。
-        if (stoppingToken.IsCancellationRequested || managed.Stopping)
+        // P1 修复：实例级互斥——本实例的启动/退出回调/控制指令全部在同一把锁下，
+        // 防 HTTP 控制指令与崩溃自动重启并发启动双进程（孤儿进程）、计数错乱。
+        lock (managed)
         {
-            Console.WriteLine($"[Machine] 跳过启动 {managed.Spec.InstanceId}（正在停机）");
-            return;
-        }
+            // P2 修复：停机中不再启动新进程（防 Ctrl+C 竞态窗口内拉起孤儿进程）。
+            if (stoppingToken.IsCancellationRequested || managed.Stopping)
+            {
+                Console.WriteLine($"[Machine] 跳过启动 {managed.Spec.InstanceId}（正在停机）");
+                return;
+            }
 
-        managed.StartCount++;
-        managed.LastStartedAtUtc = DateTime.UtcNow;
+            // P1 修复：释放旧 Process 句柄与管道（崩溃重启场景防句柄累积耗尽）。
+            // 进入锁时旧进程必已退出（启动前调用方 IsRunning 判 false），Dispose 安全。
+            var oldProc = managed.Process;
+            if (oldProc != null)
+            {
+                try { oldProc.Dispose(); } catch { }
+            }
 
-        var spec = managed.Spec.Template;
-        // 注入命令行参数（顺序：用户 args → machine 注入）
-        var argList = new List<string>(spec.Args);
-        argList.Add("--port"); argList.Add(managed.Spec.EffectivePort.ToString());
-        argList.Add("--host"); argList.Add(managed.Spec.EffectiveHost);
-        argList.Add("--node-id"); argList.Add(managed.Spec.GeneratedNodeId);
-        argList.Add("--instance-id"); argList.Add(managed.Spec.InstanceId);
-        argList.Add("--machine-id"); argList.Add(topology.MachineId);
-        argList.Add("--supervised-by"); argList.Add(topology.SupervisedBy);
+            managed.StartCount++;
+            managed.LastStartedAtUtc = DateTime.UtcNow;
 
-        var psi = new ProcessStartInfo
-        {
-            FileName = spec.File,
-            WorkingDirectory = spec.WorkingDirectory ?? Directory.GetCurrentDirectory(),
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        // 集群共享密钥注入：优先 topology.sharedSecret，其次环境变量 CenterNodeSharedSecret（子进程默认继承父环境）。
-        // 各节点共用同一密钥完成内部 HMAC 认证；缺失时节点启动会明确报错，此处不再静默生成（多机部署需外部统一）。
-        string? clusterSecret = topology.SharedSecret;
-        if (string.IsNullOrEmpty(clusterSecret))
-        {
-            clusterSecret = Environment.GetEnvironmentVariable("CenterNodeSharedSecret");
-        }
-        if (!string.IsNullOrEmpty(clusterSecret))
-        {
-            psi.Environment["CenterNodeSharedSecret"] = clusterSecret;
-        }
-        foreach (var a in argList) psi.ArgumentList.Add(a);
+            var spec = managed.Spec.Template;
+            // 注入命令行参数（顺序：用户 args → machine 注入）
+            var argList = new List<string>(spec.Args);
+            argList.Add("--port"); argList.Add(managed.Spec.EffectivePort.ToString());
+            argList.Add("--host"); argList.Add(managed.Spec.EffectiveHost);
+            argList.Add("--node-id"); argList.Add(managed.Spec.GeneratedNodeId);
+            argList.Add("--instance-id"); argList.Add(managed.Spec.InstanceId);
+            argList.Add("--machine-id"); argList.Add(topology.MachineId);
+            argList.Add("--supervised-by"); argList.Add(topology.SupervisedBy);
 
-        bool captureOutput = !string.IsNullOrWhiteSpace(topology.LogDirectory);
-        if (captureOutput)
-        {
-            psi.RedirectStandardOutput = true;
-            psi.RedirectStandardError = true;
-        }
+            var psi = new ProcessStartInfo
+            {
+                FileName = spec.File,
+                WorkingDirectory = spec.WorkingDirectory ?? Directory.GetCurrentDirectory(),
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            // 集群共享密钥注入：优先 topology.sharedSecret，其次环境变量 CenterNodeSharedSecret（子进程默认继承父环境）。
+            // 各节点共用同一密钥完成内部 HMAC 认证；缺失时节点启动会明确报错，此处不再静默生成（多机部署需外部统一）。
+            string? clusterSecret = topology.SharedSecret;
+            if (string.IsNullOrEmpty(clusterSecret))
+            {
+                clusterSecret = Environment.GetEnvironmentVariable("CenterNodeSharedSecret");
+            }
+            if (!string.IsNullOrEmpty(clusterSecret))
+            {
+                psi.Environment["CenterNodeSharedSecret"] = clusterSecret;
+            }
+            foreach (var a in argList) psi.ArgumentList.Add(a);
 
-        try
-        {
-            var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
+            bool captureOutput = !string.IsNullOrWhiteSpace(topology.LogDirectory);
             if (captureOutput)
             {
-                p.OutputDataReceived += (_, e) => AppendLog(managed, e.Data);
-                p.ErrorDataReceived += (_, e) => AppendLog(managed, e.Data);
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                // 持久日志 writer（重启时先关旧的，防句柄泄漏）
+                managed.LogWriter?.Dispose();
+                managed.LogWriter = new StreamWriter(managed.LogFile, append: true) { AutoFlush = true };
             }
-            p.Exited += (_, _) => OnProcessExited(managed, topology);
-            p.Start();
-            // 安全修复（P1）：stderr 与 stdout 都必须启用异步读取，否则子进程写满 stderr 管道缓冲（64KB）会阻塞挂起，
-            // 而进程仍存活、看护不会重启它 —— 恰好是报错最多的节点最容易踩中。
-            if (captureOutput)
+
+            try
             {
-                p.BeginOutputReadLine();
-                p.BeginErrorReadLine();
+                var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
+                if (captureOutput)
+                {
+                    p.OutputDataReceived += (_, e) => AppendLog(managed, e.Data);
+                    p.ErrorDataReceived += (_, e) => AppendLog(managed, e.Data);
+                }
+                // P1 修复：Exited 回调携带事件源进程，防止锁内读到已被新进程替换的 managed.Process
+                p.Exited += (s, _) => OnProcessExited(s as Process, managed, topology);
+                p.Start();
+                // 安全修复（P1）：stderr 与 stdout 都必须启用异步读取，否则子进程写满 stderr 管道缓冲（64KB）会阻塞挂起，
+                // 而进程仍存活、看护不会重启它 —— 恰好是报错最多的节点最容易踩中。
+                if (captureOutput)
+                {
+                    p.BeginOutputReadLine();
+                    p.BeginErrorReadLine();
+                }
+                managed.Process = p;
+                Console.WriteLine($"START {managed.Spec.InstanceId} type={spec.Type} pid={p.Id} port={managed.Spec.EffectivePort} count={managed.StartCount}");
             }
-            managed.Process = p;
-            Console.WriteLine($"START {managed.Spec.InstanceId} type={spec.Type} pid={p.Id} port={managed.Spec.EffectivePort} count={managed.StartCount}");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[Machine] {managed.Spec.InstanceId} 启动失败: {ex.Message}");
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Machine] {managed.Spec.InstanceId} 启动失败: {ex.Message}");
+            }
         }
     }
 
     private static void AppendLog(ManagedInstance managed, string? line)
     {
-        if (line == null || string.IsNullOrEmpty(managed.LogFile)) return;
+        if (line == null || managed.LogWriter == null) return;
         try
         {
-            File.AppendAllText(managed.LogFile, $"[{DateTime.Now:HH:mm:ss}] {line}{Environment.NewLine}");
+            managed.LogWriter.WriteLine($"[{DateTime.Now:HH:mm:ss}] {line}");
         }
         catch { }
     }
 
-    private static void OnProcessExited(ManagedInstance managed, Topology topology)
+    /// <summary>进程退出回调（P1 修复：与 StartProcess/控制指令共用实例锁；<paramref name="exited"/> 为事件源进程）。</summary>
+    private static void OnProcessExited(Process? exited, ManagedInstance managed, Topology topology)
     {
-        int exitCode = managed.Process?.ExitCode ?? -1;
-        managed.LastExitCode = exitCode;
-        managed.LastExitedAtUtc = DateTime.UtcNow;
-        managed.Ready = false; // 退出后失活
-
-        if (managed.Stopping)
+        lock (managed)
         {
-            Console.WriteLine($"[Machine] {managed.Spec.InstanceId} 已退出（停机中，不重启）");
-            return;
-        }
+            int exitCode = -1;
+            try { exitCode = exited?.ExitCode ?? -1; } catch { /* 事件源进程已被释放 */ }
+            managed.LastExitCode = exitCode;
+            managed.LastExitedAtUtc = DateTime.UtcNow;
+            managed.Ready = false; // 退出后失活
 
-        if (exitCode == 0)
-        {
-            Console.WriteLine($"EXIT_OK {managed.Spec.InstanceId} code=0（正常退出，不重启）");
-            return;
-        }
-
-        // 崩溃：指数退避重启
-        managed.RestartCount++;
-
-        // T2 修复：分钟级重启限流——1 分钟内重启次数达到上限则放弃自动重启（防崩溃-重启循环打满 CPU/日志）。
-        int maxRestartsPerMinute = topology.MaxRestartsPerMinute > 0 ? topology.MaxRestartsPerMinute : 10;
-        long nowUtcTicks = DateTime.UtcNow.Ticks;
-        managed.RestartTimestampsUtc.RemoveAll(t => nowUtcTicks - t > TimeSpan.FromMinutes(1).Ticks);
-        if (managed.RestartTimestampsUtc.Count >= maxRestartsPerMinute)
-        {
-            managed.Stopping = true;
-            Console.WriteLine($"[Machine] {managed.Spec.InstanceId} 1 分钟内重启次数超限（≥{maxRestartsPerMinute}），放弃自动重启");
-            return;
-        }
-        managed.RestartTimestampsUtc.Add(nowUtcTicks);
-
-        int baseDelay = managed.Spec.Template.RestartDelayMs ?? topology.RestartDelayMs;
-        int delay = Math.Min(baseDelay * (1 << Math.Min(managed.RestartCount, 5)), 30000);
-        Console.WriteLine($"RESTART {managed.Spec.InstanceId} #{managed.RestartCount} code={exitCode} delay={delay}ms");
-
-        _ = Task.Run(async () =>
-        {
-            await Task.Delay(delay);
-            if (!managed.Stopping)
+            if (managed.Stopping)
             {
-                StartProcess(managed, topology);
+                Console.WriteLine($"[Machine] {managed.Spec.InstanceId} 已退出（停机中，不重启）");
+                return;
             }
-        });
+
+            if (exitCode == 0)
+            {
+                Console.WriteLine($"EXIT_OK {managed.Spec.InstanceId} code=0（正常退出，不重启）");
+                return;
+            }
+
+            // 崩溃：指数退避重启
+            managed.RestartCount++;
+
+            // T2 修复：分钟级重启限流——1 分钟内重启次数达到上限则放弃自动重启（防崩溃-重启循环打满 CPU/日志）。
+            int maxRestartsPerMinute = topology.MaxRestartsPerMinute > 0 ? topology.MaxRestartsPerMinute : 10;
+            long nowUtcTicks = DateTime.UtcNow.Ticks;
+            managed.RestartTimestampsUtc.RemoveAll(t => nowUtcTicks - t > TimeSpan.FromMinutes(1).Ticks);
+            if (managed.RestartTimestampsUtc.Count >= maxRestartsPerMinute)
+            {
+                managed.Stopping = true;
+                Console.WriteLine($"[Machine] {managed.Spec.InstanceId} 1 分钟内重启次数超限（≥{maxRestartsPerMinute}），放弃自动重启");
+                return;
+            }
+            managed.RestartTimestampsUtc.Add(nowUtcTicks);
+
+            int baseDelay = managed.Spec.Template.RestartDelayMs ?? topology.RestartDelayMs;
+            int delay = Math.Min(baseDelay * (1 << Math.Min(managed.RestartCount, 5)), 30000);
+            Console.WriteLine($"RESTART {managed.Spec.InstanceId} #{managed.RestartCount} code={exitCode} delay={delay}ms");
+
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(delay);
+                // 锁内启动：与 HTTP 控制指令互斥，防双进程
+                lock (managed)
+                {
+                    if (!managed.Stopping)
+                    {
+                        StartProcess(managed, topology);
+                    }
+                }
+            });
+        }
     }
 
     private static async Task WaitForLayerReadyAsync(
@@ -499,7 +527,12 @@ public static class Program
             foreach (var m in layer)
             {
                 if (m.Ready) continue;
-                if (m.Process == null || m.Process.HasExited) continue;
+                // P1 加固：进程引用可能正被重启替换/释放，读取加保护
+                try
+                {
+                    if (m.Process == null || m.Process.HasExited) continue;
+                }
+                catch { continue; }
 
                 // 是否需要探针
                 var probe = m.Spec.Template.Probe;
@@ -567,6 +600,12 @@ public static class Program
             {
                 try { p.Kill(entireProcessTree: true); } catch { }
             }
+        }
+        foreach (var m in managed)
+        {
+            m.LogWriter?.Flush();
+            m.LogWriter?.Dispose();
+            m.LogWriter = null;
         }
         await Task.CompletedTask;
     }

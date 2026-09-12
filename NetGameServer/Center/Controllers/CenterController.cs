@@ -129,6 +129,18 @@ public class CenterController : ControllerBase
         return false;
     }
 
+    /// <summary>配置键字符集白名单（防超长/特殊字符污染配置键空间；支持 env 风格 __ 与 section:key）。</summary>
+    private static bool IsValidConfigKey(string key)
+    {
+        if (key.Length > 128) return false;
+        foreach (var c in key)
+        {
+            if (char.IsLetterOrDigit(c) || c == '_' || c == '.' || c == '-' || c == ':') continue;
+            return false;
+        }
+        return true;
+    }
+
     [HttpGet("config")]
     public IActionResult Config()
     {
@@ -149,9 +161,15 @@ public class CenterController : ControllerBase
         {
             return BadRequest(new { success = false, message = "敏感配置键不允许运行时修改" });
         }
-        Shared.ConfigHelper.SetRuntimeOverride(key, item.Value);
+        // P3 修复：长度/字符集白名单，防超长或特殊字符污染配置键空间
+        if (!IsValidConfigKey(key))
+        {
+            return BadRequest(new { success = false, message = "配置键非法（长度 ≤128，仅允许字母数字 _ . - :）" });
+        }
+        // P2 修复：先读当前值再热更，保证 ConfigHistory.before 与真实生效值一致
         var overrides = RuntimeConfigStore.Load();
         string? before = overrides.TryGetValue(key, out var old) ? old : null;
+        Shared.ConfigHelper.SetRuntimeOverride(key, item.Value);
         if (item.Value == null)
         {
             overrides.Remove(key);
@@ -177,6 +195,11 @@ public class CenterController : ControllerBase
         if (IsSensitiveConfigKey(trimmed))
         {
             return BadRequest(new { success = false, message = "敏感配置键不允许运行时删除" });
+        }
+        // P3 修复：与 SetConfig 一致的长度/字符集白名单
+        if (!IsValidConfigKey(trimmed))
+        {
+            return BadRequest(new { success = false, message = "配置键非法（长度 ≤128，仅允许字母数字 _ . - :）" });
         }
         var overrides = RuntimeConfigStore.Load();
         string? before = overrides.TryGetValue(trimmed, out var old) ? old : null;

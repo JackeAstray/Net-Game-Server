@@ -137,49 +137,62 @@ public static class Program
     /// <summary>internal 供 HttpConsole 手动启动/重启指令调用。</summary>
     internal static void StartProcess(ManagedProcess managed, SupervisorConfig config)
     {
-        managed.StartCount++;
-        var psi = new ProcessStartInfo
+        // P1 修复：实例级互斥——与 OnProcessExited/HttpConsole 控制指令共用锁，
+        // 防并发启动双进程（孤儿进程）与计数错乱。
+        lock (managed)
         {
-            FileName = managed.Config.File,
-            Arguments = managed.Config.Args ?? string.Empty,
-            WorkingDirectory = managed.Config.WorkingDirectory ?? Directory.GetCurrentDirectory(),
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
+            managed.StartCount++;
+            // P1 修复：释放旧 Process 句柄（崩溃重启场景防句柄累积）
+            var oldProc = managed.Process;
+            if (oldProc != null)
+            {
+                try { oldProc.Dispose(); } catch { }
+            }
 
-        bool captureOutput = !string.IsNullOrWhiteSpace(config.LogDirectory);
-        if (captureOutput)
-        {
-            psi.RedirectStandardOutput = true;
-            psi.RedirectStandardError = true;
-            managed.LogFile = Path.Combine(config.LogDirectory!, $"{managed.Config.Name}.log");
-            // 重启时旧 writer 可能未关闭（防句柄泄漏），先关再开
-            managed.LogWriter?.Dispose();
-            Directory.CreateDirectory(config.LogDirectory!);
-            managed.LogWriter = new StreamWriter(managed.LogFile, append: true) { AutoFlush = true };
-        }
+            var psi = new ProcessStartInfo
+            {
+                FileName = managed.Config.File,
+                Arguments = managed.Config.Args ?? string.Empty,
+                WorkingDirectory = managed.Config.WorkingDirectory ?? Directory.GetCurrentDirectory(),
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
 
-        try
-        {
-            var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
+            bool captureOutput = !string.IsNullOrWhiteSpace(config.LogDirectory);
             if (captureOutput)
             {
-                p.OutputDataReceived += (_, e) => AppendLog(managed, e.Data);
-                p.ErrorDataReceived += (_, e) => AppendLog(managed, e.Data);
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                managed.LogFile = Path.Combine(config.LogDirectory!, $"{managed.Config.Name}.log");
+                // 重启时旧 writer 可能未关闭（防句柄泄漏），先关再开
+                managed.LogWriter?.Dispose();
+                Directory.CreateDirectory(config.LogDirectory!);
+                managed.LogWriter = new StreamWriter(managed.LogFile, append: true) { AutoFlush = true };
             }
-            p.Exited += (_, _) => OnProcessExited(managed, config);
-            p.Start();
-            if (captureOutput)
+
+            try
             {
-                p.BeginOutputReadLine();
-                p.BeginErrorReadLine();
+                var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
+                if (captureOutput)
+                {
+                    p.OutputDataReceived += (_, e) => AppendLog(managed, e.Data);
+                    p.ErrorDataReceived += (_, e) => AppendLog(managed, e.Data);
+                }
+                // P1 修复：Exited 回调携带事件源进程，防止锁内读到已被新进程替换的 managed.Process
+                p.Exited += (s, _) => OnProcessExited(s as Process, managed, config);
+                p.Start();
+                if (captureOutput)
+                {
+                    p.BeginOutputReadLine();
+                    p.BeginErrorReadLine();
+                }
+                managed.Process = p;
+                Console.WriteLine($"START {managed.Config.Name} pid={p.Id} count={managed.StartCount}");
             }
-            managed.Process = p;
-            Console.WriteLine($"START {managed.Config.Name} pid={p.Id} count={managed.StartCount}");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[Supervisor] {managed.Config.Name} 启动失败: {ex.Message}");
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Supervisor] {managed.Config.Name} 启动失败: {ex.Message}");
+            }
         }
     }
 
@@ -196,48 +209,57 @@ public static class Program
         }
     }
 
-    private static void OnProcessExited(ManagedProcess managed, SupervisorConfig config)
+    /// <summary>进程退出回调（P1 修复：与 StartProcess/控制指令共用实例锁；<paramref name="exited"/> 为事件源进程）。</summary>
+    private static void OnProcessExited(Process? exited, ManagedProcess managed, SupervisorConfig config)
     {
-        int exitCode = managed.Process?.ExitCode ?? -1;
-        if (managed.Stopping)
+        lock (managed)
         {
-            Console.WriteLine($"[Supervisor] {managed.Config.Name} 已退出（停机中，不重启）");
-            return;
-        }
-
-        if (exitCode == 0)
-        {
-            Console.WriteLine($"EXIT_OK {managed.Config.Name} code=0（正常退出，不重启）");
-            return;
-        }
-
-        // 崩溃：指数退避重启（基础延迟 * 2^min(重启次数,5)，上限 30s）
-        managed.RestartCount++;
-
-        // T2 修复：分钟级重启限流——1 分钟内重启次数达到上限则放弃自动重启（防崩溃-重启循环打满 CPU/日志）。
-        int maxRestartsPerMinute = config.MaxRestartsPerMinute > 0 ? config.MaxRestartsPerMinute : 10;
-        long nowUtcTicks = DateTime.UtcNow.Ticks;
-        managed.RestartTimestampsUtc.RemoveAll(t => nowUtcTicks - t > TimeSpan.FromMinutes(1).Ticks);
-        if (managed.RestartTimestampsUtc.Count >= maxRestartsPerMinute)
-        {
-            managed.Stopping = true;
-            Console.WriteLine($"[Supervisor] {managed.Config.Name} 1 分钟内重启次数超限（≥{maxRestartsPerMinute}），放弃自动重启");
-            return;
-        }
-        managed.RestartTimestampsUtc.Add(nowUtcTicks);
-
-        int baseDelay = managed.Config.RestartDelayMs ?? config.RestartDelayMs;
-        int delay = Math.Min(baseDelay * (1 << Math.Min(managed.RestartCount, 5)), 30000);
-        Console.WriteLine($"RESTART {managed.Config.Name} #{managed.RestartCount} code={exitCode} delay={delay}ms");
-
-        _ = Task.Run(async () =>
-        {
-            await Task.Delay(delay);
-            if (!managed.Stopping)
+            int exitCode = -1;
+            try { exitCode = exited?.ExitCode ?? -1; } catch { /* 事件源进程已被释放 */ }
+            if (managed.Stopping)
             {
-                StartProcess(managed, config);
+                Console.WriteLine($"[Supervisor] {managed.Config.Name} 已退出（停机中，不重启）");
+                return;
             }
-        });
+
+            if (exitCode == 0)
+            {
+                Console.WriteLine($"EXIT_OK {managed.Config.Name} code=0（正常退出，不重启）");
+                return;
+            }
+
+            // 崩溃：指数退避重启（基础延迟 * 2^min(重启次数,5)，上限 30s）
+            managed.RestartCount++;
+
+            // T2 修复：分钟级重启限流——1 分钟内重启次数达到上限则放弃自动重启（防崩溃-重启循环打满 CPU/日志）。
+            int maxRestartsPerMinute = config.MaxRestartsPerMinute > 0 ? config.MaxRestartsPerMinute : 10;
+            long nowUtcTicks = DateTime.UtcNow.Ticks;
+            managed.RestartTimestampsUtc.RemoveAll(t => nowUtcTicks - t > TimeSpan.FromMinutes(1).Ticks);
+            if (managed.RestartTimestampsUtc.Count >= maxRestartsPerMinute)
+            {
+                managed.Stopping = true;
+                Console.WriteLine($"[Supervisor] {managed.Config.Name} 1 分钟内重启次数超限（≥{maxRestartsPerMinute}），放弃自动重启");
+                return;
+            }
+            managed.RestartTimestampsUtc.Add(nowUtcTicks);
+
+            int baseDelay = managed.Config.RestartDelayMs ?? config.RestartDelayMs;
+            int delay = Math.Min(baseDelay * (1 << Math.Min(managed.RestartCount, 5)), 30000);
+            Console.WriteLine($"RESTART {managed.Config.Name} #{managed.RestartCount} code={exitCode} delay={delay}ms");
+
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(delay);
+                // 锁内启动：与 HTTP 控制指令互斥，防双进程
+                lock (managed)
+                {
+                    if (!managed.Stopping)
+                    {
+                        StartProcess(managed, config);
+                    }
+                }
+            });
+        }
     }
 
     private static async Task StopAllAsync(List<ManagedProcess> managed)

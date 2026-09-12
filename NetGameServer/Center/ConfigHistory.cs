@@ -14,6 +14,8 @@ public static class ConfigHistory
         public string? ValueAfter;
         public required string Op; // set | delete | rollback
         public required DateTime TimeUtc;
+        /// <summary>是否已被回滚撤销（防重复回滚重复计数/重复 apply）。</summary>
+        public bool Undone;
     }
 
     private const int MaxEntries = 100;
@@ -52,27 +54,29 @@ public static class ConfigHistory
                 valueBefore = e.ValueBefore,
                 valueAfter = e.ValueAfter,
                 op = e.Op,
+                undone = e.Undone,
                 timeUtc = e.TimeUtc.ToString("O")
             }).ToArray();
         }
     }
 
     /// <summary>
-    /// 回滚到目标版本：撤销所有 version &gt; target 的变更（倒序应用各自旧值），并记录一条 rollback。
+    /// 回滚到目标版本：撤销所有 version &gt; target 且未被撤销的变更（倒序应用各自旧值），并记录一条 rollback。
     /// <paramref name="apply"/> 负责把 (key, valueBefore) 应用到运行时与持久化。
-    /// 返回撤销的变更条数。
+    /// 返回撤销的变更条数（仅统计本次新撤销的）。
     /// </summary>
     public static int RollbackTo(int targetVersion, Action<string, string?> apply)
     {
         lock (gate)
         {
             var toUndo = entries
-                .Where(e => e.Version > targetVersion && e.Op != "rollback")
+                .Where(e => e.Version > targetVersion && e.Op != "rollback" && !e.Undone)
                 .OrderByDescending(e => e.Version)
                 .ToList();
             foreach (var e in toUndo)
             {
                 apply(e.Key, e.ValueBefore);
+                e.Undone = true;
             }
             if (toUndo.Count > 0)
             {

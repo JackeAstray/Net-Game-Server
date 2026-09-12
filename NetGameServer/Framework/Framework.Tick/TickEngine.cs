@@ -25,7 +25,8 @@ public sealed class TickEngine
     private long totalTickMs;
     private long tickCount;
     private long lastSlowWarnTick;
-    private int slowTickThresholdMs = 200;
+    // P3 修复：跨线程读写（tick 线程读 / 配置线程写），volatile 保证可见性
+    private volatile int slowTickThresholdMs = 200;
 
     /// <summary>慢 tick 告警阈值（毫秒，默认 200；启动前设置）。</summary>
     public int SlowTickThresholdMs

@@ -196,7 +196,29 @@ public sealed class HealthServer : IDisposable
         return sb.ToString();
     }
 
-    private static string JsonEscape(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+    /// <summary>完整 JSON 字符串转义（P3 修复：原实现仅转义反斜杠与引号，nodeId 含换行/控制字符会破坏 JSON 结构）。</summary>
+    private static string JsonEscape(string s)
+    {
+        var sb = new System.Text.StringBuilder(s.Length + 8);
+        foreach (var c in s)
+        {
+            switch (c)
+            {
+                case '\\': sb.Append("\\\\"); break;
+                case '"': sb.Append("\\\""); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                case '\b': sb.Append("\\b"); break;
+                case '\f': sb.Append("\\f"); break;
+                default:
+                    if (c < 0x20) sb.Append($"\\u{(int)c:X4}");
+                    else sb.Append(c);
+                    break;
+            }
+        }
+        return sb.ToString();
+    }
 
     private static async Task<byte[]> ReadRequestLineAsync(NetworkStream stream)
     {
