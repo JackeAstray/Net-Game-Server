@@ -78,6 +78,12 @@ namespace Game.Handlers
             {
                 return;
             }
+            // P3 修复：DB 未连接时静默跳过（TrySendDbRequest 失败路径会向客户端回无上下文的错误回包，
+            // 而预热本不应产生任何客户端消息——聊天入口已回"公会信息加载中"错误）
+            if (GameServerApp.DbClient == null || !GameServerApp.DbClient.IsConnected)
+            {
+                return;
+            }
             var wrapper = new Game.Network.ClientSessionWrapper(gatewaySession, sessionId);
             TrySendDbRequest(MessageIds.DbGuildMyReq, wrapper, new DbGuildMyRequest { UserId = userId }, MessageIds.GuildMyRes,
                 configurePending: p => p.IsGuildMyWarmup = true);        }
@@ -349,14 +355,17 @@ namespace Game.Handlers
             }
         }
 
-        /// <summary>经网关会话向指定客户端会话发送响应（目标会话 ID 路由）。</summary>
+        /// <summary>经网关会话向指定客户端会话发送响应（目标会话 ID 路由）。
+        /// 跨网关修复（与好友模块对齐）：DB 回包时玩家可能已迁移到另一网关，优先解析其当前所在网关，
+        /// 不能沿用请求发起时的网关会话——否则多网关部署下回包发到旧网关而丢失。</summary>
         private static void SendResponseBySessionId(global::Network.ISession gatewaySession, long clientSessionId, int msgId, object response)
         {
             byte[] payload = Shared.RouteMetadata.AttachTargetSessionId(Shared.Json.SerializeToUtf8Bytes(response), clientSessionId);
             byte[] packet = PacketBuilder.BuildPacket(msgId, payload, out int totalLength);
             try
             {
-                gatewaySession.Send(packet.AsSpan(0, totalLength).ToArray());
+                var sendSession = GameServerApp.ResolveGatewayForClient(clientSessionId) ?? gatewaySession;
+                sendSession.Send(packet.AsSpan(0, totalLength).ToArray());
             }
             finally
             {

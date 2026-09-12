@@ -48,10 +48,10 @@ namespace Shared
 
             // 例如 regionId = 1，regionPrefix = 100000000
             // 例如 regionId = 8，regionPrefix = 800000000 (亚服风格)
-            regionPrefix = regionId * 100000000L;
+            Volatile.Write(ref regionPrefix, regionId * 100000000L);
 
-            currentCounter = Math.Max(0, currentMaxSequenceID);
-            reservedThrough = reserveBatch > 0 ? currentCounter + reserveBatch : 0;
+            Volatile.Write(ref currentCounter, Math.Max(0, currentMaxSequenceID));
+            Volatile.Write(ref reservedThrough, reserveBatch > 0 ? Volatile.Read(ref currentCounter) + reserveBatch : 0);
             Volatile.Write(ref initialized, 1);
         }
 
@@ -70,12 +70,11 @@ namespace Shared
                 return;
             }
 
-            regionPrefix = regionId * 100000000L;
-            currentCounter = Math.Max(0, startSeq - 1);
-            reservedThrough = endSeq;
+            Volatile.Write(ref regionPrefix, regionId * 100000000L);
+            Volatile.Write(ref currentCounter, Math.Max(0, startSeq - 1));
+            Volatile.Write(ref reservedThrough, endSeq);
             Volatile.Write(ref initialized, 1);
-            Log.Info($"UID 生成器按段初始化完成，区服ID:{regionId}，发号段:[{startSeq}, {endSeq}]");
-        }
+            Log.Info($"UID 生成器按段初始化完成，区服ID:{regionId}，发号段:[{startSeq}, {endSeq}]");        }
 
         /// <summary>
         /// 生成原神风格的9位纯数字 UID。
@@ -97,12 +96,15 @@ namespace Shared
                 throw new InvalidOperationException(
                     $"UID 序列号越界（>99,999,999）：当前序列 {sequence}，请扩容区服或调整发号策略");
             }
-            if (reservedThrough > 0 && sequence > reservedThrough)
+            // P3 加固：Volatile.Read 保证与初始化写（Volatile.Write）构成 release/acquire 对，
+            // 段耗尽重新领取段并发时读到一致快照，防撕裂读。
+            long reserved = Volatile.Read(ref reservedThrough);
+            if (reserved > 0 && sequence > reserved)
             {
                 throw new InvalidOperationException(
-                    $"UID 预留发号段已耗尽（上限 {reservedThrough}）：请重新向 DB 申请发号段");
+                    $"UID 预留发号段已耗尽（上限 {reserved}）：请重新向 DB 申请发号段");
             }
-            return regionPrefix + sequence;
+            return Volatile.Read(ref regionPrefix) + sequence;
         }
 
         /// <summary>

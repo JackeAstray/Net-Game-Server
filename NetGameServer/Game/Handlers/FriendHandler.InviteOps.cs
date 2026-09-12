@@ -267,12 +267,25 @@ namespace Game.Handlers
 
             CleanupExpiredPendingInvites(session);
 
-            PendingInvite? matchedInvite = PendingInvites.Values
-                .Where(invite => invite.InviteeUserId == inviteeUserId
-                    && string.Equals(invite.InviterUniqueId, req.InviterUniqueId.Trim(), StringComparison.Ordinal)
-                    && string.Equals(invite.RoomId, req.RoomId?.Trim() ?? string.Empty, StringComparison.Ordinal))
-                .OrderByDescending(invite => invite.CreateTimeUtc)
-                .FirstOrDefault();
+            // P3 优化：经 invitee 索引缩小候选集再匹配（替代 PendingInvites.Values 全表扫描 + 排序）
+            PendingInvite? matchedInvite = null;
+            if (PendingInvitesByInvitee.TryGetValue(inviteeUserId, out var inviteeIndex))
+            {
+                string inviterUid = req.InviterUniqueId.Trim();
+                string roomId = req.RoomId?.Trim() ?? string.Empty;
+                DateTime latest = DateTime.MinValue;
+                foreach (var inviteId in inviteeIndex.Keys)
+                {
+                    if (PendingInvites.TryGetValue(inviteId, out var invite) &&
+                        string.Equals(invite.InviterUniqueId, inviterUid, StringComparison.Ordinal) &&
+                        string.Equals(invite.RoomId, roomId, StringComparison.Ordinal) &&
+                        invite.CreateTimeUtc >= latest)
+                    {
+                        latest = invite.CreateTimeUtc;
+                        matchedInvite = invite;
+                    }
+                }
+            }
 
             if (matchedInvite == null)
             {

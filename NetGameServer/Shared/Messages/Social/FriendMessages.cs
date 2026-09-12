@@ -206,4 +206,27 @@ namespace Shared.Messages.Social
         public bool Accept { get; set; }
         public string Reason { get; set; } = string.Empty;
     }
+
+    /// <summary>
+    /// 好友申请处理结果通知（服务器 → 申请发起人）。
+    /// 原实现复用 InviteGameAckNotification（客户端会误渲染为游戏邀请回执），
+    /// 现用独立消息类型承载"对方同意/拒绝了你的好友申请"语义。
+    /// </summary>
+    public class FriendApplyResultNotification
+    {
+        /// <summary>处理申请的用户 ID（接受/拒绝方）。</summary>
+        public int HandlerUserId { get; set; }
+
+        /// <summary>处理申请的用户 UID。</summary>
+        public string HandlerUniqueId { get; set; } = string.Empty;
+
+        /// <summary>处理申请的用户昵称。</summary>
+        public string HandlerNickname { get; set; } = string.Empty;
+
+        /// <summary>是否同意申请。</summary>
+        public bool Accepted { get; set; }
+
+        /// <summary>附加说明（如拒绝原因）。</summary>
+        public string Reason { get; set; } = string.Empty;
+    }
 }

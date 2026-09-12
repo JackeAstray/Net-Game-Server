@@ -355,15 +355,17 @@ namespace Game.Handlers
                             {
                                 int receiverUserId = PlayerSessionManager.Instance.GetUserIdBySessionId(pending.SessionId);
                                 string receiverUid = PlayerSessionManager.Instance.GetUidBySessionId(pending.SessionId);
-                                var notif = new InviteGameAckNotification
+                                // P2 修复：改用专用好友申请结果通知（原复用 InviteGameAckNotification，
+                                // 客户端会把好友申请结果误渲染为游戏邀请回执）
+                                var notif = new Shared.Messages.Social.FriendApplyResultNotification
                                 {
-                                    InviteeUniqueId = receiverUid,
-                                    InviteeNickname = string.IsNullOrWhiteSpace(receiverUid) ? $"Player_{receiverUserId}" : receiverUid,
-                                    RoomId = string.Empty,
-                                    Accept = pending.FriendApplyAccept,
+                                    HandlerUserId = receiverUserId,
+                                    HandlerUniqueId = receiverUid,
+                                    HandlerNickname = string.IsNullOrWhiteSpace(receiverUid) ? $"Player_{receiverUserId}" : receiverUid,
+                                    Accepted = pending.FriendApplyAccept,
                                     Reason = pending.FriendApplyAccept ? "对方已同意你的好友申请" : "对方已拒绝你的好友申请"
                                 };
-                                SendResponseBySessionId(sendSession, requesterSessionId, MessageIds.InviteGameAckNotif, notif);
+                                SendResponseBySessionId(sendSession, requesterSessionId, MessageIds.FriendApplyResultNotif, notif);
                             }
                         }
 

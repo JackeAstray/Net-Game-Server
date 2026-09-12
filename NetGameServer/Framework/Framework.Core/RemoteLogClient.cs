@@ -22,6 +22,8 @@ public sealed class RemoteLogClient : IDisposable
     private readonly string nodeId;
     private readonly System.Net.IPEndPoint loggerEndpoint;
     private readonly byte[]? authKey;
+    // P3 优化：ThreadLocal 复用 HMAC 实例（OnLog 在业务热路径同步调用，每条日志 new HMACSHA256 会产生可观 GC）
+    private readonly ThreadLocal<System.Security.Cryptography.HMACSHA256>? hmacPerThread;
     private readonly ConcurrentQueue<byte[]> pending = new();
     private readonly UdpClient udp;
     private readonly CancellationTokenSource cts = new();
@@ -36,12 +38,31 @@ public sealed class RemoteLogClient : IDisposable
     public RemoteLogClient(string nodeId, string loggerHost, int loggerPort = 31320, string? authSecret = null)
     {
         this.nodeId = nodeId;
-        loggerEndpoint = new System.Net.IPEndPoint(
-            System.Net.IPAddress.TryParse(loggerHost, out var ip) ? ip : System.Net.Dns.GetHostAddresses(loggerHost)[0],
-            loggerPort);
+        // P2 修复：主机名解析失败（DNS 故障/配置错误）不得让节点启动崩溃——回退回环并告警，日志聚合降级为本地。
+        System.Net.IPAddress loggerIp;
+        if (System.Net.IPAddress.TryParse(loggerHost, out var parsedIp))
+        {
+            loggerIp = parsedIp;
+        }
+        else
+        {
+            try
+            {
+                var addresses = System.Net.Dns.GetHostAddresses(loggerHost);
+                loggerIp = addresses.Length > 0 ? addresses[0] : throw new System.Net.Sockets.SocketException();
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"远程日志主机解析失败 LoggerHost:{loggerHost}，回退 127.0.0.1，远程日志聚合不可用: {ex.Message}");
+                loggerIp = System.Net.IPAddress.Loopback;
+            }
+        }
+        loggerEndpoint = new System.Net.IPEndPoint(loggerIp, loggerPort);
         if (!string.IsNullOrWhiteSpace(authSecret))
         {
             authKey = Encoding.UTF8.GetBytes(authSecret);
+            hmacPerThread = new ThreadLocal<System.Security.Cryptography.HMACSHA256>(
+                () => new System.Security.Cryptography.HMACSHA256(authKey));
         }
         udp = new UdpClient();
         udp.Client.Bind(new System.Net.IPEndPoint(System.Net.IPAddress.Any, 0));
@@ -73,9 +94,9 @@ public sealed class RemoteLogClient : IDisposable
         payload.CopyTo(packet, offset);
 
         // P2 鉴权：报文尾部追加 HMAC-SHA256 标签（Logger 同密钥校验）
-        if (authKey != null)
+        if (hmacPerThread != null)
         {
-            using var hmac = new System.Security.Cryptography.HMACSHA256(authKey);
+            var hmac = hmacPerThread.Value!; // ThreadLocal.Value 可空标注；工厂保证非空
             hmac.ComputeHash(packet, 0, 2 + nodeBytes.Length + payload.Length)
                .CopyTo(packet, 2 + nodeBytes.Length + payload.Length);
         }
@@ -132,5 +153,6 @@ public sealed class RemoteLogClient : IDisposable
         cts.Cancel();
         udp.Close();
         udp.Dispose();
+        hmacPerThread?.Dispose();
     }
 }

@@ -216,6 +216,12 @@ namespace Game.Handlers
                     SendChatError(session, "只能向好友发送私聊消息。");
                     return;
                 }
+                if (targetSessionId == 0)
+                {
+                    // P3 修复：目标不在线/不存在时显式失败（原实现静默回 Success 但通知不投递，客户端假成功）
+                    SendChatError(session, "对方不在线或不存在，消息未能送达。");
+                    return;
+                }
             }
 
             // H2 修复：发送者身份服务器权威化。昵称/UID 一律取会话绑定值，绝不采用客户端字段，
@@ -229,7 +235,8 @@ namespace Game.Handlers
             {
                 Message = new ChatMessage
                 {
-                    Id = Random.Shared.Next(),
+                    // P3 修复：单调自增非负 ID（替代 Random.Shared.Next——并发碰撞且不可排序）
+                    Id = NextChatMessageId(),
                     SenderId = actualSenderId,
                     SenderUniqueId = actualSenderUid,
                     SenderName = senderName,
@@ -347,6 +354,12 @@ namespace Game.Handlers
                 }
             }
         }
+
+        /// <summary>进程内单调聊天消息 ID（非负，int.MaxValue 处回绕后仍保持非负）。</summary>
+        private static int chatMsgIdSeed;
+
+        private static int NextChatMessageId()
+            => System.Threading.Interlocked.Increment(ref chatMsgIdSeed) & int.MaxValue;
 
         /// <summary>向发送者返回聊天错误响应（统一错误回包，消除重复代码）。</summary>
         private static void SendChatError(ISession session, string message)

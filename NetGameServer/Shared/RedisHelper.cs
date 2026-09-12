@@ -8,6 +8,8 @@ namespace Shared
     {
     private static readonly object InitGate = new();
     private static Lazy<ConnectionMultiplexer>? lazyConnection;
+    // P3 修复：保存连接串，连接失败时重建 Lazy（Redis 瞬时故障恢复后自动重连，无需重启进程）
+    private static string? connectionString;
 
     /// <summary>
     /// 使用提供的连接字符串配置一个延迟初始化的 ConnectionMultiplexer 实例，用于后续按需建立与 Redis 的连接。
@@ -22,6 +24,7 @@ namespace Shared
     {
         lock (InitGate)
         {
+            RedisHelper.connectionString = connectionString;
             // 安全修复：先释放旧连接（如果已初始化），避免连接句柄泄漏
             if (lazyConnection is { IsValueCreated: true } oldLazy)
             {
@@ -57,12 +60,14 @@ namespace Shared
                 catch
                 {
                     // P2 修复：Lazy(ExecutionAndPublication) 会永久缓存工厂异常——Redis 瞬时故障后
-                    // 所有后续访问都抛同一异常，直到进程重启。这里在失败时重置 Lazy，下次访问自动重连。
+                    // 所有后续访问都抛同一异常，直到进程重启。这里重建 Lazy，下次访问自动重连。
                     lock (InitGate)
                     {
                         if (ReferenceEquals(Volatile.Read(ref lazyConnection), lazy))
                         {
-                            lazyConnection = null;
+                            lazyConnection = new Lazy<ConnectionMultiplexer>(
+                                () => ConnectionMultiplexer.Connect(connectionString!),
+                                System.Threading.LazyThreadSafetyMode.ExecutionAndPublication);
                         }
                     }
                     throw;

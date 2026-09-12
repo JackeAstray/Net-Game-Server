@@ -257,12 +257,12 @@ public sealed class OrderedTaskQueue : IDisposable
             try
             {
                 await item.Runner();
-                TaskCompleted?.Invoke(item.Key, null);
+                NotifyCompleted(item.Key, null);
             }
             catch (Exception ex)
             {
                 Log.Error(ex, $"[{name}] 任务执行异常 key={item.Key}");
-                TaskCompleted?.Invoke(item.Key, ex);
+                NotifyCompleted(item.Key, ex);
             }
         }
         finally
@@ -270,6 +270,22 @@ public sealed class OrderedTaskQueue : IDisposable
             Interlocked.Decrement(ref pendingCount);
             state.LastActivityTicks = Environment.TickCount64;
             item.Completion.TrySetResult();
+        }
+    }
+
+    /// <summary>
+    /// 上报任务完成事件（P2 修复：订阅者异常不得逃逸——否则 RunItem 提前退出、该 key 的
+    /// Running 保持 true 不再派发新令牌，队列中后续任务永久卡死、调用方永久 await）。
+    /// </summary>
+    private void NotifyCompleted(object key, Exception? ex)
+    {
+        try
+        {
+            TaskCompleted?.Invoke(key, ex);
+        }
+        catch (Exception subscriberEx)
+        {
+            Log.Error(subscriberEx, $"[{name}] TaskCompleted 订阅者异常 key={key}");
         }
     }
 }

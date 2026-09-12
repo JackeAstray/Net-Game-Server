@@ -239,6 +239,7 @@ namespace Shared.Messages
         public const int InviteGameAckReq = 50026;
         public const int InviteGameAckRes = 50027;
         public const int InviteGameAckNotif = 50028;
+        public const int FriendApplyResultNotif = 50029;
 
         // === 公会功能通信 (51001-51099 网关转发过来) ===
         public const int GuildCreateReq = 51001;
