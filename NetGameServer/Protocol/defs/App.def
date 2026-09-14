@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    App/应用服务器协议定义（已迁移，占位文件）
+    ============================================================
+    本 .def 的消息/结构体已全部迁移到方案 A：Framework/Framework.Protocol/Messages/AppMessages.cs，
+    以 C# [GameMessage]/[GameStruct] 声明，由 Framework.Protocol.Generator 源生成器在编译期生成
+    MessageIds / RouterTable / IGameMessage 管线 / ProtocolManifest.json。
+
+    保留本文件的目的：
+      1. 记录应用节点链路的 ID 段约定（80000-89999 客户端消息，经 Gateway 路由 Target="App"）；
+      2. 保持 Protocol/defs/ 目录的协议分段结构。
+    客户端代码由 ClientGen 从 ProtocolManifest.Json 生成，无需本文件。
+
+    ID 段约定：
+      - 80001~80002  应用示例回环（AppEchoRequest/AppEchoResult）
+      - 80000-89999  应用节点（AppServer）段：Gateway 出站白名单放行（IsClientVisibleOutboundMsgId），
+                     网关按 RouterTable.Target=="App" 路由；其余段位归各游戏节点（见各 .def）。
+-->
+<Protocol name="App" version="1">
+  <!-- 已迁移到 [GameMessage]/[GameStruct]，见 Framework.Protocol/Messages/AppMessages.cs -->
+</Protocol>

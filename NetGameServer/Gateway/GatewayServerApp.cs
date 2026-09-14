@@ -191,15 +191,27 @@ namespace Gateway
             public void OnConnected()
             {
                 isConnected = true;
-                flushing = true;
-                try
+                Shared.Log.Info($"Gateway->{backendName} 通道已连接，开始冲刷缓冲队列，当前待发:{pendingPackets.Count}");
+                // 冲刷循环（修复：原实现冲刷末尾与 flushing=false 之间入队的包会滞留到下次重连）：
+                // 冲刷期间实时发送转入缓冲；每轮冲刷后若仍有入队（并发窗口内新到）则继续冲刷，
+                // 直到队列清空。上限 1024 轮防止极端拥塞下死循环。
+                int guard = 0;
+                while (guard++ < 1024)
                 {
-                    Shared.Log.Info($"Gateway->{backendName} 通道已连接，开始冲刷缓冲队列，当前待发:{pendingPackets.Count}");
-                    FlushPending();
+                    flushing = true;
+                    try
+                    {
+                        FlushPending();
+                    }
+                    finally
+                    {
+                        flushing = false;
+                    }
+                    if (pendingPackets.IsEmpty) break;
                 }
-                finally
+                if (pendingPackets.Count > 0)
                 {
-                    flushing = false;
+                    Shared.Log.Warning($"Gateway->{backendName} 冲刷循环达到轮次上限，仍有 {pendingPackets.Count} 条待发（下次重连继续）");
                 }
             }
 

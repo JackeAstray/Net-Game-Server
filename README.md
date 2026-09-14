@@ -150,7 +150,7 @@ curl http://127.0.0.1:41306/healthz                          # 存活检查
 + 时间同步，统计收发速率 / RTT 分位（p50/p95/p99）/ offset 漂移：
 
 ```bash
-# 本地六节点：200 机器人，battle 场景（高频移动 → AOI 视野广播），ramp-up 50ms/bot
+# 本地七节点：200 机器人，battle 场景（高频移动 → AOI 视野广播），ramp-up 50ms/bot
 Bots --count 200 --host 127.0.0.1 --port 31300 --duration 10 --scene battle --rampup 50
 # 对 Docker 集群：主机 31300 已映射到 gateway 容器，命令相同
 ```

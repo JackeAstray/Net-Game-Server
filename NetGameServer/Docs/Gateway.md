@@ -24,7 +24,7 @@
 
 - 启动入口：`Gateway/Program.cs`（顶级语句，加载配置 + `GatewayServerApp.StartNetworkAsync`）
 - 监听端口默认 `31300`（配置 `GatewayPort`）
-- 启动顺序：DB → Center → Login → Game/Battle → **Gateway 最后**（接受外部流量）
+- 启动顺序：DB → Center → Login → Game/Battle → App（可选）→ **Gateway 最后**（接受外部流量）
 
 ## 关键文件
 
@@ -33,7 +33,7 @@
 | `Gateway/Program.cs` | 启动入口（顶级语句） |
 | `Gateway/GatewayServerApp.cs` | 节点主类（partial） |
 | `Gateway/GatewayServerApp.Network.cs` | 四种协议服务器 + 客户端收包入口（`onDataReceived`，含 `SessionGuard` 校验） |
-| `Gateway/GatewayServerApp.Backend.cs` | 与 Login/Game/Center 后端 TCP 客户端 |
+| `Gateway/GatewayServerApp.Backend.cs` | 与 Login/Game/Center/Battle/App 后端 TCP 客户端 |
 | `Gateway/GatewayServerApp.CenterClient.cs` | Center 客户端（注册/心跳/迁移通知） |
 | `Gateway/GatewayServerApp.Sessions.cs` | 断线 / 重连处理 + HTTP 反代（YARP） |
 | `Gateway/Managers/GatewaySessionManager.cs` | 会话表（`clientSessionId → ISession`、`CreatedAt`、userId/uid/nickname 绑定、`uidSessions` 反向索引、`bindGate` 互斥） |
