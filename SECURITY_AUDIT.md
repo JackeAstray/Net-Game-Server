@@ -45,8 +45,10 @@
 ## 二、严重（Critical）—— 无需内部凭证即可远程利用
 
 ### C1. 明文凭据被提交进 git（人工复核确认）
-- **文件**：`NetGameServer/Login/appsettings.json`（L15 HttpApiKeys=`dev-local-key-2026`、L23 SMTP.Account=`llastray@163.com`、L24 SMTP.Password=`BNS8Nswu2vDvPCjz`）、`NetGameServer/DB/appsettings.json`（L3 MySqlConnection `Pwd=Ycs982109683`）
-- **风险**：全部为真实生产凭据并随仓库提交。任何拿到仓库/历史的人可直接连数据库、发邮件（可被滥用为钓鱼/垃圾邮件源）、调用管理 API。**必须立即轮换全部三项并清理 git 历史。**
+- **文件**：`NetGameServer/Login/appsettings.json`（SMTP.Account / SMTP.Password）、`NetGameServer/DB/appsettings.json`（MySqlConnection 中的 `Pwd`）、`deploy/docker-compose.yml`（MySQL/Postgres 口令 + 两条连接串，**同一口令复用 4 处**）
+- **风险**：全部为真实生产凭据并随仓库提交。任何拿到仓库/历史的人可直接连数据库、发邮件（可被滥用为钓鱼/垃圾邮件源）、调用管理 API。**必须立即轮换全部凭据并清理 git 历史。**
+- **取值已脱敏**：本报告原文直接写明了明文口令（等于又泄漏一次），自 2026-09-14 起不再保留取值，仅保留文件与行号定位。
+- **修复状态（2026-09-14 补）**：配置侧已完成——受版本控制的 `appsettings.json` / `docker-compose.yml` 一律改为占位符或 `${VAR}` 注入，真实值只存于被 `.gitignore` 忽略的 `appsettings.Local.json` / `.env`；启动期对占位符 fail-closed（DB 连接串 / SMTP 凭据）。**仍待运维执行：凭据轮换 + git 历史重写（`git filter-repo`）+ 远端 force-push。**
 
 ### C2. KCP 发送队列无界 → 原生 OOM（KCP 代理 K1）
 - **文件**：`Network\Kcp\KcpSession.cs`（Send 忽略返回值、`rmt_wnd` 取自攻击者报文头）、`Network\Kcp\KcpServer.cs`
@@ -196,7 +198,7 @@
 
 | # | 优先级项 | 实施内容 | 主要改动文件 |
 |---|---|---|---|
-| 1 | 已提交凭据移除/环境变量化 | `HttpApiKeys`、`SMTP.Account/Password`、MySQL 连接串改为空 + 环境变量注入（`SMTP__*`、`ConnectionStrings__MySqlConnection`、`HttpApiKeys` 等），缺失时启动即失败/拒绝/跳过发信；新增 `.env.example` 文档。真实凭据轮换与 git 历史重写为运维动作。 | `Login/appsettings.json`、`DB/appsettings.json`、`Shared/ConfigHelper.cs`、`.env.example` |
+| 1 | 已提交凭据移除/环境变量化 | ⚠**原记录与实现不符**（2026-09-14 核实：当时只完成了 `HttpApiKeys` 置空与 `.env.example` 编写；`SMTP.Account/Password` 与 MySQL `Pwd` **仍是明文**，`docker-compose.yml` 里同一口令还硬编码复用 4 处 —— 即"机制建好、数据没换"）。**本轮补全**：`Login/appsettings.json`、`DB/appsettings.json`、`deploy/docker-compose.yml` 全改为占位符 / `${VAR}` 注入；新增 git 忽略的 `appsettings.Local.json` 覆盖机制（`ConfigHelper` + 6 个 csproj 拷贝规则，已实测覆盖生效）；DB 连接串与 SMTP 凭据加占位符 fail-closed 守卫；补 `.dockerignore`（防 `COPY . .` 把本地凭据打进镜像）并扩写 `.env.example`。真实凭据轮换与 git 历史重写仍为运维动作。 | `Login/appsettings.json`、`DB/appsettings.json`、`Shared/ConfigHelper.cs`、`DB/DbServerApp.cs`、`Login/Handlers/LoginHandler.Account.cs`、`deploy/docker-compose.yml`、`deploy/README-docker.md`、`.gitignore`、`.dockerignore`、`.env.example`、6× `*.csproj` |
 | 2 | KCP 加固 | 发送队列（`WaitSnd`≥2048）与接收载荷（>64KB）超限丢弃；协议违规置 `MarkedForClose` 并清理会话；网关注站包 64KB 兜底；告警限频（5-10s）。 | `Network/Kcp/KcpSession.cs`、`Network/Kcp/KcpServer.cs`、`Gateway/GatewayServerApp.Network.cs` |
 | 3 | 内部信任边界 | 网关出站 msgid 白名单+内部消息拒绝+出站帧 68KB 上限（Login/Game/Center/Battle 四路径）；Login/Game DB 响应按 `msgid+100` 校验；EntityCall CallId 掩码+方法/实体校验；Center 注册/状态处理器绑定握手身份（`AuthenticatedNodeId`）与会话（`GetNodeIdBySession`），伪造注册/跨连接上报被拒；Gateway↔Center 握手 nodeId 与注册同源。 | `Gateway/GatewayServerApp.Backend.cs`、`Login/LoginServerApp.cs`、`Login/Handlers/LoginHandler.Security.cs`、`Game/Handlers/FriendHandler*.cs`、`Framework/Framework.Entity/EntityCall*.cs`、`Center/Handlers/MessageRouter.cs`、`Center/Handlers/NodeAuthFilters.cs`、`Framework.Core/Security/InternalAuthFilter.cs`、`Center/CenterServerApp.cs` |
 | 4 | Battle 加入/伤害授权 | 跨玩家脚本动作全面禁止（白名单仅限 `OwnerClientId==0` 的无主世界实体）；join 幂等 + 双房拒绝；单节点场景数上限（500）；Center 创建场景 RoomId 校验 + 容量钳制（200）。 | `Battle/BattleServerApp.cs`、`Battle/Handlers/RoomHandler.cs`、`Battle/Handlers/BattleMainHandler.cs` |
@@ -208,3 +210,34 @@
 | 10 | 管理面与日志 | SuperAdmin 随机密码不再写入日志文件（仅控制台一次性输出）；Center 管理 HTTP 绑定地址可配置 `CenterHttpListenAddress` + 非回环明文监听告警。 | `DB/DbServerApp.cs`、`Center/CenterHttpServer.cs` |
 
 **已知保留（未在本轮实施，属超范围/运维）**：逐节点密钥与逐消息 MAC（需协议变更）；git 历史凭据重写（需运维）；Login `TokenSecret` 占位校验缺失回退（P1 已文档化，建议配置 TokenSecret）；迁移/实体跨节点一致性锁（91004 竞态）；长度前缀启发式统一；Center 逐房间授权令牌；`findPasswordCooldowns` 清理与邮件轰炸限流（Login 层已有部分节流）。
+
+---
+
+## 九、第二轮复审（工作区审计，2026-09-14）
+
+> 对象：当前工作区代码（含首轮修复的未提交改动）。方法：网络/网关、认证/Center/DB、Game/Battle、Framework 四域并行深度审查 + 人工复核，全部以 `dotnet build`（0 警告 0 错误）与 8 套验证套件回归通过。
+> 新发现两类高危项（下述 ①②）已按用户决策**立即实现**；其余中低危项与架构级建议记入"待跟进"。
+
+### 本轮已实施修复
+
+| # | 类型 | 实施内容 | 文件 |
+|---|---|---|---|
+| 11 | Bug（编译警告） | `CA2014` stackalloc-in-loop 潜在栈溢出 → 移出循环复用 Span | `Tests/ClientGenVerify/Program.cs` |
+| 12 | 死代码清理 | 删除零调用 `UUIDHelper.cs`（UUIDNext 包唯一用户，包引用一并移除）；删除零调用 `NetworkManager.cs` / `PipelineTcpServer.cs` / `UdpClientWrapper.cs` / `WebSocketClientWrapper.cs` / `AspNetServer.cs`；删除 `PacketBuilder` 3 个 `[Obsolete]` 死方法；删除 `Network.Routing.MessageRouter` 死分支（BindServer/UnbindServer/RouteMessage/HandleRawData） | `Shared/UUIDHelper.cs`、`Shared/Shared.csproj`、`Network/*`、`Docs/Shared.md` |
+| 13 | Bug（脚本错误隔离，H2 闭环） | `ScriptHost` 的 `OnCreate`/`OnDestroy` 无 try/catch，脚本异常会穿透到 tick 线程 → 加错误隔离（与 OnTick/OnMessage 一致） | `Framework/Framework.Scripting/ScriptHost.cs` |
+| 14 | 安全（日志洪泛 + 坏连接持续施压） | Gateway `onDataReceived` catch-all 未限频且不关连接 → 限频（5s）+ 解析异常关闭连接（fail-closed） | `Gateway/GatewayServerApp.Network.cs` |
+| 15 | Bug（行为/注释不符） | `TcpSession` 队列满时前 5s 静默丢包连接保持 → 立即关闭（与"慢客户端保护"注释一致） | `Network/Tcp/TcpSession.cs` |
+| 16 | 安全（会话续活） | `UdpServer` 残缺帧数据报仍刷新 `LastActivityTime`，可无限续活会话 → 仅产出完整包才刷新 | `Network/Udp/UdpServer.cs` |
+| 17 | **高危 ②：出站目标归属 + 广播白名单** | Battle 出站回包校验目标玩家绑定节点 = 来源节点（跨节点注入拒绝）；广播仅允许显式白名单 msgid（当前唯一合法广播 `ChatMessageNotif` 60003），其余带 `__broadcast` 的回包拒绝 | `Gateway/GatewayServerApp.Backend.cs`、`Gateway/GatewayServerApp.cs` |
+| 18 | **高危 ①：UDP/KCP 会话身份绑定** | 会话建立时网关签发 8 字节随机令牌并推送（`GatewaySessionAuthPush=70001`），客户端每条消息须携带 `[MsgId(4)][Token(8)][Payload]`，网关逐包校验、不匹配即关闭；TCP/WS 面向连接免令牌。参考客户端 `KcpClientWrapper` 已适配（收令牌→插帧，`WaitForSessionAuthAsync` 供业务侧等待握手）。生成客户端（Unity/UE NetClient）为 TCP-only，不受影响 | `Gateway/GatewayServerApp.cs`、`Gateway/GatewayServerApp.Network.cs`、`Shared/Messages/MessageIds.cs`、`Network/Kcp/KcpClientWrapper.cs` |
+| 19 | 仓库瘦身 | 删除 `Publish/Redis/*.pdb`（约 40MB 运行期无用调试符号）+ `.gitignore` 防护；清理过期 `.cluster/*.log` | `NetGameServer/Publish/Redis/`、`NetGameServer/Publish/.gitignore` |
+
+### 待跟进（架构级/运维，未在本轮实施）
+
+- **客户端面传输加密**：TCP/UDP/KCP/WS 全明文，公网部署需 LB/TLS 隧道终止（运维）。
+- **TCP/WS 无 per-IP 连接上限**：全局 10000 有界但单 IP 慢速连接可占满；建议 per-IP 配额 + 收紧空闲阈值。
+- **Login/Game/Center 共享后端连接出站归属**：唯一共享连接无法按"目标会话归属"区分，彻底闭合需逐消息 MAC（主题 B 遗留）。
+- **BufferedBackendSender flush 竞态**：冲刷尾部入队包可能滞留至下次重连（窗口极小）。
+- **UDP/KCP 令牌的 conv 层纵深**：令牌已闭环注入；如后续支持"无登录 UDP 业务"再评估 conv 服务端回签。
+- **Bots 占位实现**：WS 占位、KCP 未接入、`scene=battle` 不发 BattleJoin（压测代表性有限）。
+- **TokenSecret 缺失随机回退**：保留快速启动便利，生产必须显式配置（见 .env.example）。

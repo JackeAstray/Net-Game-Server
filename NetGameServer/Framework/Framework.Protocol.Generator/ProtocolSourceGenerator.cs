@@ -33,13 +33,13 @@ public sealed class ProtocolSourceGenerator : IIncrementalGenerator
         "Protocol", DiagnosticSeverity.Error, true);
 
     private static readonly DiagnosticDescriptor IdTakenByDef = new(
-        "NGSGEN003", "消息 ID 与 .def 冲突",
-        "[GameMessage] ID {0}（{1}）已被 .def 生成的常量 {2} 占用：请先删除对应的 .def 消息",
+        "NGSGEN003", "消息 ID 与手写常量冲突",
+        "[GameMessage] ID {0}（{1}）已被常量 {2} 占用：请改用未占用 ID",
         "Protocol", DiagnosticSeverity.Error, true);
 
     private static readonly DiagnosticDescriptor NameTakenByDef = new(
-        "NGSGEN004", "消息名与 .def 冲突",
-        "[GameMessage] 消息名 {0}（ID {1}）与 .def 生成的常量 {2} 重复：请先删除对应的 .def 消息",
+        "NGSGEN004", "消息名与手写常量冲突",
+        "[GameMessage] 消息名 {0}（ID {1}）与常量 {2} 重复：请改用未占用的消息名",
         "Protocol", DiagnosticSeverity.Error, true);
 
     private static readonly DiagnosticDescriptor InvalidId = new(
@@ -99,7 +99,14 @@ public sealed class ProtocolSourceGenerator : IIncrementalGenerator
             SourceText.From(manifestCs, Encoding.UTF8));
     }
 
-    /// <summary>重复 ID / 名字检查，含与 .def 生成的 MessageIds 常量比对（迁移期防止同 ID 双源定义）。</summary>
+    /// <summary>
+    /// 重复 ID / 消息名检查。
+    /// 注意（重要）：下面比对的是**当前编译可见的** <c>{GenNs}.MessageIds</c>，即手写的同名 partial 常量类
+    /// （若存在）。生成器自身的输出对生成器不可见，因此本检查**无法**发现"生成版 vs
+    /// 手写 <c>Shared.Messages.MessageIds</c>"的跨程序集撞号——后者由
+    /// <c>Tests/ProtocolVerify</c> 第 19 节的双源交叉校验兜底（历史 P1：手写 1020 与生成版
+    /// <c>[GameMessage(1020)]</c> 撞号导致 UID 发号请求被误路由到公会创建）。
+    /// </summary>
     private static void ReportCollisions(SourceProductionContext spc, ImmutableArray<MessageDef> messages, Compilation compilation)
     {
         var seenIds = new Dictionary<int, string>();

@@ -71,6 +71,34 @@ public static class PropertyCodec
     /// <summary>属性名/字符串最大长度。</summary>
     public const int MaxStringLength = 1024;
 
+    /// <summary>
+    /// 把 UTF-8 字节序列按字节上限截断，并**回退到完整字符边界**（不切裂多字节字符）。
+    /// </summary>
+    /// <remarks>
+    /// 用于 String 属性的编码侧：原实现直接 <c>Math.Min(bytes.Length, MaxStringLength)</c>，
+    /// 截断点若落在 CJK(3 字节)/emoji(4 字节) 中间会写出非法 UTF-8，
+    /// 解码侧（<c>Encoding.UTF8.GetString</c>）用替换字符 U+FFFD 兜底 → 属性值被静默改写。
+    /// UTF-8 续字节形如 <c>10xxxxxx</c>：从截断点往前退到第一个非续字节（即字符首字节），
+    /// 并把该字符整体丢弃。
+    /// </remarks>
+    private static int Utf8SafeTruncate(byte[] utf8, int maxBytes)
+    {
+        if (maxBytes <= 0)
+        {
+            return 0;
+        }
+        if (utf8.Length <= maxBytes)
+        {
+            return utf8.Length;
+        }
+        int i = maxBytes;
+        while (i > 0 && (utf8[i] & 0xC0) == 0x80)
+        {
+            i--;
+        }
+        return i;
+    }
+
     /// <summary>Int32List 元素最大数量（P3：防止伪造 len 触发大 List 分配/超大包）。</summary>
     public const int MaxInt32ListLength = 4096;
 
@@ -280,7 +308,12 @@ public static class PropertyCodec
                 byte[] s = Encoding.UTF8.GetBytes(value as string ?? string.Empty);
                 // P3 修复：执行 MaxStringLength 上限（此前长度字段 ushort 可放行到 64KB，而
                 // MaxStringLength 常量从未被使用）。写/读两侧对称，避免超大字符串的放大分配。
-                int len = Math.Min(s.Length, MaxStringLength);
+                // P3 修复（数据完整性）：按字节上限截断时必须**回退到 UTF-8 字符边界**。
+                // 原实现直接 Math.Min(s.Length, MaxStringLength)，若截断点落在 CJK(3 字节)/emoji(4 字节)
+                // 中间会写出非法 UTF-8，读侧用替换字符 U+FFFD 兜底 → 属性值被**静默改写**；
+                // 且读侧对 len>MaxStringLength 是“拒绝”、写侧是“截断”，截断不可检测。
+                // 该编码路径被同步广播、持久化落库、实体迁移三处共用。
+                int len = Utf8SafeTruncate(s, MaxStringLength);
                 BinaryPrimitives.WriteUInt16LittleEndian(scratch.Slice(0, 2), (ushort)len);
                 ms.Write(scratch.Slice(0, 2));
                 ms.Write(s, 0, len);

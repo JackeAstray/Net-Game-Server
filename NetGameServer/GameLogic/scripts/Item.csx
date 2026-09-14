@@ -33,7 +33,16 @@ public class ItemScript : EntityScriptBase
         entity.Set("Count", 0);
 
         // KBE-Gap-Review S2：定时器掉落代替 tick%N 轮询
-        autoDropTimers[entity.EntityId] = AddTimer(entity, AutoDropIntervalMs, () => TickAutoDrop(entity), repeat: true);
+        // 可空性修复：AddTimer 未挂载 TickEngine 时返回 null（存入非可空字典会在 OnDestroy 的 Cancel() 处 NRE）
+        var dropTimer = AddTimer(entity, AutoDropIntervalMs, () => TickAutoDrop(entity), repeat: true);
+        if (dropTimer != null)
+        {
+            autoDropTimers[entity.EntityId] = dropTimer;
+        }
+        else
+        {
+            Log.Warn("Item", "Item {EntityId} 无法注册自动掉落定时器（TickEngine 未挂载？）", entity.EntityId);
+        }
 
         Log.Info("Item", "Item {EntityId} 创建，ItemId=1 背包空", entity.EntityId);
     }
@@ -113,7 +122,11 @@ public class ItemScript : EntityScriptBase
         {
             oldTimer.Cancel();
         }
-        autoDropTimers[entity.EntityId] = AddTimer(entity, AutoDropIntervalMs, () => TickAutoDrop(entity), repeat: true);
+        var reloadedDropTimer = AddTimer(entity, AutoDropIntervalMs, () => TickAutoDrop(entity), repeat: true);
+        if (reloadedDropTimer != null)
+        {
+            autoDropTimers[entity.EntityId] = reloadedDropTimer;
+        }
         Log.Info("Item", "Item {EntityId} 脚本热更新完成", entity.EntityId);
     }
 }

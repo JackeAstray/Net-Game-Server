@@ -173,6 +173,16 @@ namespace DB.Handlers
                 });
             }, jsonFallback: true);
 
+            // 修改昵称（1029/1129）：补齐此前 Login 侧"假成功"的落库链路
+            dispatcher.Register<DbUpdateNickname>(async (ctx, msg) =>
+            {
+                await DbQueryHandler.HandleUpdateNicknameRequest(Routed(ctx, out _), new DbUpdateNicknameRequest
+                {
+                    UserId = msg.UserId,
+                    NewNickname = msg.NewNickname
+                });
+            }, jsonFallback: true);
+
             // ---- 好友/黑名单/申请类（带 RequestId 请求关联）----
 
             // 好友：添加

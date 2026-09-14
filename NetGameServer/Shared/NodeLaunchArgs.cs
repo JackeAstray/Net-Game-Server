@@ -15,8 +15,10 @@ namespace Shared;
 ///   --instance-id &lt;string&gt; 节点实例 ID（machine 注入；同类型多实例时由 machine 分配）
 ///   --machine-id &lt;string&gt;  托管本节点的 Machine 进程 ID
 ///   --supervised-by &lt;string&gt; 托管方类型（"machine" / "supervisor" / "none"）
-///   --config &lt;string&gt;      备用：自定义配置文件路径（留给未来扩展）
-/// 所有参数大小写敏感；不抛异常，未识别参数被忽略并输出 WARN，便于机器/手工混合启动。
+///   --config &lt;string&gt;      预留（当前**未被节点消费**：配置文件路径请走 appsettings.json / NG_ 环境变量）。
+///                          提供该参数时会记入 Unknown 并告警，避免"以为换了配置文件"的静默误解。
+/// 所有参数大小写敏感；不抛异常，未识别参数（含取值非法）被收集到 Unknown 并输出 WARN，便于机器/手工混合启动排查。
+/// 取值规则：仅当下一个 token 不是另一个 `--开关` 时才消费它，避免 `--port --host x` 把 `--host` 当作 port 的值吞掉。
 /// </summary>
 public static class NodeLaunchArgs
 {
@@ -52,45 +54,57 @@ public static class NodeLaunchArgs
         for (int i = 0; i < args.Length; i++)
         {
             string key = args[i];
-            string? value = i + 1 < args.Length ? args[i + 1] : null;
+
+            // P3 修复：取值前先判断"下一个 token 是不是另一个开关"。
+            // 原实现无条件 `i++` 消费下一 token，`--port --host 1.2.3.4` 会把 `--host` 当 port 的值吞掉，
+            // 同时 `1.2.3.4` 变成未知参数——宿主参数被静默丢弃（机器/手工混合启动且写错时难排查）。
+            // 数组元素为 null 视为"值存在但为空"（与原行为一致，仍消费该槽位）。
+            bool atEnd = i + 1 >= args.Length;
+            string? value = atEnd ? null : args[i + 1];
+            bool hasValue = !atEnd && !(value != null && value.StartsWith("--", StringComparison.Ordinal));
 
             switch (key)
             {
                 case "--port":
                     if (TryParseInt(value, out int port)) result.Port = port;
-                    i++;
+                    else if (hasValue) result.Unknown.Add($"{key}={value}(非法整数)");
+                    if (hasValue) i++;
                     break;
                 case "--host":
                     if (!string.IsNullOrEmpty(value)) result.Host = value;
-                    i++;
+                    if (hasValue) i++;
                     break;
                 case "--center-host":
                     if (!string.IsNullOrEmpty(value)) result.CenterHost = value;
-                    i++;
+                    if (hasValue) i++;
                     break;
                 case "--center-port":
                     if (TryParseInt(value, out int cp)) result.CenterPort = cp;
-                    i++;
+                    else if (hasValue) result.Unknown.Add($"{key}={value}(非法整数)");
+                    if (hasValue) i++;
                     break;
                 case "--node-id":
                     if (!string.IsNullOrEmpty(value)) result.NodeId = value;
-                    i++;
+                    if (hasValue) i++;
                     break;
                 case "--instance-id":
                     if (!string.IsNullOrEmpty(value)) result.InstanceId = value;
-                    i++;
+                    if (hasValue) i++;
                     break;
                 case "--machine-id":
                     if (!string.IsNullOrEmpty(value)) result.MachineId = value;
-                    i++;
+                    if (hasValue) i++;
                     break;
                 case "--supervised-by":
                     if (!string.IsNullOrEmpty(value)) result.SupervisedBy = value;
-                    i++;
+                    if (hasValue) i++;
                     break;
                 case "--config":
                     if (!string.IsNullOrEmpty(value)) result.ConfigPath = value;
-                    i++;
+                    if (hasValue) i++;
+                    // P3 修复：原实现解析后无人消费（Machine/Supervisor 使用各自的 --config 解析），
+                    // 调用方传了却毫无效果。这里显式告警，避免"以为换了配置文件"的静默误解。
+                    result.Unknown.Add("--config(当前未被节点消费，配置文件路径请走 appsettings.json / NG_ 环境变量)");
                     break;
                 default:
                     result.Unknown.Add(key);
@@ -110,24 +124,6 @@ public static class NodeLaunchArgs
         }
         value = 0;
         return false;
-    }
-
-    /// <summary>
-    /// 把解析结果应用到环境变量（NETGAME_*）—— 这样下游代码（BattleServerApp/GameServerApp 等）
-    /// 仍可通过 ConfigHelper.GetConfig 读出，无需改动现有初始化路径，零侵入。
-    /// 注意：仅当命令行有显式提供时写入环境变量；未提供的字段保持 ConfigHelper 默认值。
-    /// </summary>
-    public static void ApplyToEnvironment(Parsed parsed)
-    {
-        if (parsed == null) return;
-        if (parsed.Port.HasValue) Environment.SetEnvironmentVariable("NETGAME_NODE_PORT", parsed.Port.Value.ToString());
-        if (!string.IsNullOrEmpty(parsed.Host)) Environment.SetEnvironmentVariable("NETGAME_NODE_HOST", parsed.Host);
-        if (!string.IsNullOrEmpty(parsed.CenterHost)) Environment.SetEnvironmentVariable("NETGAME_CENTER_HOST", parsed.CenterHost);
-        if (parsed.CenterPort.HasValue) Environment.SetEnvironmentVariable("NETGAME_CENTER_PORT", parsed.CenterPort.Value.ToString());
-        if (!string.IsNullOrEmpty(parsed.NodeId)) Environment.SetEnvironmentVariable("NETGAME_NODE_ID", parsed.NodeId);
-        if (!string.IsNullOrEmpty(parsed.InstanceId)) Environment.SetEnvironmentVariable("NETGAME_INSTANCE_ID", parsed.InstanceId);
-        if (!string.IsNullOrEmpty(parsed.MachineId)) Environment.SetEnvironmentVariable("NETGAME_MACHINE_ID", parsed.MachineId);
-        if (!string.IsNullOrEmpty(parsed.SupervisedBy)) Environment.SetEnvironmentVariable("NETGAME_SUPERVISED_BY", parsed.SupervisedBy);
     }
 
     /// <summary>

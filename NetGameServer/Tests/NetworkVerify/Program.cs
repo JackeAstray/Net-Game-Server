@@ -163,6 +163,7 @@ internal static class Program
             var joinResults = new ConcurrentQueue<BattleJoinResult>();
             var snapshots = new ConcurrentDictionary<long, EntitySnapshot>();
             var deltas = new ConcurrentQueue<EntityDeltaSync>();
+            var replayResults = new ConcurrentQueue<BattleReplayResult>();
 
             var readTask = Task.Run(async () =>
             {
@@ -189,6 +190,10 @@ internal static class Program
                             case GenIds.EntityDeltaSync:
                                 var d = MemoryPackSerializer.Deserialize<EntityDeltaSync>(payload.Span);
                                 if (d != null) deltas.Enqueue(d);
+                                break;
+                            case GenIds.BattleReplayResult:
+                                var rep = MemoryPackSerializer.Deserialize<BattleReplayResult>(payload.Span);
+                                if (rep != null) replayResults.Enqueue(rep);
                                 break;
                         }
                     }
@@ -218,6 +223,24 @@ internal static class Program
             bool joined = await WaitUntil(() => joinResults.Count > 0 && snapshots.Count >= 5, TimeSpan.FromSeconds(6));
             var joinRes = joinResults.FirstOrDefault();
             Check(joined && joinRes?.Success == true, "加入房间成功", joinRes?.Message ?? "无结果");
+
+            // ===== 回放授权回归（P2）=====
+            // 背景：HandleReplayRequestAsync 原先**没有任何授权校验**，而 BattleReplay(40014) 对外可达
+            // → 任意已认证客户端填一个 SceneId 就能拿到任意场景的全量快照（跨房间透视）。
+            // 入房时 SceneId == RoomId，故本客户端自己的场景就是 "PVP"。
+            Send(GenIds.BattleReplay, new BattleReplay { SceneId = "PVP", MaxFrames = 5 }.Serialize(), clientSessionId);
+            bool ownSceneReplay = await WaitUntil(() => replayResults.Count >= 1, TimeSpan.FromSeconds(5));
+            var ownReplay = replayResults.LastOrDefault();
+            Check(ownSceneReplay && ownReplay?.Success == true, "回放请求：自己所在场景被放行",
+                ownReplay?.Message ?? "无结果");
+
+            // 跨场景/不存在的场景必须回失败（未修复时会返回 Success=true，仅帧数为 0）
+            int replayBefore = replayResults.Count;
+            Send(GenIds.BattleReplay, new BattleReplay { SceneId = "not-my-scene", MaxFrames = 5 }.Serialize(), clientSessionId);
+            bool crossSceneHandled = await WaitUntil(() => replayResults.Count > replayBefore, TimeSpan.FromSeconds(5));
+            var crossReplay = replayResults.LastOrDefault();
+            Check(crossSceneHandled && crossReplay?.Success == false, "回放请求：跨场景被拒绝（授权回归）",
+                crossReplay?.Message ?? "无结果");
 
             // 从快照识别 NPC（Hp=50）：解析快照属性
             long npcId = 0;
@@ -728,6 +751,54 @@ internal static class Program
             Check(joined.Count == stressClients && joined.Values.All(v => v), "并发玩家全部加入", $"{joined.Count}/{stressClients}");
             Check(totalDeltas > 0, "EntitySync 广播到达（多玩家互相可见）", $"总增量={totalDeltas} 每客户端={string.Join(",", deltasPerClient.Values)}");
             Check(drained, "tick 线程排空入站队列", $"PendingInboundCount={Battle.BattleServerApp.PendingInboundCount}");
+        }
+
+        // ========== KCP 回归：服务器事件回调抛异常不得终止接收循环 ==========
+        // 背景（回归用例）：KcpServer.ReceiveLoopAsync 原先把 try/catch 放在 while **之外**，
+        // 而 OnSessionConnected/OnSessionDisconnected 是裸调用 → 宿主回调抛一次异常就被外层 catch 吞掉，
+        // 接收循环直接结束，此后该端口永不再收包（仅一行 Warning），而 TCP/UDP/WS 仍正常 →
+        // 表现为"部分客户端集体掉线且无告警"。此用例断言"回调抛异常后仍能继续收到数据"。
+        Console.WriteLine("== KCP：事件回调抛异常后接收循环仍存活（回归） ==");
+        {
+            const int kcpPort = 31338;
+            var kcpServer = new Network.Kcp.KcpServer();
+            int kcpConnected = 0;
+            var kcpReceived = new ConcurrentQueue<byte[]>();
+
+            kcpServer.OnSessionConnected += _ =>
+            {
+                // 仅第一个会话故意抛异常，模拟宿主订阅者实现有 bug
+                if (Interlocked.Increment(ref kcpConnected) == 1)
+                {
+                    throw new InvalidOperationException("模拟宿主回调异常（KCP 回归用例）");
+                }
+            };
+            kcpServer.OnDataReceived += (_, data) => kcpReceived.Enqueue(data.ToArray());
+
+            await kcpServer.StartAsync(kcpPort);
+            await Task.Delay(200);
+
+            var kcpClient = new Network.Kcp.KcpClientWrapper("127.0.0.1", kcpPort);
+            // 注意：ConnectAsync 内部会进入(直到取消才返回的)接收/驱动循环，因此必须 fire-and-forget
+            _ = kcpClient.ConnectAsync();
+            await Task.Delay(300); // 等 UDP 绑定与 Kcp 实例构造完成
+
+            // KCP 在客户端首次 Send 时才真正发出数据报（握手）→ 必须先发一包才会触发服务器建会话
+            kcpClient.Send(new byte[] { 0x01 });
+            bool sessionCreated = await WaitUntil(() => Volatile.Read(ref kcpConnected) >= 1, TimeSpan.FromSeconds(3));
+            Check(sessionCreated, "KCP 会话建立（其 OnSessionConnected 抛出异常）", $"connected={kcpConnected}");
+
+            // 关键断言：回调抛异常之后，服务器仍能处理该客户端的**后续**数据报。
+            // 记下当前已收条数再发包，确保断言的是"异常之后的处理能力"而非异常前的结果。
+            // （未修复时会话创建时回调抛异常即终止接收循环 → 后续包永远不被处理）
+            int receivedBefore = kcpReceived.Count;
+            kcpClient.Send(new byte[] { 0x11, 0x22, 0x33, 0x44 });
+            bool loopAlive = await WaitUntil(() => kcpReceived.Count > receivedBefore, TimeSpan.FromSeconds(5));
+            Check(loopAlive, "回调抛异常后 KCP 接收循环仍存活（后续数据仍被处理）",
+                loopAlive ? $"已收到后续数据（累计 {kcpReceived.Count} 条）" : $"5s 内未收到新数据（异常前 {receivedBefore} 条）→ 接收循环可能已终止");
+
+            kcpClient.Stop();
+            await kcpServer.StopAsync();
         }
 
         Console.WriteLine(_failures == 0 ? "\n===== NetworkVerify 全部通过 =====" : $"\n===== NetworkVerify 失败 {_failures} 项 =====");

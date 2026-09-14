@@ -36,7 +36,17 @@ public class AvatarScript : EntityScriptBase
         entity.Set("Score", 0);
 
         // KBE-Gap-Review S2：定时器回血代替 tick%N 轮询
-        healTimers[entity.EntityId] = AddTimer(entity, 1000, () => TickHeal(entity), repeat: true);
+        // 可空性修复：AddTimer 在宿主未挂载 TickEngine 时返回 null；直接存入非可空字典后，
+        // OnDestroy/OnReload 的 timer.Cancel() 会抛 NullReferenceException。
+        var healTimer = AddTimer(entity, 1000, () => TickHeal(entity), repeat: true);
+        if (healTimer != null)
+        {
+            healTimers[entity.EntityId] = healTimer;
+        }
+        else
+        {
+            Log.Warn("Avatar", "Avatar {EntityId} 无法注册回血定时器（TickEngine 未挂载？），回血将不生效", entity.EntityId);
+        }
 
         Log.Info("Avatar", "Avatar {EntityId} 创建，Hp={Hp}", entity.EntityId, entity.Get<int>("Hp"));
     }
@@ -94,7 +104,11 @@ public class AvatarScript : EntityScriptBase
         {
             oldTimer.Cancel();
         }
-        healTimers[entity.EntityId] = AddTimer(entity, 1000, () => TickHeal(entity), repeat: true);
+        var reloadedTimer = AddTimer(entity, 1000, () => TickHeal(entity), repeat: true);
+        if (reloadedTimer != null)
+        {
+            healTimers[entity.EntityId] = reloadedTimer;
+        }
         Log.Info("Avatar", "Avatar {EntityId} 脚本热更新完成", entity.EntityId);
     }
 }

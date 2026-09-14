@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text;
 
@@ -81,6 +81,12 @@ namespace Shared.Messages
         public const int DbGuildTransferRes = 1126;
         public const int DbGuildUpdateDeclReq = 1027;
         public const int DbGuildUpdateDeclRes = 1127;
+
+        // === 昵称修改 (1029/1129，响应 = 请求 + 100) ===
+        // 与 Framework.Protocol.Generated 的 [GameMessage(1029)]DbUpdateNickname / [GameMessage(1129)]DbUpdateNicknameResult 同值。
+        // 1028/1128 已被 UID 发号段占用（见上方说明）。
+        public const int DbUpdateNicknameReq = 1029;
+        public const int DbUpdateNicknameRes = 1129;
 
         // === 登录服务器客户端通信 (10000-19999 网关转发过来) ===
         public const int PlayerDisconnectNotif = 10000;
@@ -211,6 +217,17 @@ namespace Shared.Messages
         public const int ChatMessageReq = 60001;
         public const int ChatMessageRes = 60002;
         public const int ChatMessageNotif = 60003;
+
+        // === 网关传输层（非路由消息，70000-70999 网关自行处理，不转发后端） ===
+        // UDP/KCP 会话身份绑定：会话建立后网关下发 8 字节随机令牌，
+        // 客户端须在每条消息 [MsgId(4)][Token(8)][Payload] 中回传，网关逐包校验
+        // （防伪造源 IP:端口 / KCP conv 嗅探注入已登录会话）。TCP/WS 面向连接无需令牌。
+        public const int GatewaySessionAuthPush = 70001;
+
+        // === 应用节点通信 (80000-89999 网关转发到 App 节点) ===
+        // 应用节点（AppServer）是"游戏服务器 + 应用服务器"并存承载：既接游戏消息，也暴露 HTTP REST。
+        public const int AppEchoReq = 80001;
+        public const int AppEchoRes = 80002;
 
         // === 好友功能通信 (50000-59999 网关转发过来) ===
         public const int AddFriendReq = 50001;

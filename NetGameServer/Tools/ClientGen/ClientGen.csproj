@@ -15,4 +15,14 @@
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 不要把生成产物编进生成器自身。
+         原先走默认 glob 把 Output/Unity/*.cs 一起编译 → 生成器的构建依赖它自己的产物：
+         一旦入库产物有语法/类型错误（或像本次这样被人为改坏），ClientGen 就再也构建不起来，
+         而它恰恰是唯一能修好该产物的工具（鸡生蛋死锁）。
+         产物的编译验证已由 Tests/ClientGenVerify 承担（它显式 Compile Include 了
+         MessageIds/MemoryPackCodec/Messages 三份产物，编译通过 + 逐字节互验）。 -->
+    <Compile Remove="Output\**\*.cs" />
+  </ItemGroup>
+
 </Project>

@@ -10,7 +10,9 @@ namespace Game.Handlers
 {
     public class ChatHandler
     {
-        private readonly NetworkManager networkManager;
+        // P3 清理：此前构造函数注入 NetworkManager，但该字段**从未被读取**
+        // （NetworkManager 本身也无任何生产调用方，RegisterServer/StartServerAsync 等全为零命中）。
+        // 保留会造成“ChatHandler 依赖网络管理器”的误导，故移除该无用依赖。
 
         // 安全加固：聊天频率限制（每会话最小发送间隔）与内容上限
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, long> lastChatAt = new();
@@ -18,9 +20,8 @@ namespace Game.Handlers
         private const long MinChatIntervalMs = 1000;
         private static long lastSweepTick;
 
-        public ChatHandler(NetworkManager networkManager)
+        public ChatHandler()
         {
-            this.networkManager = networkManager;
         }
 
         /// <summary>
@@ -129,11 +130,23 @@ namespace Game.Handlers
             }
 
             // 公会频道预检：成员缓存未就绪时触发异步加载并拒绝本次投递（不回退其他频道，防串频）。
-            if (request.Channel == ChatChannel.Guild && GuildHandler.GetCachedGuildMemberIds(actualSenderId) == null)
+            if (request.Channel == ChatChannel.Guild)
             {
-                GuildHandler.WarmupGuildCache(session, session.SessionId, actualSenderId);
-                SendChatError(session, "公会信息加载中，请稍后重试。");
-                return;
+                if (GuildHandler.GetCachedGuildMemberIds(actualSenderId) == null)
+                {
+                    GuildHandler.WarmupGuildCache(session, session.SessionId, actualSenderId);
+                    SendChatError(session, "公会信息加载中，请稍后重试。");
+                    return;
+                }
+
+                // P3 修复（假成功）：未加入任何公会的玩家，其缓存 MemberIds 为空数组（非 null），
+                // 原预检通过 → 投递循环遍历 0 人 → 却回 Success=true。这里按缓存中的 GuildId 显式拒绝。
+                // （GuildId==0 表示确认未入会；-1 表示缓存未知，前面已按 null 分支处理，不会走到这里。）
+                if (GuildHandler.GetCachedGuildId(actualSenderId) <= 0)
+                {
+                    SendChatError(session, "你尚未加入任何公会，无法使用公会频道。");
+                    return;
+                }
             }
 
             if (string.IsNullOrWhiteSpace(request.Content))
@@ -187,21 +200,39 @@ namespace Game.Handlers
                     }
                 }
 
-                if (targetUserId > 0 && Game.Handlers.FriendHandler.IsBlockedByTarget(targetUserId, actualSenderId))
+                // P2 修复：先判"在线"，再判"拉黑"。原实现把 fail-closed 的拉黑判定放在最前，
+                // 而离线的目标没有会话、其黑名单缓存天然不存在（缓存只为在线玩家预热）→ 判定恒为 true
+                // → 任何"给离线玩家发私聊"都会误报"对方已将你拉黑。"（且后面准确的"对方不在线"分支永远不可达）。
+                if (targetUserId > 0 && targetSessionId == 0)
                 {
-                    var blockedResponse = new SendChatResponse { Success = false, Message = "对方已将你拉黑。" };
-                    var blockedPayload = Json.SerializeToUtf8Bytes(blockedResponse);
-                    var routedBlockedPayload = Shared.RouteMetadata.AttachTargetSessionId(blockedPayload, session.SessionId);
-                    var blockedData = PacketBuilder.BuildPacket(MessageIds.ChatMessageRes, routedBlockedPayload, out int blockedLength);
-                    try
-                    {
-                        session.Send(blockedData.AsSpan(0, blockedLength).ToArray());
-                    }
-                    finally
-                    {
-                        System.Buffers.ArrayPool<byte>.Shared.Return(blockedData);
-                    }
+                    SendChatError(session, "对方不在线或不存在，消息未能送达。");
                     return;
+                }
+
+                if (targetUserId > 0)
+                {
+                    switch (Game.Handlers.FriendHandler.CheckBlockedByTarget(targetUserId, actualSenderId))
+                    {
+                        case Game.Handlers.FriendHandler.BlockState.Blocked:
+                            var blockedResponse = new SendChatResponse { Success = false, Message = "对方已将你拉黑。" };
+                            var blockedPayload = Json.SerializeToUtf8Bytes(blockedResponse);
+                            var routedBlockedPayload = Shared.RouteMetadata.AttachTargetSessionId(blockedPayload, session.SessionId);
+                            var blockedData = PacketBuilder.BuildPacket(MessageIds.ChatMessageRes, routedBlockedPayload, out int blockedLength);
+                            try
+                            {
+                                session.Send(blockedData.AsSpan(0, blockedLength).ToArray());
+                            }
+                            finally
+                            {
+                                System.Buffers.ArrayPool<byte>.Shared.Return(blockedData);
+                            }
+                            return;
+                        case Game.Handlers.FriendHandler.BlockState.Unknown:
+                            // 目标在线但其黑名单缓存未就绪（预热失败/延迟）：无法确认是否被拉黑。
+                            // 仍 fail-closed 拒绝（不泄漏、不放行），但给出准确原因而非误报"被拉黑"。
+                            SendChatError(session, "对方状态校验中，请稍后重试。");
+                            return;
+                    }
                 }
 
                 // H1 修复：私聊好友校验 fail-closed。好友列表未加载（冷启动/刚登录/预热被延迟/预热失败）
@@ -214,12 +245,6 @@ namespace Game.Handlers
                 if (targetUserId > 0 && !Game.Handlers.FriendHandler.IsFriend(actualSenderId, targetUserId))
                 {
                     SendChatError(session, "只能向好友发送私聊消息。");
-                    return;
-                }
-                if (targetSessionId == 0)
-                {
-                    // P3 修复：目标不在线/不存在时显式失败（原实现静默回 Success 但通知不投递，客户端假成功）
-                    SendChatError(session, "对方不在线或不存在，消息未能送达。");
                     return;
                 }
             }

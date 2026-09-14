@@ -247,6 +247,26 @@ public partial class DbResetPasswordByEmailResult
     public string Message { get; set; } = string.Empty;
 }
 
+// 昵称修改（1029/1129，与手写 Shared.Messages.MessageIds.DbUpdateNicknameReq/Res 同值）：
+// 此前 UpdateNicknameReq(10009) 在 Login 侧是"假成功"（不落库），补齐 DB 侧落库链路。
+// User.Nickname 列已存在 → 无需 EF 迁移。
+[MemoryPackable]
+[GameMessage(1029, Target = "Db", Reply = "DbUpdateNicknameResult", Internal = true)]
+public partial class DbUpdateNickname
+{
+    public int UserId { get; set; } = new();
+    public string NewNickname { get; set; } = string.Empty;
+}
+
+[MemoryPackable]
+[GameMessage(1129, Target = "Db", Internal = true)]
+public partial class DbUpdateNicknameResult
+{
+    public bool Success { get; set; } = new();
+    public string Message { get; set; } = string.Empty;
+    public string Nickname { get; set; } = string.Empty;
+}
+
 [MemoryPackable]
 [GameMessage(1012, Target = "Db", Reply = "DbBlacklistAddResult", Internal = true)]
 public partial class DbBlacklistAdd

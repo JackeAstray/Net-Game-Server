@@ -250,6 +250,36 @@ namespace Battle
             return true;
         }
 
+        /// <summary>脚本方法名长度上限（客户端可控字符串，会进日志与脚本匹配）。</summary>
+        private const int MaxScriptMethodLength = 64;
+
+        /// <summary>
+        /// 校验客户端提交的脚本方法名：长度 1..64 且仅允许字母/数字/下划线（与实际脚本方法命名约定一致）。
+        /// </summary>
+        /// <remarks>
+        /// P3 修复（日志伪造/放大）：<c>method</c> 完全由客户端控制，且被直接插值进多条日志
+        /// （本条拒绝告警、下方多条 “被拒绝” 告警、脚本内“未处理消息”告警）。原实现无任何约束 →
+        /// ① 单个请求可携带 ≈64KB（网关转发帧上限）的方法名，反复被拒时按 ≈64KB/条写入本地日志文件
+        /// 并随 RemoteLog 聚合上报（磁盘/带宽放大）；② 方法名含换行可**伪造日志行**
+        /// （如插入一条假的 "ERROR 数据库连接失败" 干扰排障）。
+        /// 真实脚本方法均为 CastSkill/TakeDamage/QueryState/Pickup/UseItem/QueryProgress 这类标识符。
+        /// </remarks>
+        private static bool IsValidScriptMethod(string? method)
+        {
+            if (string.IsNullOrEmpty(method) || method.Length > MaxScriptMethodLength)
+            {
+                return false;
+            }
+            foreach (char c in method)
+            {
+                if (!char.IsLetterOrDigit(c) && c != '_')
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         /// <summary>分发通用实体脚本动作（客户端 ScriptAction 消息 → 脚本 OnMessage）。</summary>
         /// <remarks>
         /// CRITICAL 修复：脚本动作必须鉴权，否则任意客户端可对任意场景/任意实体的任意方法发起调用（改他人血量、
@@ -262,6 +292,14 @@ namespace Battle
         {
             try
             {
+                // P3 加固：方法名直接来自客户端且会进日志/脚本匹配，先做长度与字符集校验。
+                // 注意：拒绝时**不**回显 method，避免把未校验的超长/含换行内容写进日志。
+                if (!IsValidScriptMethod(method))
+                {
+                    Log.Warning($"实体脚本动作被拒绝：方法名非法（长度需 1-{MaxScriptMethodLength} 且仅字母/数字/下划线）SessionId:{callerSessionId} EntityId:{entityId}");
+                    return;
+                }
+
                 var scene = sceneManager?.FindSceneByEntityId(entityId);
                 if (scene == null)
                 {
@@ -1130,8 +1168,8 @@ namespace Battle
         /// 加载配置，构建场景与消息处理器，注册并启动战斗服务器的 TCP 网络，处理会话连接/断开与数据接收并分发内部消息，随后连接到中心服。
         /// </summary>
         /// <remarks>使用 ConfigManager 加载配置；若未配置端口则使用默认端口 31307。初始化
-        /// SceneManager、EntitySyncHandler、RoomHandler 和 BattleMainHandler，并通过 MessageRouter 构建处理器集合。创建 NetworkManager 与
-        /// TcpServer，订阅连接/断开与数据接收事件；按二进制协议解析 [SessionId(8)][MsgId(4)][Payload] 并根据 MsgId 分发到相应处理器，处理器异常会被记录。注册并启动名为
+        /// SceneManager、EntitySyncHandler、RoomHandler 和 BattleMainHandler，并通过 MessageRouter 构建处理器集合。创建
+        /// TcpServer（P3 文档对账：NetworkManager 实际从未在此创建），订阅连接/断开与数据接收事件；按二进制协议解析 [SessionId(8)][MsgId(4)][Payload] 并根据 MsgId 分发到相应处理器，处理器异常会被记录。注册并启动名为
         /// BattleTcp 的服务器，启动完成后记录监听端口并调用 ConnectToCenter(port)。</remarks>
         /// <returns>表示异步操作的任务。</returns>
         public static async Task StartNetworkAsync()
@@ -1456,20 +1494,23 @@ namespace Battle
 
                 _ = Task.Run(async () =>
                 {
-                    try
+                    // P2 修复：try/catch 移入 while 内部，单次瞬时异常不再永久终止心跳上报
+                    // （原实现 catch 在 while 之外，一次异常后本节点心跳静默停止 → Center 超时摘除）。
+                    while (!cancellationToken.IsCancellationRequested)
                     {
-                        while (!cancellationToken.IsCancellationRequested)
+                        try
                         {
                             await Task.Delay(TimeSpan.FromSeconds(Shared.NodeHeartbeatDefaults.HeartbeatIntervalSeconds), cancellationToken);
                             SendNodeStatus(centerClient, nodeId, GetCurrentLoad());
                         }
-                    }
-                    catch (OperationCanceledException)
-                    {
-                    }
-                    catch (Exception ex)
-                    {
-                        Log.Error($"Battle 心跳循环异常（下轮继续重试）: {ex}");
+                        catch (OperationCanceledException)
+                        {
+                            break;
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Error($"Battle 心跳循环异常（本轮跳过，下轮继续重试）: {ex}");
+                        }
                     }
                 }, cancellationToken);
             };

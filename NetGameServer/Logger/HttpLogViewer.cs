@@ -63,6 +63,22 @@ internal static class HttpLogViewer
     {
         try
         {
+            var path = ctx.Request.Url?.AbsolutePath ?? "/";
+
+            // P2 修复：首页（纯页面外壳，不含任何日志数据）**匿名放行**。
+            // 原实现鉴权在所有路径分发之前，导致启用 --http-token 后：
+            // ① 浏览器访问 / 只得到一坨 401 JSON（连页面都打不开）；
+            // ② 即便手工用 /?token=xxx 打开页面，页面内的 /logs 请求也不带 token → 恒 401 →
+            //    页面永远显示"加载失败"，查看器整体不可用。且页面此前没有 token 输入框。
+            // 现在：首页匿名（无数据泄漏）→ 页面提供 token 输入框 + localStorage → fetch 附 X-Token 头；
+            // 数据接口 /logs 仍然严格鉴权。
+            if (ctx.Request.HttpMethod == "GET" && path == "/")
+            {
+                ctx.Response.ContentType = "text/html; charset=utf-8";
+                await WriteAsync(ctx, DashboardHtml);
+                return;
+            }
+
             if (!string.IsNullOrEmpty(token) && !IsAuthorized(ctx, token))
             {
                 ctx.Response.StatusCode = (int)HttpStatusCode.Unauthorized;
@@ -71,13 +87,7 @@ internal static class HttpLogViewer
                 return;
             }
 
-            var path = ctx.Request.Url?.AbsolutePath ?? "/";
-            if (ctx.Request.HttpMethod == "GET" && path == "/")
-            {
-                ctx.Response.ContentType = "text/html; charset=utf-8";
-                await WriteAsync(ctx, DashboardHtml);
-            }
-            else if (ctx.Request.HttpMethod == "GET" && path == "/logs")
+            if (ctx.Request.HttpMethod == "GET" && path == "/logs")
             {
                 var qs = ctx.Request.QueryString;
                 string? node = qs["node"];
@@ -224,13 +234,32 @@ input,select{padding:4px;margin-right:8px}
   级别 <select id="level"><option value="">全部</option><option>ERROR</option><option>WARNING</option><option>INFO</option><option>DEBUG</option></select>
   关键字 <input id="q" placeholder="子串过滤">
   条数 <input id="max" value="500" style="width:70px">
+  token <input id="token" type="password" placeholder="--http-token 未设时留空" style="width:180px">
   <button onclick="refresh()">查询</button>
   <button onclick="clearLogs()">清空</button>
 </div>
 <div id="logs"></div>
 <script>
+// P2 修复：token 输入框 + localStorage，fetch 附 X-Token 头。
+// 原实现首页本身也要 token（浏览器只看到一坨 401 JSON），且页面内 /logs 请求从不带 token →
+// 一旦启用 --http-token，日志查看器整体不可用（页面显示“加载失败”）。首页现改为匿名放行（纯页面外壳，不含日志数据）。
+const TOKEN_KEY = 'netgame_log_token';
+function currentToken(){
+  const input = document.getElementById('token');
+  const v = input.value.trim();
+  if (v) localStorage.setItem(TOKEN_KEY, v);
+  return v;
+}
+function initToken(){
+  // 优先 ?token=xxx（便于从命令行/bookmark 打开），其次 localStorage
+  const fromQuery = new URLSearchParams(location.search).get('token');
+  const saved = fromQuery || localStorage.getItem(TOKEN_KEY) || '';
+  document.getElementById('token').value = saved;
+  if (fromQuery) localStorage.setItem(TOKEN_KEY, fromQuery);
+}
 async function fetchJson(url){
-  const res = await fetch(url);
+  const t = currentToken();
+  const res = await fetch(url, t ? { headers: { 'X-Token': t } } : undefined);
   if (!res.ok) throw new Error(url + ' HTTP ' + res.status);
   return res.json();
 }
@@ -272,6 +301,7 @@ function clearLogs(){
   document.getElementById('logs').textContent = '';
   document.getElementById('ts').textContent = '已清空';
 }
+initToken();
 refresh();
 </script>
 </body></html>

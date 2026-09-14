@@ -26,9 +26,22 @@ compose 已统一注入 `HealthListenAddress=0.0.0.0`，使健康端口可从宿
 # 注意：密钥不能含占位符特征（change/placeholder/example 等），节点启动会 fail-closed 拒绝）
 echo "CenterNodeSharedSecret=$(openssl rand -base64 32)" > .env
 
+# 凭据治理（P1）：仓库内不再写真实数据库口令，compose 默认用假口令 netgame-dev-db-pass。
+# 生产/团队环境请在 .env（已由 .gitignore 忽略）中覆盖，否则 MySQL/Postgres/DB/Battle 全部用假口令：
+echo "MYSQL_PASSWORD=$(openssl rand -base64 24)" >> .env
+echo "POSTGRES_PASSWORD=$(openssl rand -base64 24)" >> .env
+
+# 注意：若 mysql-data / pg-data 卷已用旧口令初始化过，改 .env 后需重置卷才会生效：
+#   docker compose -f deploy/docker-compose.yml down -v
+
 docker compose -f deploy/docker-compose.yml up -d --build
 docker compose -f deploy/docker-compose.yml ps
 ```
+
+> `.env` 的读取位置取决于 compose 的“项目目录”（不同版本行为不同）。若发现 `MYSQL_PASSWORD` /
+> `CenterNodeSharedSecret` 没生效（回落到开发默认值），显式指定即可：
+> `docker compose --env-file .env -f deploy/docker-compose.yml up -d --build`。
+> 另：`.env` 与 `appsettings.Local.json` 已列入 `.dockerignore`，不会被 `COPY . .` 打进镜像。
 
 ## 验证
 

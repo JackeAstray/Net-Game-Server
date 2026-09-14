@@ -9,8 +9,9 @@
 ## 职责边界
 
 - ✅ 账号/角色/好友/聊天/邮件/统计等业务数据的存取
-- ✅ 强类型消息分发（`DbDispatcher` 注册 56 条消息：1000~1027 请求 + 1100~1127 响应，含好友/账号/公会）
+- ✅ 强类型消息分发（`DbDispatcher` 注册 **29** 条请求消息：1000~1029，响应 1100~1129；含好友/账号/公会/昵称）
 - ✅ UID 发号段原子领取（`UidCounters` 单行计数 + `DbAllocateUidRangeReq/Res`=1028/1128，防多实例碰撞）
+- ✅ 昵称落库（`DbUpdateNicknameReq/Res`=1029/1129；`User.Nickname` 列已存在，无需迁移）
 - ✅ 表结构自愈（`SchemaDoctor` 启动建表/补列/补索引）+ `SchemaMigrator` 迁移
 - ✅ 请求-响应匹配（`__requestId` 尾部元数据关联）
 - ❌ 不做业务校验（业务节点负责）
@@ -28,8 +29,8 @@
 |---|---|
 | `DB/Program.cs` | 启动入口 |
 | `DB/DbServerApp.cs` | 节点主类（partial） |
-| `DB/Handlers/DbDispatcher.cs` | 强类型消息分发（注册 56 条 DB 请求/响应） |
-| `DB/Handlers/DbQueryHandler.cs` | 业务方法：`(ClientSessionWrapper, XxxRequest?)` 签名，无二次序列化（迭代 13 D1 化） |
+| `DB/Handlers/DbDispatcher.cs` | 强类型消息分发（注册 29 条 DB 请求消息） |
+| `DB/Handlers/DbQueryHandler*.cs` | 业务方法：`(ISession, XxxRequest?)` 签名，无二次序列化（迭代 13 D1 化）；按模块分文件（Account/Password/Friends/Social/Guild/**Nickname**） |
 | `DB/Routing/RequestContextSession.cs` | DB 链路 `__requestId` 关联上下文 |
 | `DB/DefaultDbContext.cs` + `Migrations/` | EF Core + MySQL 业务表（账号/好友/公会） |
 | `DB/Schema/SchemaDoctor.cs` | 启动自动建表/补列/补索引（`UidCounters` 种子行） |

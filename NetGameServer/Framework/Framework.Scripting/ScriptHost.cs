@@ -203,7 +203,15 @@ public sealed class ScriptHost : IDisposable
                 // OnCreate 保持同步执行（恢复原语义）：服务器在 tick 线程建实体后通常会立即读取
                 // 初始化属性（Hp 等）。若一律投递到 tick 线程，OnCreate 延迟一拍执行，会破坏
                 // "创建→初始化→立即读取"契约。线程安全由调用方保证（NotifyCreate 在 tick 线程调用）。
-                script.OnCreate(entity);
+                // 错误隔离：脚本 OnCreate 抛异常不得穿透到 tick 线程/实体创建链路（与 OnTick/OnMessage 一致）。
+                try
+                {
+                    script.OnCreate(entity);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, $"脚本 {entity.TypeName} OnCreate 异常 EntityId:{entity.EntityId}");
+                }
             }
         }
     }
@@ -217,7 +225,15 @@ public sealed class ScriptHost : IDisposable
         }
         if (scripts.TryGetValue(entity.TypeName, out var script))
         {
-            script.OnDestroy(entity);
+            // 错误隔离：脚本 OnDestroy 抛异常不得穿透销毁链路（与 OnCreate 一致）。
+            try
+            {
+                script.OnDestroy(entity);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, $"脚本 {entity.TypeName} OnDestroy 异常 EntityId:{entity.EntityId}");
+            }
         }
     }
 

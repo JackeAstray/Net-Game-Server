@@ -28,7 +28,9 @@ namespace Bots
     ///       [--protocol tcp|kcp|ws] [--rampup 50] [--scene default]
     /// 协议：
     ///   - tcp：原生 TCP + LengthPrefixedPacketReader（与 KBE TCP 一致）
-    ///   - kcp：暂走 TCP（KCP 客户端 SDK 需另接，默认回退到 tcp）
+    ///   - kcp：**当前未接入**——启动时会显式告警并回退到 tcp。
+///          注：客户端封装 `Network.Kcp.KcpClientWrapper` **已经存在**（Gateway 的 KCP 传输与
+///          NetworkVerify 的 KCP 回归用例都在用它），因此这是 Bots 自身的待办，而非 SDK 缺失。
     ///   - ws：WebSocket + binary frames（需要 Gateway 开启 WS 端口）
     /// </summary>
     internal class Program
@@ -305,6 +307,16 @@ namespace Bots
                 "ws" => BotProtocol.Ws,
                 _ => BotProtocol.Tcp
             };
+
+            // P3 修复（静默降级）：原实现中 --protocol kcp 会落进 switch 的同一分支静默走 TCP，
+            // 压测方以为在压 KCP、实际压的是 TCP（且无任何提示）——与「承诺了却没接线」同类问题。
+            // 这里在启动期明确告警并显式回退，使“未接入”可见。
+            if (opts.Protocol == BotProtocol.Kcp)
+            {
+                Console.WriteLine("[Bots] ⚠ --protocol kcp 尚未接入（Bots 侧未完成），本次将回退使用 TCP。");
+                Console.WriteLine("[Bots]   如需真正压 KCP，请先为本工具接入 Network.Kcp.KcpClientWrapper。");
+                opts.Protocol = BotProtocol.Tcp;
+            }
 
             Console.WriteLine($"Bots 压测启动: {opts.Count} 个机器人 -> {opts.Host}:{opts.Port} 协议={opts.Protocol} 场景={opts.Scene} 时长={opts.DurationSeconds}s");
             Console.WriteLine("（需服务器已启动：DB → Center → Login → Game/Battle → Gateway）");

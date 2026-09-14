@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="Battle/Battle.csproj" Id="3bac7176-9584-426f-a15c-7bbeb52592ac" />
+  <Project Path="App/App.csproj" />
   <Project Path="Center/Center.csproj" Id="a091d53a-04bf-42a7-8872-90f8ad4d21a1" />
   <Project Path="DB/DB.csproj" />
   <Project Path="Game/Game.csproj" />

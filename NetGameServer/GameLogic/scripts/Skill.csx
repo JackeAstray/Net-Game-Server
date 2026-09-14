@@ -79,7 +79,18 @@ public class SkillScript : EntityScriptBase
             // KBE-Gap-Review S2：定时器到点清零冷却（事件驱动，不在 tick 递减）
             CancelCooldownTimer(entity.EntityId);
             MathClampSet(entity, "CooldownRemaining", CooldownMs, 0, int.MaxValue);
-            cooldownTimers[entity.EntityId] = AddTimer(entity, CooldownMs, () => OnCooldownEnd(entity), repeat: false);
+            // 可空性修复：AddTimer 未挂载 TickEngine 时返回 null（存入非可空字典后 Cancel() 会 NRE）
+            var cdTimer = AddTimer(entity, CooldownMs, () => OnCooldownEnd(entity), repeat: false);
+            if (cdTimer != null)
+            {
+                cooldownTimers[entity.EntityId] = cdTimer;
+            }
+            else
+            {
+                // 无定时器则冷却无法自动清零：立即清零并告警，避免该实体永久处于冷却无法再施法
+                Log.Warn("Skill", "Skill {EntityId} 无法注册冷却定时器（TickEngine 未挂载？），已立即清零冷却", entity.EntityId);
+                MathClampSet(entity, "CooldownRemaining", 0, 0, int.MaxValue);
+            }
 
             Log.Info("Skill", "Skill {EntityId} 释放技能！Lv.{Level} 造成 {Damage} 伤害（累计 {Total}），进入 {CD}ms 冷却",
                 entity.EntityId, entity.Get<int>("Level"), damage, total + damage, CooldownMs);
@@ -108,7 +119,11 @@ public class SkillScript : EntityScriptBase
         int remainingMs = entity.Get<int>("CooldownRemaining");
         if (remainingMs > 0)
         {
-            cooldownTimers[entity.EntityId] = AddTimer(entity, remainingMs, () => OnCooldownEnd(entity), repeat: false);
+            var reloadedCdTimer = AddTimer(entity, remainingMs, () => OnCooldownEnd(entity), repeat: false);
+            if (reloadedCdTimer != null)
+            {
+                cooldownTimers[entity.EntityId] = reloadedCdTimer;
+            }
         }
         Log.Info("Skill", "Skill {EntityId} 脚本热更新完成", entity.EntityId);
     }

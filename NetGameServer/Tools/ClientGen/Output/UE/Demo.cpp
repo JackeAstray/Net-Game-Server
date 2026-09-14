@@ -1,4 +1,4 @@
-// 客户端示例：连接 Gateway -> 登录 -> 收到 LoginResult
+﻿// 客户端示例：连接 Gateway -> 登录 -> 收到 LoginResult
 // 编译（示例）：g++ -std=c++17 Demo.cpp NetClient.cpp -o demo -pthread  （Windows 加 -lws2_32）
 // UE：把 MemoryPack.h / Messages.h / NetClient.* 放进模块，在 Tick/线程中调用。
 #include <chrono>

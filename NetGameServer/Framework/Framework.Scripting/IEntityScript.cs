@@ -89,10 +89,18 @@ public abstract class EntityScriptBase : IEntityScript
     {
         var engine = ScriptHost.Current?.TickEngine;
         if (engine == null) return null;
-        var handle = engine.AddTimer(intervalMs, WrapWithEntity(entity, callback), repeat);
-        lock (_timers)
+        // P1 修复：在句柄入队前注册完成回调——一次性定时器执行完毕 / 任意定时器被取消时，
+        // 回调把句柄从实例级清单移除。此前清单只增不减：脚本每次施法/重生都 AddTimer，
+        // 而 _timers → TimerHandle → WrapWithEntity 闭包 → entity 是强引用链，
+        // 导致清单无界增长且**已销毁实体无法回收**（详见 GameLogic/scripts 的 Skill/Npc/Avatar）。
+        var handle = engine.AddTimer(intervalMs, WrapWithEntity(entity, callback), repeat, OnTimerCompleted);
+        lock (_timersGate)
         {
-            _timers.Add(handle);
+            // 竞态兜底：若句柄在登记前已完成（极短间隔的一次性定时器），IsActive 为 false，不再登记。
+            if (handle.IsActive)
+            {
+                _timers.Add(handle);
+            }
         }
         return handle;
     }
@@ -100,16 +108,29 @@ public abstract class EntityScriptBase : IEntityScript
     private readonly object _timersGate = new();
     private readonly System.Collections.Generic.List<Framework.Tick.TimerHandle> _timers = new();
 
-    /// <summary>取消本实例创建的全部定时器（热更新迁移时由 ScriptHost 调用，供跨实例定时器收尾）。</summary>
-    internal void CancelAllTimers()
+    /// <summary>定时器完成/取消回调：把句柄移出实例清单，释放对回调闭包与实体的强引用。</summary>
+    private void OnTimerCompleted(Framework.Tick.TimerHandle handle)
     {
         lock (_timersGate)
         {
-            foreach (var handle in _timers)
-            {
-                handle.Cancel();
-            }
+            _timers.Remove(handle);
+        }
+    }
+
+    /// <summary>取消本实例创建的全部定时器（热更新迁移时由 ScriptHost 调用，供跨实例定时器收尾）。</summary>
+    internal void CancelAllTimers()
+    {
+        Framework.Tick.TimerHandle[] snapshot;
+        lock (_timersGate)
+        {
+            // 先快照再清空：Cancel() 会同步回调 OnTimerCompleted（重入 _timersGate 并修改清单），
+            // 直接遍历会抛"集合已修改"异常（P1 修复）。
+            snapshot = _timers.ToArray();
             _timers.Clear();
+        }
+        for (int i = 0; i < snapshot.Length; i++)
+        {
+            snapshot[i].Cancel();
         }
     }
 
@@ -146,9 +167,16 @@ public abstract class EntityScriptBase : IEntityScript
     public static int MathClampAdd(EntityObj entity, string name, int delta, int min, int max)
     {
         // P2 修复：内部用 long 累加，防止 Get<int> + delta 整数溢出回绕（恶意大 delta 可导致结果跳变）。
-        long newValue = (long)entity.Get<int>(name) + delta;
+        int old = entity.Get<int>(name);
+        long newValue = (long)old + delta;
         if (newValue < min) newValue = min;
         else if (newValue > max) newValue = max;
+        // P3 修复：与 MathClampSet 对齐——值未变化时不调用 Set，
+        // 避免 delta=0 / 已顶到上下限时仍触发 PropertyChanged、置脏与持久化（热路径无谓开销）。
+        if (old == (int)newValue)
+        {
+            return old;
+        }
         entity.Set(name, (int)newValue);
         return (int)newValue;
     }

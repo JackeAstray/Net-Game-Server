@@ -111,6 +111,22 @@ namespace Shared.Messages.Db
         public string Message { get; set; } = string.Empty;
     }
 
+    /// <summary>昵称修改请求（Login → DB 落库；配合 [GameMessage(1029)]DbUpdateNickname）。</summary>
+    public class DbUpdateNicknameRequest
+    {
+        public int UserId { get; set; }
+        public string NewNickname { get; set; } = string.Empty;
+    }
+
+    /// <summary>昵称修改响应（DB → Login；配合 [GameMessage(1129)]DbUpdateNicknameResult）。</summary>
+    public class DbUpdateNicknameResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+        /// <summary>落库后的最终昵称（成功时回显，便于客户端同步）。</summary>
+        public string Nickname { get; set; } = string.Empty;
+    }
+
     public class ResetPasswordByEmailRequest
     {
         public string Account { get; set; } = string.Empty;

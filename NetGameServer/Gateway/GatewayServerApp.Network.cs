@@ -53,11 +53,15 @@ namespace Gateway
             {
                 Shared.Log.Info($"客户端(KCP)已连接: {session.RemoteEndPoint} ID:{session.SessionId}");
                 Gateway.Managers.GatewaySessionManager.Instance.AddSession(session);
+                // UDP/KCP 会话身份绑定：下发随机令牌（客户端后续消息须携带，防伪造源端点注入）
+                IssueSessionAuthToken(session);
             };
             udpServer.OnSessionConnected += session =>
             {
                 Shared.Log.Info($"客户端(UDP)已连接: {session.RemoteEndPoint} ID:{session.SessionId}");
                 Gateway.Managers.GatewaySessionManager.Instance.AddSession(session);
+                // UDP/KCP 会话身份绑定：下发随机令牌（客户端后续消息须携带，防伪造源端点注入）
+                IssueSessionAuthToken(session);
             };
             webSocketServer.OnSessionConnected += session =>
             {
@@ -127,13 +131,11 @@ namespace Gateway
                     // 收到数据包：刷新最近活动时间
                     Gateway.Managers.GatewaySessionManager.Instance.TouchSession(session.SessionId);
 
-                    // P2 加固：统一入站包大小上限（msgid 4 字节 + 64KB 负载，与后端 LengthPrefixedPacketReader 一致）。
-                    // KCP/UDP 直通不经过 LengthPrefixedPacketReader 的 64KB 上限，超大帧若转发到后端共享连接
-                    // 会触发 InvalidDataException 导致该网关所有客户端集体断线（DoS）；此处兜底拒绝并关闭连接。
-                    const int MaxGatewayInboundPacket = 4 + 64 * 1024;
-                    if (data.Length > MaxGatewayInboundPacket)
+                    // UDP/KCP 会话身份绑定校验：逐包校验 [MsgId(4)][Token(8)][Payload] 中的令牌，
+                    // 拒绝伪造源 IP:端口 / KCP conv 嗅探的注入（TCP/WS 面向连接跳过）。
+                    // 校验失败即关闭连接（fail-closed）；成功时 payloadStart=12，真实负载从该偏移起。
+                    if (!VerifySessionAuthToken(session, data, out int payloadStart))
                     {
-                        Shared.Log.Warning($"Gateway 拒绝超大入站包 Length:{data.Length} 上限:{MaxGatewayInboundPacket} SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
                         try { session.Close(); } catch { /* 关闭异常吞掉 */ }
                         return;
                     }
@@ -148,15 +150,28 @@ namespace Gateway
                         return;
                     }
 
-                    if (data.Length >= 4)
+                    // P2 加固：统一入站负载大小上限（64KB，与后端 LengthPrefixedPacketReader 一致）。
+                    // 置于令牌剥离之后按真实负载长度判定：UDP/KCP 含 8 字节令牌、TCP/WS 不含，二者负载上限一致。
+                    // KCP/UDP 直通不经过 LengthPrefixedPacketReader 的 64KB 上限，超大帧若转发到后端共享连接
+                    // 会触发 InvalidDataException 导致该网关所有客户端集体断线（DoS）；此处兜底拒绝并关闭连接。
+                    const int MaxGatewayInboundPayload = 64 * 1024;
+                    if (data.Length - payloadStart > MaxGatewayInboundPayload)
+                    {
+                        Shared.Log.Warning($"Gateway 拒绝超大入站包 Length:{data.Length} 负载上限:{MaxGatewayInboundPayload} SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                        try { session.Close(); } catch { /* 关闭异常吞掉 */ }
+                        return;
+                    }
+
+                    // payloadStart = 4（TCP/WS）或 12（UDP/KCP 含令牌）；允许空负载（payloadLength 可为 0）
+                    if (data.Length >= payloadStart)
                     {
                         int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
-                        int payloadLength = data.Length - 4;
+                        int payloadLength = data.Length - payloadStart;
                         Shared.Log.Debug("Gateway 接收到客户端数据 SessionId:{SessionId} Remote:{Remote} MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength}", session.SessionId, session.RemoteEndPoint!, msgId, data.Length, payloadLength);
 
                         // 安全修复（P0）：先剥离客户端可能注入的 __* 路由元数据（JSON 内嵌 / 伪造二进制尾部块），
                         // 再由网关附加受信任的元数据，防止未登录客户端伪造 __userId/__uid/__nickname 冒充他人。
-                        byte[] payload = Shared.RouteMetadata.StripClientFields(data.Slice(4));
+                        byte[] payload = Shared.RouteMetadata.StripClientFields(data.Slice(payloadStart));
                         int boundUserId = Gateway.Managers.GatewaySessionManager.Instance.GetUserIdBySessionId(session.SessionId);
                         // 安全修复（P0）：Game 节点业务消息（好友/账户/背包，20000-29999 + 50000-69999）
                         // 必须已登录绑定，未绑定会话拒绝转发。
@@ -219,6 +234,9 @@ namespace Gateway
                                 case "Battle":
                                     SendToBattle(wrapperMsg, routedLength, session.SessionId);
                                     break;
+                                case "App":
+                                    SendToBackend(appSender, wrapperMsg, routedLength);
+                                    break;
                                 default:
                                     System.Buffers.ArrayPool<byte>.Shared.Return(wrapperMsg);
                                     Shared.Log.Warning($"Gateway: 未知的路由目标 TargetServer=>{targetServer} MsgId=>{msgId}");
@@ -260,7 +278,16 @@ namespace Gateway
                 }
                 catch (Exception ex)
                 {
-                    Shared.Log.Error($"Gateway 处理客户端数据异常 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Exception:{ex}");
+                    // 安全加固：异常路径限频 + 关闭连接。此前 catch-all 记录一条未限频 Error 后继续放行，
+                    // 恶意输入（畸形长度/元数据解析异常）可无限刷日志且连接不被关闭继续施压。
+                    // 协议解析抛异常说明帧已失步（长度前缀/元数据破坏），继续在同一连接上处理只会错位，
+                    // 关闭连接是 fail-closed 的正确行为（与 LengthPrefixedPacketReader 抛 InvalidDataException 的语义一致）。
+                    if (ShouldThrottleGatewayErrorLog())
+                    {
+                        Shared.Log.Error($"Gateway 处理客户端数据异常 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Exception:{ex.Message}");
+                    }
+                    try { session.Close(); }
+                    catch { /* 关闭失败由服务器空闲回收兜底 */ }
                 }
             };
 
@@ -296,6 +323,7 @@ namespace Gateway
                     }
                 }
                 Gateway.Managers.GatewaySessionManager.Instance.RemoveSession(session.SessionId);
+                sessionAuthTokens.TryRemove(session.SessionId, out _); // UDP/KCP 会话令牌随连接销毁
                 clientBattleNodeBindings.TryRemove(canonicalId, out _); // 清除 Battle 节点绑定（按规范 ID）
                 NotifyPlayerDisconnected(canonicalId);
             };
@@ -378,6 +406,23 @@ namespace Gateway
             }, maintenanceToken);
 
             AttachCenterNodeLifecycle(centerClient, port);
+        }
+
+        // ---- 网关级日志限频（异常路径防刷屏） ----
+
+        /// <summary>同类网关错误日志最近一次输出时刻（进程级限频）。</summary>
+        private static long lastGatewayErrorLogTick;
+
+        /// <summary>网关错误日志限频窗口（毫秒）。</summary>
+        private const long GatewayErrorLogThrottleMs = 5000;
+
+        /// <summary>进程级限频：异常路径的 Error 日志每 5 秒最多输出一条，防恶意输入触发日志风暴。</summary>
+        private static bool ShouldThrottleGatewayErrorLog()
+        {
+            long now = Environment.TickCount64;
+            long last = Volatile.Read(ref lastGatewayErrorLogTick);
+            return now - last > GatewayErrorLogThrottleMs
+                && Interlocked.CompareExchange(ref lastGatewayErrorLogTick, now, last) == last;
         }
     }
 }

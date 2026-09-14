@@ -22,7 +22,7 @@
 - 协议生成器：早期 `Protogen`（`.def + 代码生成`）已被 **Roslyn 源生成器**（`Framework.Protocol.Generator`，`[GameMessage]` 声明）取代
 - `GameLogic/scripts` 脚本层（5 个示例 csx）
 - **8** 套验证套件（Protocol / Network / ScriptHost / Logger / Supervisor / Machine / Lifecycle / ClientGen）
-- 协议消息：原 `.def` 142 条已迁移为 `[GameMessage]` 声明（现 193 处）
+- 协议消息：原 `.def` 142 条已迁移为 `[GameMessage]` 声明（现 **195** 处）
 - 全部 **0 错误构建**
 
 ---

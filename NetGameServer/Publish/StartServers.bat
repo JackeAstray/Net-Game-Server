@@ -55,6 +55,11 @@ timeout /t 1 /nobreak >nul
 echo 正在启动 Battle...
 start "Battle" /D "Battle" Battle.exe
 
+timeout /t 1 /nobreak >nul
+
+echo 正在启动 App（应用节点：游戏消息通道 + HTTP REST 应用面）...
+start "App" /D "App" App.exe
+
 echo 所有服务启动指令已发送！
 exit /b 0
 

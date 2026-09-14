@@ -55,11 +55,22 @@ public sealed class FileEntityPersistenceStore : IEntityPersistenceStore
         return full;
     }
 
-    /// <summary>原子写盘：先写同目录临时文件再 rename 覆盖。</summary>
+    /// <summary>原子写盘：先写同目录临时文件 → **刷到磁盘** → rename 覆盖。</summary>
+    /// <remarks>
+    /// P2 修复（健壮性）：原实现只用 <c>File.WriteAllBytes</c>（数据仅到 OS 页缓存），
+    /// rename 只保证“目录项替换”原子，掉电/硬崩溃仍可能留下 **0 字节或截断**的目标文件，
+    /// 而 TryLoad 会把它当有效数据回灌（实体属性悄悄变默认值且无告警）——
+    /// 与类注释承诺的“不会留下半截损坏文件”不符。这里补 fsync。
+    /// </remarks>
     private static void WriteAtomic(string path, byte[] data)
     {
         string tmp = path + ".tmp";
-        File.WriteAllBytes(tmp, data);
+        using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None,
+                   bufferSize: 64 * 1024, FileOptions.WriteThrough))
+        {
+            fs.Write(data, 0, data.Length);
+            fs.Flush(flushToDisk: true);
+        }
         File.Move(tmp, path, overwrite: true);
     }
 

@@ -47,8 +47,18 @@ public static class Program
         Directory.CreateDirectory(Path.Combine(outputDir, "Unity"));
         Directory.CreateDirectory(Path.Combine(outputDir, "UE"));
 
+        // C# / JSON：UTF-8 **无** BOM（Roslyn 与 JSON 工具均默认按 UTF-8 解析）
         void Write(string relative, string content) =>
             File.WriteAllText(Path.Combine(outputDir, relative), content, new UTF8Encoding(false));
+
+        // C++：必须带 UTF-8 BOM。
+        // 根因（实测）：产物里的注释是中文（UTF-8 多字节），而 MSVC 在中文 Windows 默认 936 代码页下
+        // 会把**无 BOM** 的 UTF-8 源文件当 ANSI 解码 —— 多字节序列错位后可能吞掉后续代码行，
+        // 实测报 “error C2039: ReadCount 不是 mp::Reader 的成员”（声明明明在类内）等一片错误，
+        // 整个 UE 产物开箱编译不过；同一份文件加 /utf-8 则 0 错通过。
+        // BOM 是 MSVC 无需任何命令行开关就正确识别 UTF-8 的唯一途径（clang/gcc 也接受 BOM）。
+        void WriteCpp(string relative, string content) =>
+            File.WriteAllText(Path.Combine(outputDir, relative), content, new UTF8Encoding(true));
 
         // protocol.json 清单
         Write("protocol.json", BuildManifest(client));
@@ -61,11 +71,11 @@ public static class Program
         Write(Path.Combine("Unity", "Demo.cs"), UnityGenerator.GenerateDemo());
 
         // UE / C++
-        Write(Path.Combine("UE", "MemoryPack.h"), UeGenerator.GenerateMemoryPackH());
-        Write(Path.Combine("UE", "Messages.h"), UeGenerator.GenerateMessagesH(client));
-        Write(Path.Combine("UE", "NetClient.h"), UeGenerator.GenerateNetClientH());
-        Write(Path.Combine("UE", "NetClient.cpp"), UeGenerator.GenerateNetClientCpp());
-        Write(Path.Combine("UE", "Demo.cpp"), UeGenerator.GenerateDemoCpp());
+        WriteCpp(Path.Combine("UE", "MemoryPack.h"), UeGenerator.GenerateMemoryPackH());
+        WriteCpp(Path.Combine("UE", "Messages.h"), UeGenerator.GenerateMessagesH(client));
+        WriteCpp(Path.Combine("UE", "NetClient.h"), UeGenerator.GenerateNetClientH());
+        WriteCpp(Path.Combine("UE", "NetClient.cpp"), UeGenerator.GenerateNetClientCpp());
+        WriteCpp(Path.Combine("UE", "Demo.cpp"), UeGenerator.GenerateDemoCpp());
         Write(Path.Combine("UE", "README.md"), UeGenerator.GenerateReadme());
 
         Console.WriteLine($"生成完成: {outputDir}");

@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # 联调面冒烟脚本（P2 修复验证用）
 # 覆盖：
 #   1) HTTP login -> 真实 Token
@@ -21,10 +21,15 @@ function Check([string]$name, [bool]$ok, [string]$detail) {
   else { Write-Host "[FAIL] $name $detail" -ForegroundColor Red; $script:failed++ }
 }
 
-$ApiBase  = $env:ApiBase  ?? "http://127.0.0.1:31303"
-$BotsExe  = $env:BotsExe  ?? "..\Bots\bin\Debug\net10.0\Bots.exe"
-$BotsCount = $env:BotsCount ?? "2"
-$ApiKey    = $env:HttpApiKeys ?? ""
+# 环境变量默认值：刻意不使用 PowerShell 7 的 `??` 运算符。
+# 本脚本的用法说明是 `powershell -File SmokeTest.ps1`（Windows PowerShell 5.1），
+# 而 `??` 在 5.1 下是语法错误（"意外的标记 ??"），会直接解析失败、根本跑不起来。
+# 另：`if ($env:X)` 对空字符串也走默认值，比 `??`（只判 null）更符合"未配置就用默认"的语义。
+$ApiBase   = if ($env:ApiBase)     { $env:ApiBase }     else { "http://127.0.0.1:31303" }
+$BotsExe   = if ($env:BotsExe)     { $env:BotsExe }     else { "..\Bots\bin\Debug\net10.0\Bots.exe" }
+$BotsCount = if ($env:BotsCount)   { $env:BotsCount }   else { "2" }
+$ApiKey    = if ($env:HttpApiKeys) { $env:HttpApiKeys } else { "" }
+
 
 # 测试账号（冒烟用，不存在则自动注册）
 $AccA = "smoke_a_" + [guid]::NewGuid().ToString("N").Substring(0,8)

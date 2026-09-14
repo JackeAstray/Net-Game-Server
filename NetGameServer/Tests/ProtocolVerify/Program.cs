@@ -960,6 +960,35 @@ bool leaveOk = await centerDispatcher.TryDispatch(centerCtx, leaveMsgId, leaveBo
 Console.WriteLine($"Center 离开房间: ok={leaveOk} 发送包数={centerSent.Count} (期望 True/>=4)");
 if (!leaveOk || centerSent.Count < 4) return 1;
 
+// ===== 16a. 应用节点（AppServer）链路验证（游戏消息通道 + 路由表目标） =====
+// 路由表：AppEchoRequest(80001)/AppEchoResult(80002) 应指向 App 目标且非内部消息
+// （网关据此把 80001 路由到 App 节点、出站放行 80002 回包）。
+string? appRouteTarget = Framework.Protocol.Generated.RouterTable.GetTargetServer(Framework.Protocol.Generated.AppEchoRequest.MsgId);
+bool appNotInternal = !Framework.Protocol.Generated.RouterTable.Routes[Framework.Protocol.Generated.AppEchoRequest.MsgId].IsInternal;
+Console.WriteLine($"App 路由表: Target={appRouteTarget ?? "(null)"} Internal={!appNotInternal} (期望 App/False)");
+if (appRouteTarget != "App" || !appNotInternal) return 1;
+
+// 应用节点分发器：AppEchoRequest -> AppEchoResult（回显 + 会话 ID + 节点标识）
+var appDispatcher = App.Handlers.AppDispatcher.BuildDispatcher("App-Test-1");
+var appSent = new List<(int msgId, byte[] payload)>();
+var appCtx = new TestSessionContext(appSent);
+var appReq = new Framework.Protocol.Generated.AppEchoRequest { Text = "hello-app" };
+byte[] appReqPacket = Framework.Protocol.ProtocolCodec.Encode(appReq);
+Framework.Protocol.ProtocolCodec.TryParseFrame(appReqPacket.AsSpan(4), out int appReqMsgId, out var appReqBody);
+bool appDispatched = await appDispatcher.TryDispatch(appCtx, appReqMsgId, appReqBody);
+bool appReplyOk = false;
+string appEcho = "";
+long appReplySession = 0;
+string appNode = "";
+if (appDispatched && appSent.Count == 1)
+{
+    var appReply = MemoryPack.MemoryPackSerializer.Deserialize<Framework.Protocol.Generated.AppEchoResult>(appSent[0].payload.AsSpan());
+    appReplyOk = appReply != null && appReply.Success && appSent[0].msgId == Framework.Protocol.Generated.AppEchoResult.MsgId;
+    if (appReply != null) { appEcho = appReply.Echo; appReplySession = appReply.ClientSessionId; appNode = appReply.NodeId; }
+}
+Console.WriteLine($"App 分发回环: ok={appDispatched} reply={appReplyOk} echo={appEcho} session={appReplySession} node={appNode} (期望 True/True/hello-app/100/App-Test-1)");
+if (!appDispatched || !appReplyOk || appEcho != "hello-app" || appReplySession != 100 || appNode != "App-Test-1") return 1;
+
 // ===== 16b. 队伍（A2）逻辑验证（创建/加入/就位/我的/队长转让/解散） =====
 var partyMgr = new Center.Handlers.PartyManager();
 var pc1 = partyMgr.HandleCreate(7001, 42, "Tester");
@@ -1076,10 +1105,10 @@ lbManager.RemoveNodeBySession(lbSessionB);
 
 // ===== 18. DB 配置化分发验证（DbDispatcher 全量注册 + 双格式 + RequestId 路由） =====
 
-// 18.1 全量注册：DB 服务器 28 条请求消息全部迁移到强类型分发（20 好友/账号 + 8 公会）
+// 18.1 全量注册：DB 服务器 29 条请求消息全部迁移到强类型分发（20 好友/账号 + 8 公会 + 1 昵称）
 var dbDispatcher = DB.Handlers.DbDispatcher.BuildDispatcher();
-Console.WriteLine($"DB Dispatcher 注册消息数: {dbDispatcher.RegisteredCount} (期望 28)");
-if (dbDispatcher.RegisteredCount != 28) return 1;
+Console.WriteLine($"DB Dispatcher 注册消息数: {dbDispatcher.RegisteredCount} (期望 29)");
+if (dbDispatcher.RegisteredCount != 29) return 1;
 
 // 18.1b 公会消息 round-trip（Guild 段：字段与 MemoryPack 序列化对齐）
 var guildCreate = new Framework.Protocol.Generated.DbGuildCreate { UserId = 7, Name = "Alpha", Declaration = "hi" };
@@ -1266,6 +1295,69 @@ if (!dbResolveOk || !dbRequestIdOk) return 1;
     bool conOk = conTotal == 8 * conPerThread && conCounters.Count == 4 && conDsp.RegisteredCount == 4;
     Console.WriteLine($"并发注入 MessageDispatcher: 分发={conTotal}/{8 * conPerThread} 注册={conDsp.RegisteredCount} 免锁读稳定={conOk} (期望 {8 * conPerThread}/4/True)");
     if (!conOk) return 1;
+}
+
+// ===== 19. MessageIds 双源一致性校验（P2 防回归） =====
+// 背景：仓库存在两张 MessageIds 表——手写 Shared.Messages.MessageIds（旧 JSON 路由用）
+// 与源生成器产出的 Framework.Protocol.Generated.MessageIds（[GameMessage] 声明）。
+// 历史上二者撞号造成 P1 事故：手写 DbAllocateUidRangeReq=1020 与生成版 [GameMessage(1020)]DbGuildCreate
+// 同值，导致 Login 的 UID 发号请求被新分发器优先路由到"公会创建"。
+// 源生成器的 NGSGEN003/004 只比对生成命名空间内的常量（生成输出对生成器自身不可见），
+// 因此**无法**发现跨表撞号——这里补一道编译后的交叉校验。
+//
+// 说明（重要，避免误报）：迁移期两表**有意镜像**同一批 ID 但命名体系不同
+// （如手写 AddFriendReq=50001 ↔ 生成 FriendAdd=50001），因此"同值不同名"是预期状态，
+// 不能作为硬失败判据（历史撞号在机械形态上与之完全一致，无法用命名规则区分）。
+// 本节点只做**可判定**的硬门禁，另有信息性统计供人工审查。
+static Dictionary<string, int> ReadConstInts(Type t) =>
+    t.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static |
+                System.Reflection.BindingFlags.FlattenHierarchy)
+        .Where(f => f.IsLiteral && !f.IsInitOnly && f.FieldType == typeof(int))
+        .ToDictionary(f => f.Name, f => (int)f.GetRawConstantValue()!, StringComparer.Ordinal);
+
+{
+    var handWritten = ReadConstInts(typeof(Shared.Messages.MessageIds));
+    var generated = ReadConstInts(typeof(Framework.Protocol.Generated.MessageIds));
+    Console.WriteLine($"MessageIds 双源规模: 手写={handWritten.Count} 生成={generated.Count}");
+
+    var failures = new List<string>();
+
+    // (A) 单表内重复 ID：两个不同常量共用一个 ID，后者静默覆盖前者（真实且危险的错误类别）
+    void CheckIntraTableDuplicates(Dictionary<string, int> table, string label)
+    {
+        foreach (var g in table.GroupBy(kv => kv.Value).Where(g => g.Count() > 1))
+        {
+            failures.Add($"{label} 内部 ID 重复: {g.Key} 被 {string.Join(", ", g.Select(x => x.Key))} 共用");
+        }
+    }
+    CheckIntraTableDuplicates(handWritten, "手写表");
+    CheckIntraTableDuplicates(generated, "生成表");
+
+    // (B) 跨表同名常量值漂移：同名必然指同一逻辑消息，值必须一致（可判定的硬判据）
+    foreach (var kv in handWritten)
+    {
+        if (generated.TryGetValue(kv.Key, out int generatedValue) && generatedValue != kv.Value)
+        {
+            failures.Add($"同名常量值漂移: {kv.Key} 手写={kv.Value} 生成={generatedValue}");
+        }
+    }
+
+    // (C) 信息性统计：跨表同值不同名的"镜像/潜在撞号"对数（人工审查用，非门禁）
+    int mirrored = 0;
+    var handWrittenValues = new HashSet<int>(handWritten.Values);
+    foreach (var kv in generated)
+    {
+        if (handWrittenValues.Contains(kv.Value) && !handWritten.ContainsKey(kv.Key))
+        {
+            mirrored++;
+        }
+    }
+    Console.WriteLine($"MessageIds 跨表同值不同名（迁移期镜像/潜在撞号）: {mirrored} 对");
+    Console.WriteLine("  提示：新增手写常量前请确认其 ID 未被生成表占用；此计数显著变化时应人工复核。");
+
+    foreach (var f in failures) Console.WriteLine($"  !! {f}");
+    Console.WriteLine($"MessageIds 双源一致性校验: 失败={failures.Count} (期望 0)");
+    if (failures.Count != 0) return 1;
 }
 
 Console.WriteLine("\n===== 全部验证通过 =====");

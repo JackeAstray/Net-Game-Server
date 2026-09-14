@@ -31,7 +31,7 @@ public class UdpSession : ISession
         try
         {
             byte[] payload = EnsureLengthPrefixed(data.Span);
-            Shared.Log.Debug($"[UdpSession] 发送数据 SessionId:{SessionId} Remote:{RemoteEndPoint} InputLength:{data.Length} FramedLength:{payload.Length}");
+            if (Shared.Log.IsDebugEnabled) Shared.Log.Debug($"[UdpSession] 发送数据 SessionId:{SessionId} Remote:{RemoteEndPoint} InputLength:{data.Length} FramedLength:{payload.Length}");
             udpClient.Send(payload, payload.Length, remoteEndPoint);
             LastActivityTime = DateTime.UtcNow;
         }

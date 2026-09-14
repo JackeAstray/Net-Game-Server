@@ -1,0 +1,21 @@
+# Docker 构建上下文忽略清单（构建上下文 = 仓库根目录，Dockerfile 内为 COPY . .）
+#
+# 凭据治理（P1）：本地真实凭据只允许存在于工作区，绝不能被 COPY 进镜像层。
+**/appsettings.Local.json
+.env
+.env.*
+!.env.example
+
+# 版本控制与本地运行产物（避免把 Windows 侧构建产物带进 Linux 构建阶段）
+.git
+.gitignore
+.github
+.vs
+.cluster
+logs
+Logs
+**/bin
+**/obj
+
+# 文档/部署辅助（不参与镜像构建，减少上下文体积）
+deploy/grafana

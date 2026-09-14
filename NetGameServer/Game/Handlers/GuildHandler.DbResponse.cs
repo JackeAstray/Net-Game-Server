@@ -98,10 +98,17 @@ namespace Game.Handlers
         private static void SendJson<T>(PendingGuildRequest pending, ReadOnlyMemory<byte> cleanPayload)
         {
             var response = Shared.Json.DeserializeFromUtf8Bytes<T>(cleanPayload.Span);
-            if (response != null)
+            if (response == null)
             {
-                SendResponseBySessionId(pending.GatewaySession!, pending.SessionId, pending.ResponseMsgId, response!);
+                // P3 修复：原实现 response == null 时静默不发包 → 客户端只能等到自身超时，
+                // 与 FriendHandler 同场景（回 Success=false）行为不一致。
+                // 公会各响应类型均只含 Success/Message 两个必需字段，匿名对象可被客户端正确反序列化。
+                Shared.Log.Error($"Game 公会 DB 回包反序列化失败（已回显式失败）ResponseMsgId:{pending.ResponseMsgId} SessionId:{pending.SessionId} DbMsg:{typeof(T).Name}");
+                SendResponseBySessionId(pending.GatewaySession!, pending.SessionId, pending.ResponseMsgId,
+                    new { Success = false, Message = "服务端处理失败，请稍后重试" });
+                return;
             }
+            SendResponseBySessionId(pending.GatewaySession!, pending.SessionId, pending.ResponseMsgId, response!);
         }
 
         /// <summary>DB 成员项（DbGuildMemberItem）映射为客户端成员项（GuildMemberItem）。</summary>
@@ -110,6 +117,13 @@ namespace Game.Handlers
             var dbResp = Shared.Json.DeserializeFromUtf8Bytes<DbGuildMyResponse>(cleanPayload.Span);
             if (dbResp == null)
             {
+                // P3 修复：与 SendJson 同理，解析失败时不再静默丢弃（预热请求本身不回包，保持静默）。
+                if (!pending.IsGuildMyWarmup)
+                {
+                    Shared.Log.Error($"Game 公会 DB 回包反序列化失败（已回显式失败）MsgId:{pending.ResponseMsgId} SessionId:{pending.SessionId}");
+                    SendResponseBySessionId(pending.GatewaySession!, pending.SessionId, pending.ResponseMsgId,
+                        new { Success = false, Message = "服务端处理失败，请稍后重试" });
+                }
                 return;
             }
 
@@ -121,6 +135,8 @@ namespace Game.Handlers
                 {
                     MemberIds = (dbResp.Members ?? new System.Collections.Generic.List<DbGuildMemberItem>())
                         .Select(m => m.UserId).Where(u => u > 0).ToArray(),
+                    // P3 修复：记录公会 ID，供公会频道入口区分"未入会"与"公会仅我一人"
+                    GuildId = dbResp.GuildId,
                     LoadedAtUtc = DateTime.UtcNow
                 };
             }
@@ -144,13 +160,47 @@ namespace Game.Handlers
             SendResponseBySessionId(pending.GatewaySession!, pending.SessionId, pending.ResponseMsgId, clientResp);
         }
 
-        /// <summary>公会结构变更后使操作者的成员缓存失效（下次聊天/查询重新加载）。</summary>
+        /// <summary>
+        /// 公会结构变更后失效成员缓存（创建/加入/退出/解散/踢人/转让后调用）。
+        ///
+        /// P2 修复（授权滞后）：原实现只失效**操作者自己**的缓存，导致
+        /// ① 被踢出/已退会/公会已解散的成员自身缓存仍有效 ≤ TTL(60s)，
+        ///    而 <c>ChatHandler</c> 的公会频道投递名单正是取自**发送者自己的**缓存列表
+        ///    → 该成员在窗口内仍能向全公会广播公会频道消息（踢人/解散本应即时断权）；
+        /// ② 其余在线成员的同公会名单同样滞后 ≤60s（收不到新加入/已离开的成员变化）。
+        ///
+        /// 修法：操作者的缓存条目恰好包含该公会全部成员 userId，因此**先取快照再失效**，
+        /// 对名单内每个 userId 一并失效即可覆盖整个公会，无需修改 DB 回包协议
+        /// （DbGuild*Response 仅带 Success/Message，不含成员集合）。
+        ///
+        /// 作用域说明：<c>guildMemberCache</c> 与 <c>PlayerSessionManager</c> 同为 Game 进程内单例，
+        /// 公会频道广播本就只覆盖本节点在线成员，故本修复与功能实际作用域一致。
+        /// </summary>
         private static void InvalidateGuildCacheForPending(PendingGuildRequest pending)
         {
             int userId = Game.Managers.PlayerSessionManager.Instance.GetUserIdBySessionId(pending.SessionId);
-            if (userId > 0)
+            if (userId <= 0)
             {
-                InvalidateGuildCache(userId);
+                return;
+            }
+
+            // 先取操作者的成员快照（含全体成员），再失效自己——顺序不可颠倒，失效后就读不到了。
+            int[]? memberIds = GetCachedGuildMemberIds(userId);
+            InvalidateGuildCache(userId);
+
+            if (memberIds == null || memberIds.Length == 0)
+            {
+                // 操作者缓存未就绪/已过期（如刚加入公会的新成员）：只能失效其自身，
+                // 其余成员的名单将在 TTL 到期后自然刷新。
+                return;
+            }
+
+            foreach (var memberId in memberIds)
+            {
+                if (memberId > 0 && memberId != userId)
+                {
+                    InvalidateGuildCache(memberId);
+                }
             }
         }
     }

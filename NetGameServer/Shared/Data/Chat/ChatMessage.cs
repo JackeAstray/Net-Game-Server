@@ -1,5 +1,4 @@
 ﻿using System;
-using System.ComponentModel.DataAnnotations;
 
 namespace Shared.Data.Chat
 {
@@ -15,11 +14,17 @@ namespace Shared.Data.Chat
     }
 
     /// <summary>
-    /// 聊天消息实体类，表示一条聊天记录。
+    /// 聊天消息载荷（**纯网络传输 DTO**，非持久化实体）。
+    /// 说明（清理项）：此前带 EF 的 <c>[Key]</c> 特性，但全仓并无 <c>DbSet&lt;ChatMessage&gt;</c>
+    /// （DefaultDbContext 只登记 User/UidCounter/Friend/Blacklist/FriendRequest/Guild/GuildMember），
+    /// 属聊天记录持久化方案移除后的遗留标记，会误导读者以为该类型会落库，故删除。
+    ///
+    /// 另注：<see cref="Id"/> 是 Game 进程内单调自增（跨节点/重启不唯一），仅供客户端排序提示，
+    /// 不可当全局唯一键使用；<see cref="SendTime"/> 沿用既有字段名（属线上 JSON 契约，
+    /// 重命名为 <c>…Utc</c> 会破坏与客户端的兼容，故保留）。
     /// </summary>
     public class ChatMessage
     {
-        [Key]
         public int Id { get; set; }
 
         public int SenderId { get; set; }

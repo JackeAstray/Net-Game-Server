@@ -32,6 +32,42 @@ internal static class Program
         var manager = new Framework.Entity.EntityManager();
         host.RegisterEntityManager(manager);
 
+        // === 0. 出厂脚本编译闸门（P2 加固） ===
+        // 本测试目录通过 csproj 把仓库的 GameLogic/scripts/*.csx 复制到输出 scripts/，因此这里是
+        // **仓库自带玩法脚本唯一的编译验证点**（.csx 是运行时 Roslyn 编译，不受 dotnet build 覆盖）。
+        // 而 ScriptHost 的错误隔离设计是"编译失败保留旧实例 + 记录到 LastLoadErrors"——
+        // 不抛异常、不影响宿主，若此处不断言，脚本里写错一个字符测试依然全绿，
+        // 故障只会在 Battle 运行时以"脚本未生效"的形式出现（极难定位）。故显式断言。
+        // 注意：必须排除本测试自己写入的故意报错脚本（下方错误隔离用例会写 Bad.csx 之类）。
+        var shippedScriptNames = new[] { "Avatar", "Npc", "Quest", "Skill", "Item" };
+        var shippedLoadErrors = host.LastLoadErrors.Keys
+            .Where(k => shippedScriptNames.Contains(k, StringComparer.Ordinal))
+            .ToList();
+        Console.WriteLine($"出厂脚本编译: 加载 {shippedScriptNames.Length} 个，失败 {shippedLoadErrors.Count} 个 (期望 0)");
+        foreach (var name in shippedScriptNames)
+        {
+            bool loaded = host.GetScript(
+                name switch
+                {
+                    "Avatar" => "Player",   // Avatar.csx 绑定实体类型 Player
+                    _ => name
+                }) != null;
+            Console.WriteLine($"  脚本 {name}: 已加载={loaded}");
+            if (!loaded)
+            {
+                Console.WriteLine($"!! 出厂脚本 {name} 未成功加载（编译失败或 EntityType 不匹配）");
+                return 1;
+            }
+        }
+        if (shippedLoadErrors.Count != 0)
+        {
+            foreach (var name in shippedLoadErrors)
+            {
+                Console.WriteLine($"!! 出厂脚本 {name} 编译/加载失败: {host.LastLoadErrors[name].Message}");
+            }
+            return 1;
+        }
+
         int exitCode = await RunAsync(host, manager, tickEngine, scriptsDir);
         host.Dispose();
         tickEngine.Stop();

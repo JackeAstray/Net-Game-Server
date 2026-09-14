@@ -43,7 +43,7 @@ namespace Login
         /// 启动用于接收网关连接的 TCP 服务并处理来自网关的数据包。
         /// 数据包结构为: [MsgId(4)][Payload]，路由信息通过 payload 中的 RouteMetadata（如 __clientSessionId）传递。
         /// 该方法会:
-        /// - 启动 NetworkManager 与 TcpServer
+        /// - 启动 TcpServer（P3 文档对账：本文档原写“启动 NetworkManager 与 TcpServer”，但 NetworkManager 实际从未在此创建）
         /// - 绑定连接/断开/接收事件
         /// - 初始化与 DB 的连接并构建消息处理器映射
         /// </summary>
@@ -67,6 +67,34 @@ namespace Login
 
             // 新协议分发器：强类型消息 + MemoryPack（JSON 兼容回退），消灭手写 switch
             var loginDispatcher = Login.Handlers.MessageRouter.BuildDispatcher(loginHandler);
+
+            // P3 可观测性（防双份实现静默分叉）：收包路径上**新分发器优先**（见下方 TryDispatch 优先分支），
+            // 因此凡是"两边都注册"的 MsgId，旧字典里的实现恒为**不可达路径**。
+            // 两份实现并存会悄悄漂移——本轮就在"改昵称"上发现旧字典返回假成功、新分发器与 HTTP 返回"未实现"。
+            // 这里在启动期把重叠项与旧字典独有项列出来，便于逐步收敛删除旧实现。
+            {
+                var overlapped = new System.Collections.Generic.List<int>();
+                var legacyOnly = new System.Collections.Generic.List<int>();
+                foreach (var registeredMsgId in messageHandlers.Keys)
+                {
+                    if (loginDispatcher.IsRegistered(registeredMsgId))
+                    {
+                        overlapped.Add(registeredMsgId);
+                    }
+                    else
+                    {
+                        legacyOnly.Add(registeredMsgId);
+                    }
+                }
+                if (overlapped.Count > 0)
+                {
+                    Shared.Log.Warning($"Login 消息处理器重叠：{overlapped.Count} 个 MsgId 同时注册在旧字典与新分发器中，旧实现不可达（建议清理）MsgIds:[{string.Join(",", overlapped)}]");
+                }
+                if (legacyOnly.Count > 0)
+                {
+                    Shared.Log.Info($"Login 旧字典独有处理器（新分发器未注册，仍走回退路径）：{legacyOnly.Count} 个 MsgIds:[{string.Join(",", legacyOnly)}]");
+                }
+            }
 
             // 跟踪所有活跃网关会话，并记录“客户端会话 -> 网关会话”的绑定，避免多网关场景下回包错路由。
             var activeGatewaySessions = new System.Collections.Concurrent.ConcurrentDictionary<long, Network.ISession>();
@@ -515,22 +543,27 @@ namespace Login
 
                 _ = Task.Run(async () =>
                 {
-                    try
+                    // P2 修复：try/catch 必须在 while **内部**。原实现位于 while 之外，
+                    // 任一瞬时异常（SendNodeStatus 序列化/发送失败、SweepTokenReplay 异常）会直接
+                    // 退出循环 → 该 Login 节点此后永不再上报心跳 → Center 按心跳超时摘除节点 →
+                    // 客户端无法定位/路由到本节点。日志文本"下轮继续重试"与实际行为相反。
+                    while (!cancellationToken.IsCancellationRequested)
                     {
-                        while (!cancellationToken.IsCancellationRequested)
+                        try
                         {
                             await Task.Delay(TimeSpan.FromSeconds(Shared.NodeHeartbeatDefaults.HeartbeatIntervalSeconds), cancellationToken);
                             SendNodeStatus(centerClient, nodeId, activeGatewaySessions.Count);
                             // P2 修复：周期清理防重放状态中长期不活跃用户（防字典无界增长）。
                             GetOrCreateLoginHandler().SweepTokenReplay(TimeSpan.FromHours(24));
                         }
-                    }
-                    catch (OperationCanceledException)
-                    {
-                    }
-                    catch (Exception ex)
-                    {
-                        Shared.Log.Error($"Login 心跳循环异常（下轮继续重试）: {ex}");
+                        catch (OperationCanceledException)
+                        {
+                            break;
+                        }
+                        catch (Exception ex)
+                        {
+                            Shared.Log.Error($"Login 心跳循环异常（本轮跳过，下轮继续重试）: {ex}");
+                        }
                     }
                 }, cancellationToken);
             };

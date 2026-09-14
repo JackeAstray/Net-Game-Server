@@ -161,11 +161,42 @@ namespace Game.Handlers
                 return false;
             }
             // fail-closed：缓存缺失（未知）按"被拉黑"处理。
+            return CheckBlockedByTarget(targetUserId, senderUserId) != BlockState.NotBlocked;
+        }
+
+        /// <summary>
+        /// 拉黑判定三态（P2 修复）：把"确认被拉黑"与"无法判定（缓存未加载）"区分开。
+        /// 原 <see cref="IsBlockedByTarget"/> 把两者统一为 true（fail-closed，防绕过），
+        /// 但调用方据此回复"对方已将你拉黑"会在**目标离线**时误报——离线玩家没有会话，
+        /// 黑名单缓存（仅在线玩家预热）天然不存在，缓存缺失并非"拉黑"。
+        /// 调用方应先用 <see cref="Game.Managers.PlayerSessionManager.GetSessionIdByUserId"/> 判在线，
+        /// 再对 Blocked/Unknown 分别给出准确文案。
+        /// </summary>
+        public enum BlockState
+        {
+            /// <summary>确认未被拉黑。</summary>
+            NotBlocked,
+            /// <summary>确认被拉黑。</summary>
+            Blocked,
+            /// <summary>无法判定：目标黑名单缓存未加载（未在线/预热失败或被延迟）。</summary>
+            Unknown
+        }
+
+        /// <summary>
+        /// 判定 senderUserId 是否被 targetUserId 拉黑，并区分"未知"（见 <see cref="BlockState"/>）。
+        /// 安全语义与 <see cref="IsBlockedByTarget"/> 一致：Unknown 绝不等价于 NotBlocked（不放行）。
+        /// </summary>
+        public static BlockState CheckBlockedByTarget(int targetUserId, int senderUserId)
+        {
+            if (targetUserId <= 0 || senderUserId <= 0)
+            {
+                return BlockState.NotBlocked;
+            }
             if (!BlacklistCache.TryGetValue(targetUserId, out var blockedUsers))
             {
-                return true;
+                return BlockState.Unknown;
             }
-            return blockedUsers.ContainsKey(senderUserId);
+            return blockedUsers.ContainsKey(senderUserId) ? BlockState.Blocked : BlockState.NotBlocked;
         }
 
         /// <summary>

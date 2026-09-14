@@ -42,8 +42,18 @@ public class TcpServer : INetworkServer
             }
             Shared.Log.Info($"[TcpServer] 启动监听 Port:{port} MaxConnections:{maxConnections}");
 
-            tcpListener = new TcpListener(IPAddress.Any, port);
-            tcpListener.Start();
+            // P2 修复：幂等守卫 + “先 Start 成功再赋值字段”。
+            // 原实现先赋值 tcpListener 字段再 Start()：若 Start 抛异常（端口占用等），字段已指向**未启动**的监听器，
+            // 而可能仍在运行的 accept 循环下一轮会对它调 AcceptTcpClientAsync → InvalidOperationException
+            // 落入异常分支反复自旋；同时原监听器无人 Stop 造成端口泄漏。
+            if (tcpListener != null)
+            {
+                Shared.Log.Warning($"[TcpServer] 已在监听中，忽略重复 StartAsync Port:{port}");
+                return Task.CompletedTask;
+            }
+            var listener = new TcpListener(IPAddress.Any, port);
+            listener.Start();
+            tcpListener = listener;
             Shared.Log.Info($"[TcpServer] 启动成功，监听端口:{port}");
 
             // 启动接受客户端连接的后台循环（不等待）
@@ -67,11 +77,14 @@ public class TcpServer : INetworkServer
     /// <returns>表示接受循环完成的异步任务；当底层侦听器被释放或停止时完成。</returns>
     private async Task AcceptClientsAsync()
     {
+        // P2 修复：连续失败计数（退避用），成功一次即重置
+        int acceptFailures = 0;
         while (tcpListener != null)
         {
             try
             {
                 var client = await tcpListener.AcceptTcpClientAsync();
+                acceptFailures = 0;
                 if (Interlocked.Increment(ref activeConnections) > maxConnections)
                 {
                     Interlocked.Decrement(ref activeConnections);
@@ -89,7 +102,21 @@ public class TcpServer : INetworkServer
             }
             catch (Exception ex)
             {
-                Shared.Log.Warning($"[TcpServer] 接受客户端连接异常 Exception:{ex}");
+                // P2 修复：持续性错误（FD/句柄耗尽 SocketException、监听器未启动）会让
+                // AcceptTcpClientAsync 立即再次抛出 → 原实现紧凑自旋（CPU 打满）且每轮一条 Warning
+                // （日志风暴），恰在洪泛/资源耗尽场景下最易触发，反而淹没排障信息。
+                // 改为指数退避：50ms → 100ms → 200ms → 400ms → 800ms → 1s 封顶。
+                acceptFailures++;
+                Shared.Log.Warning($"[TcpServer] 接受客户端连接异常（连续第 {acceptFailures} 次）Exception:{ex}");
+                int delayMs = Math.Min(1000, 50 * (1 << Math.Min(acceptFailures - 1, 4)));
+                try
+                {
+                    await Task.Delay(delayMs);
+                }
+                catch (Exception)
+                {
+                    // 关闭中（如宿主取消/Task.Delay 被取消）：忽略，由 while 条件退出
+                }
             }
         }
     }
@@ -138,19 +165,19 @@ public class TcpServer : INetworkServer
                         if (bytesRead == 0) break;
 
                         session.LastActivityTime = DateTime.UtcNow; // 心跳/空闲超时检测用
-                        Shared.Log.Debug($"[TcpServer] 接收原始字节 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Bytes:{bytesRead}");
+                        if (Shared.Log.IsDebugEnabled) Shared.Log.Debug($"[TcpServer] 接收原始字节 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Bytes:{bytesRead}");
                         packetReader.Append(buffer.AsSpan(0, bytesRead));
                         int packetCount = 0;
                         while (packetReader.TryReadPacket(out var packet))
                         {
                             packetCount++;
-                            Shared.Log.Debug($"[TcpServer] 完整分包 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} PacketLength:{packet.Length}");
+                            if (Shared.Log.IsDebugEnabled) Shared.Log.Debug($"[TcpServer] 完整分包 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} PacketLength:{packet.Length}");
                             OnDataReceived?.Invoke(session, packet);
                         }
 
                         if (packetCount == 0)
                         {
-                            Shared.Log.Debug($"[TcpServer] 当前读取未形成完整包 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                            if (Shared.Log.IsDebugEnabled) Shared.Log.Debug($"[TcpServer] 当前读取未形成完整包 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
                         }
                     }
                 }

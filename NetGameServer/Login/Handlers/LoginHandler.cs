@@ -22,12 +22,39 @@ namespace Login.Handlers
         // 现在签发走 IssueNextSeq（同用户新登录 seq 单调递增），验证走 TryAcceptSeq（旧 token 重放被拒）。
         private readonly Framework.Core.Security.SessionGuard.AntiReplayState tokenAntiReplay = new();
 
+        /// <summary>
+        /// DB 请求序列号（<see cref="CallDbAsync{T}"/> 生成 RequestId 用，Interlocked 递增）。
+        /// 注意：它被 <c>LoginHandler.Security.cs</c> 使用，勿删。
+        /// </summary>
         private static long sequenceId = 0;
+
         private const int MaxFailedAttempts = 5;
         private static readonly TimeSpan ThrottleLockDuration = TimeSpan.FromMinutes(5);
         private static readonly TimeSpan FindPasswordCooldown = TimeSpan.FromMinutes(10);
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, ActionAttemptTracker> actionAttemptTrackers =
             new System.Collections.Concurrent.ConcurrentDictionary<string, ActionAttemptTracker>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// 账号脱敏（PII 治理）：日志中不再输出明文账号（此前每次登录/注册都会以 Info 级把账号写入
+        /// 本地日志文件并随 RemoteLog 聚合上报）。仅保留首尾少量字符用于人工比对，
+        /// 例如 <c>alice@example.com</c> → <c>al***om(len=17)</c>。
+        /// 失败/告警路径（低频、排障必需）仍保留完整账号。
+        /// </summary>
+        internal static string RedactAccount(string? account)
+        {
+            if (string.IsNullOrEmpty(account))
+            {
+                return "(empty)";
+            }
+            if (account.Length <= 2)
+            {
+                return new string('*', account.Length) + $"(len={account.Length})";
+            }
+            string head = account.Substring(0, 2);
+            int tailLen = Math.Min(2, account.Length - 2);
+            string tail = tailLen > 0 ? account.Substring(account.Length - tailLen) : string.Empty;
+            return $"{head}***{tail}(len={account.Length})";
+        }
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> findPasswordCooldowns =
             new System.Collections.Concurrent.ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
@@ -86,7 +113,7 @@ namespace Login.Handlers
         public async Task<LoginResponse> HandleLoginRequestAsync(LoginRequest request, long clientSessionId = 0)
         {
             string account = request.Account?.Trim() ?? string.Empty;
-            Log.Info($"收到帐户的LoginRequest: {account}");
+            Log.Info($"收到帐户的LoginRequest: {RedactAccount(account)}");
 
             if (string.IsNullOrWhiteSpace(account))
             {
@@ -156,9 +183,15 @@ namespace Login.Handlers
             {
                 ClearFailedAttempts("login", account);
             }
+            else if (verifyResp != null)
+            {
+                // P3 修复：仅在"凭据确实错误"时累计失败次数。DB 超时/不可用（verifyResp == null）属服务端故障，
+                // 原实现同样计数 → DB 抖动 5 次即把账号锁定 300 秒（自伤放大；攻击者也可借制造 DB 超时批量锁号）。
+                RegisterFailedAttempt("login", account);
+            }
             else
             {
-                RegisterFailedAttempt("login", account);
+                Log.Warning($"登录未计入失败次数（DB 无响应，按服务端故障处理）账号:{account}");
             }
 
             if (response.Success && response.UserId > 0 && clientSessionId > 0)
@@ -178,7 +211,7 @@ namespace Login.Handlers
         public async Task<RegisterResponse> HandleRegisterRequestAsync(RegisterRequest request)
         {
             string account = request.Account?.Trim() ?? string.Empty;
-            Log.Info($"收到帐户的RegisterRequest: {account}");
+            Log.Info($"收到帐户的RegisterRequest: {RedactAccount(account)}");
 
             if (string.IsNullOrWhiteSpace(account))
             {

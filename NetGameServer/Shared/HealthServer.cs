@@ -21,6 +21,8 @@ public sealed class HealthServer : IDisposable
     private readonly Task acceptLoop;
     // 并发处理上限：健康探针频率低，正常情况下不会接近该值；防止恶意连接洪泛时每连接一个 Task 拖垮进程。
     private readonly SemaphoreSlim handleSlots = new(64, 64);
+    /// <summary>单连接 I/O 超时（P2 修复：异步读写路径无法用 ReadTimeout/WriteTimeout 限时，改用 CancellationToken）。</summary>
+    private static readonly TimeSpan IoTimeout = TimeSpan.FromSeconds(5);
 
     public int Port { get; }
     public bool IsDraining => NodeLifecycle.Default.IsDraining;
@@ -103,11 +105,16 @@ public sealed class HealthServer : IDisposable
             {
                 client.NoDelay = true;
                 var stream = client.GetStream();
-                // 防 slowloris：限制读写时长，避免慢速连接长期占用 64 个处理槽导致探针被拒
-                stream.ReadTimeout = 5000;
-                stream.WriteTimeout = 5000;
+                // 防 slowloris（P2 修复）：NetworkStream.ReadTimeout/WriteTimeout 只对**同步** Read/Write 生效，
+                // 而下方走的是 await ReadAsync/WriteAsync 异步路径——原实现设置这两个属性等于没设。
+                // 攻击者只需建立 64 条"只连接不发送"的 TCP 即可占满 handleSlots，之后所有连接在
+                // WaitAsync(0) 处被直接关闭（无任何 HTTP 应答）→ /healthz、/readyz、/metrics 全部不可用
+                // （Docker/K8s 探针失败触发重启、Prometheus 抓取失败、Center 把节点标为 reachable=false）。
+                // 这里改用链接 CancellationToken 显式限时，覆盖真正的异步 I/O 路径。
+                using var ioTimeout = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
+                ioTimeout.CancelAfter(IoTimeout);
                 // 只读请求行即可（健康探针 GET /healthz HTTP/1.1）
-                byte[] requestLine = await ReadRequestLineAsync(stream);
+                byte[] requestLine = await ReadRequestLineAsync(stream, ioTimeout.Token);
                 string path = ParsePath(requestLine);
 
                 (int status, string body) = BuildResponse(path);
@@ -118,9 +125,9 @@ public sealed class HealthServer : IDisposable
                     $"Content-Length: {payload.Length}\r\n" +
                     "Connection: close\r\n" +
                     "\r\n");
-                await stream.WriteAsync(header);
-                await stream.WriteAsync(payload);
-                await stream.FlushAsync();
+                await stream.WriteAsync(header, ioTimeout.Token);
+                await stream.WriteAsync(payload, ioTimeout.Token);
+                await stream.FlushAsync(ioTimeout.Token);
             }
         }
         catch (Exception ex)
@@ -220,13 +227,14 @@ public sealed class HealthServer : IDisposable
         return sb.ToString();
     }
 
-    private static async Task<byte[]> ReadRequestLineAsync(NetworkStream stream)
+    private static async Task<byte[]> ReadRequestLineAsync(NetworkStream stream, CancellationToken ct)
     {
         var buffer = new byte[1024];
         var list = new List<byte>(128);
         int read;
-        // 读到 CRLF 结束请求行（简单防御：最多 1024 字节）
-        while (list.Count < 1024 && (read = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+        // 读到 CRLF 结束请求行（简单防御：最多 1024 字节）；ct 由调用方按 IoTimeout 限时，
+        // 超时抛 OperationCanceledException 后由调用方捕获并关闭连接，槽位随之释放。
+        while (list.Count < 1024 && (read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)) > 0)
         {
             for (int i = 0; i < read; i++)
             {

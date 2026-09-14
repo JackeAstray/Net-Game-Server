@@ -94,20 +94,20 @@ public class TcpClientWrapper : INetworkClient
                     if (bytesRead == 0) break;
 
                     session.LastActivityTime = DateTime.UtcNow;
-                    Shared.Log.Debug($"[TcpClientWrapper] 接收原始字节 Host:{host} Port:{port} SessionId:{session.SessionId} Bytes:{bytesRead}");
+                    if (Shared.Log.IsDebugEnabled) Shared.Log.Debug($"[TcpClientWrapper] 接收原始字节 Host:{host} Port:{port} SessionId:{session.SessionId} Bytes:{bytesRead}");
                     packetReader.Append(buffer.AsSpan(0, bytesRead));
 
                     int packetCount = 0;
                     while (packetReader.TryReadPacket(out var packet))
                     {
                         packetCount++;
-                        Shared.Log.Debug($"[TcpClientWrapper] 完整分包 Host:{host} Port:{port} SessionId:{session.SessionId} PacketLength:{packet.Length}");
+                        if (Shared.Log.IsDebugEnabled) Shared.Log.Debug($"[TcpClientWrapper] 完整分包 Host:{host} Port:{port} SessionId:{session.SessionId} PacketLength:{packet.Length}");
                         OnDataReceived?.Invoke(session, packet);
                     }
 
                     if (packetCount == 0)
                     {
-                        Shared.Log.Debug($"[TcpClientWrapper] 当前读取未形成完整包 Host:{host} Port:{port} SessionId:{session.SessionId}");
+                        if (Shared.Log.IsDebugEnabled) Shared.Log.Debug($"[TcpClientWrapper] 当前读取未形成完整包 Host:{host} Port:{port} SessionId:{session.SessionId}");
                     }
                 }
             }
@@ -133,7 +133,7 @@ public class TcpClientWrapper : INetworkClient
             return;
         }
 
-        Shared.Log.Debug($"[TcpClientWrapper] 发送数据 Host:{host} Port:{port} SessionId:{session.SessionId} DataLength:{data.Length}");
+        if (Shared.Log.IsDebugEnabled) Shared.Log.Debug($"[TcpClientWrapper] 发送数据 Host:{host} Port:{port} SessionId:{session.SessionId} DataLength:{data.Length}");
         session.Send(data);
     }
 

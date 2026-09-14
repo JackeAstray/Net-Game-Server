@@ -120,10 +120,23 @@ public sealed class TickEngine
     /// <param name="repeat">true=周期执行，false=一次执行</param>
     /// <returns>定时器句柄（可用 Cancel 取消）</returns>
     public TimerHandle AddTimer(int intervalMs, Action callback, bool repeat = false)
+        => AddTimer(intervalMs, callback, repeat, onCompleted: null);
+
+    /// <summary>
+    /// 添加定时器并注册"完成回调"（在句柄入队前注册，杜绝"极短间隔定时器先执行完、完成通知才注册"的竞态）：
+    /// 一次性定时器执行完毕、或被 <see cref="TimerHandle.Cancel"/> 取消时，onCompleted 恰好被调用一次。
+    /// 宿主据此回收句柄（如脚本层从实例级定时器清单移除，防"句柄→回调闭包→实体"强引用链无界累积）。
+    /// </summary>
+    /// <param name="intervalMs">间隔毫秒</param>
+    /// <param name="callback">回调</param>
+    /// <param name="repeat">true=周期执行，false=一次执行</param>
+    /// <param name="onCompleted">完成回调（可为 null），在 tick 线程或调用 Cancel 的线程上执行，须轻量且不可抛异常</param>
+    /// <returns>定时器句柄（可用 Cancel 取消）</returns>
+    public TimerHandle AddTimer(int intervalMs, Action callback, bool repeat, Action<TimerHandle>? onCompleted)
     {
         // P2-8 修复：按单调时钟（而非帧号）计算到期时间，过载时定时器真实频率不漂移
         long dueMs = Environment.TickCount64 + Math.Max(1, intervalMs);
-        var handle = new TimerHandle(this, intervalMs, callback, repeat);
+        var handle = new TimerHandle(this, intervalMs, callback, repeat, onCompleted);
         lock (timers)
         {
             handle.ConfigureNextDue(dueMs, timerSeq++);
@@ -276,16 +289,52 @@ public sealed class TimerHandle
     private long nextDueMs;
     private long seq;
     private volatile bool active = true;
+    // 完成通知（一次性定时器执行完毕 / 被取消时恰好触发一次）。用 Exchange 置空实现幂等与一次性语义。
+    private Action<TimerHandle>? onCompleted;
+    private int completionRaised;
 
-    internal TimerHandle(TickEngine engine, int intervalMs, Action callback, bool repeat)
+    internal TimerHandle(TickEngine engine, int intervalMs, Action callback, bool repeat, Action<TimerHandle>? onCompleted = null)
     {
         this.engine = engine;
         this.intervalMs = intervalMs;
         this.callback = callback;
         this.repeat = repeat;
+        this.onCompleted = onCompleted;
     }
 
     public bool IsActive => active;
+
+    /// <summary>
+    /// 补注册完成回调（句柄已创建后再注册的场景；若句柄已完成则立即补发一次，避免宿主清单残留死句柄）。
+    /// 首选经 <see cref="TickEngine.AddTimer(int, Action, bool, Action{TimerHandle}?)"/> 在入队前注册，可完全避免竞态。
+    /// </summary>
+    public void SetCompletionCallback(Action<TimerHandle> callback)
+    {
+        Interlocked.Exchange(ref onCompleted, callback);
+        if (Volatile.Read(ref completionRaised) == 1)
+        {
+            RaiseCompleted();
+        }
+    }
+
+    /// <summary>触发完成通知（幂等：onCompleted 被 Exchange 取走后即置空，重复调用无副作用）。</summary>
+    private void RaiseCompleted()
+    {
+        Interlocked.Exchange(ref completionRaised, 1);
+        var cb = Interlocked.Exchange(ref onCompleted, null);
+        if (cb == null)
+        {
+            return;
+        }
+        try
+        {
+            cb(this);
+        }
+        catch (Exception ex)
+        {
+            Framework.Core.Log.Error(ex, "TimerHandle 完成回调异常");
+        }
+    }
 
     internal void Invoke()
     {
@@ -307,11 +356,26 @@ public sealed class TimerHandle
             // 周期定时器：下次到期 = 单调时钟 now + interval（不依赖帧号，过载不失真）
             nextDueMs = Environment.TickCount64 + Math.Max(1, intervalMs);
             engine.Requeue(this);
+            return;
         }
+
+        // 一次性定时器执行完毕，或周期定时器在回调内被取消：置非活跃并通知宿主回收句柄。
+        active = false;
+        RaiseCompleted();
     }
 
-    /// <summary>取消定时器。</summary>
-    public void Cancel() => active = false;
+    /// <summary>取消定时器（幂等；已取消/已完成的句柄重复调用无副作用）。</summary>
+    public void Cancel()
+    {
+        if (!active)
+        {
+            return;
+        }
+        // 先置非活跃，再通知宿主：宿主（如脚本层）以 IsActive==false 作为"不要再登记该句柄"的判据，
+        // 与 AddTimer 的登记竞态由此闭合。
+        active = false;
+        RaiseCompleted();
+    }
 
     internal void ConfigureNextDue(long dueMs, long seq)
     {

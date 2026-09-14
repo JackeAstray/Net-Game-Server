@@ -149,10 +149,32 @@ public sealed class RemoteLogClient : IDisposable
 
     public void Dispose()
     {
+        // P3 修复：原实现 cancel 后立刻 Close/Dispose socket，而 FlushLoopAsync 在循环退出后
+        // **还会再调用一次 Flush()** 冲刷残余日志 → 对已释放的 UdpClient 调用 Send，
+        // 抛 ObjectDisposedException 且发生在无人 await 的 Task 中（未观察异常），残余日志也丢失。
+        // 正确顺序：先停止接收新日志 → 取消冲刷循环 → 等它完成最后的 Flush → 再关闭 socket。
         Log.LogSink -= OnLog;
         cts.Cancel();
+        var flush = flushTask;
+        flushTask = null;
+        if (flush != null)
+        {
+            try
+            {
+                // 有限等待（冲刷循环最多等一个 FlushInterval + 一次批量发送），避免关服被日志上报拖住。
+                if (!flush.Wait(TimeSpan.FromSeconds(2)))
+                {
+                    Serilog.Log.Warning("远程日志冲刷任务未在 2s 内退出，直接关闭 socket（残余日志丢弃）");
+                }
+            }
+            catch (Exception ex)
+            {
+                Serilog.Log.Warning($"远程日志冲刷任务收尾异常: {ex.Message}");
+            }
+        }
         udp.Close();
         udp.Dispose();
         hmacPerThread?.Dispose();
+        cts.Dispose();
     }
 }

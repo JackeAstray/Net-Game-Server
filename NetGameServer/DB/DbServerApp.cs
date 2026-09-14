@@ -69,6 +69,15 @@ namespace DB
                     "未配置 ConnectionStrings:MySqlConnection；为安全起见禁止使用硬编码默认连接字符串。" +
                     "请在 appsettings.json 或环境变量 ConnectionStrings__MySqlConnection 中配置。");
             }
+            // 占位符防护（P1 凭据治理）：受版本控制的 appsettings.json 不再存放真实库口令，改为 CHANGE_ME 占位符
+            // （本地开发放 appsettings.Local.json，已被 .gitignore 忽略）；部署走环境变量。
+            // 不拦住占位符的话，会以“看起来配了”的假象去连库，失败现场变成 TCP/认证错误而非“配置缺失”，难以定位。
+            if (configuredConnStr.IndexOf("CHANGE_ME", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                throw new InvalidOperationException(
+                    "ConnectionStrings:MySqlConnection 仍为占位符（含 CHANGE_ME）：请在本目录的 appsettings.Local.json（不入库）" +
+                    "或环境变量 ConnectionStrings__MySqlConnection 中注入真实连接字符串。");
+            }
             string connectionString = configuredConnStr;
             services.AddDbContext<DefaultDbContext>(options =>
                 options.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString)));
@@ -231,7 +240,7 @@ namespace DB
         /// <summary>
         /// 启动数据库服务的网络监听（TCP），并绑定消息路由处理器。
         /// 主要职责：
-        /// - 创建 NetworkManager 与 TcpServer。
+        /// - 创建 TcpServer（P3 文档对账：NetworkManager 实际从未在此创建）。
         /// - 注册各类消息处理器（通过 Routing.MessageRouter）。
         /// - 启动监听指定端口以接收来自网关或其他服务的请求。
         /// </summary>
