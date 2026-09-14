@@ -2,6 +2,45 @@
   "version": 1,
   "messages": [
     {
+      "id": 80001,
+      "name": "AppEchoRequest",
+      "target": "App",
+      "fields": [
+        {
+          "name": "Text",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 80002,
+      "name": "AppEchoResult",
+      "target": "App",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Echo",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "ClientSessionId",
+          "type": "int64",
+          "optional": false
+        },
+        {
+          "name": "NodeId",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
       "id": 40001,
       "name": "BattleJoin",
       "target": "Battle",
@@ -46,6 +85,84 @@
         {
           "name": "Message",
           "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 40012,
+      "name": "BattleSpectate",
+      "target": "Battle",
+      "fields": [
+        {
+          "name": "RoomId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "SceneType",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 40013,
+      "name": "BattleSpectateResult",
+      "target": "Battle",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 40014,
+      "name": "BattleReplay",
+      "target": "Battle",
+      "fields": [
+        {
+          "name": "SceneId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "MaxFrames",
+          "type": "int32",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 40015,
+      "name": "BattleReplayResult",
+      "target": "Battle",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "SceneId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Frames",
+          "type": "list:ReplayFrameInfo",
           "optional": false
         }
       ]
@@ -1018,6 +1135,247 @@
         {
           "name": "Message",
           "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 31001,
+      "name": "PartyCreate",
+      "target": "Center",
+      "fields": []
+    },
+    {
+      "id": 31002,
+      "name": "PartyCreateResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "PartyId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 31003,
+      "name": "PartyJoin",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "PartyId",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 31004,
+      "name": "PartyJoinResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "PartyId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 31005,
+      "name": "PartyLeave",
+      "target": "Center",
+      "fields": []
+    },
+    {
+      "id": 31006,
+      "name": "PartyLeaveResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 31007,
+      "name": "PartyDisband",
+      "target": "Center",
+      "fields": []
+    },
+    {
+      "id": 31008,
+      "name": "PartyDisbandResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 31009,
+      "name": "PartyMy",
+      "target": "Center",
+      "fields": []
+    },
+    {
+      "id": 31010,
+      "name": "PartyMyResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "PartyId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "OwnerClientSessionId",
+          "type": "int64",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Members",
+          "type": "list:PartyMemberInfo",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 31011,
+      "name": "PartyKick",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "TargetClientSessionId",
+          "type": "int64",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 31012,
+      "name": "PartyKickResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 31013,
+      "name": "PartyReady",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Ready",
+          "type": "bool",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 31014,
+      "name": "PartyReadyResult",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "Success",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Ready",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "id": 31015,
+      "name": "PartyMemberNotif",
+      "target": "Center",
+      "fields": [
+        {
+          "name": "PartyId",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Type",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "TargetClientSessionId",
+          "type": "int64",
+          "optional": false
+        },
+        {
+          "name": "Message",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "Members",
+          "type": "list:PartyMemberInfo",
           "optional": false
         }
       ]
@@ -2000,6 +2358,36 @@
       ]
     },
     {
+      "name": "ReplayEntitySnapshot",
+      "fields": [
+        {
+          "name": "EntityId",
+          "type": "int64"
+        },
+        {
+          "name": "Props",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "ReplayFrameInfo",
+      "fields": [
+        {
+          "name": "FrameId",
+          "type": "int64"
+        },
+        {
+          "name": "TimeMs",
+          "type": "int64"
+        },
+        {
+          "name": "Snapshots",
+          "type": "list:ReplayEntitySnapshot"
+        }
+      ]
+    },
+    {
       "name": "RoomInfo",
       "fields": [
         {
@@ -2049,6 +2437,27 @@
         {
           "name": "CreatedAtUtc",
           "type": "int64"
+        }
+      ]
+    },
+    {
+      "name": "PartyMemberInfo",
+      "fields": [
+        {
+          "name": "ClientSessionId",
+          "type": "int64"
+        },
+        {
+          "name": "UserId",
+          "type": "int32"
+        },
+        {
+          "name": "Nickname",
+          "type": "string"
+        },
+        {
+          "name": "Ready",
+          "type": "bool"
         }
       ]
     },

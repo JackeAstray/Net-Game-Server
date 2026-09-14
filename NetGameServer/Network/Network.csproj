@@ -12,8 +12,9 @@
 
   <ItemGroup>
     <PackageReference Include="Kcp" Version="2.7.0" />
-    <!-- 引入 YARP 用于支持高性能网关、负载均衡和连接治理 -->
-    <PackageReference Include="Yarp.ReverseProxy" Version="2.2.0" />
+    <!-- P3 清理：移除了未使用的 Yarp.ReverseProxy 2.2.0 引用。
+         Network 内无任何 YARP 使用点（YARP 仅在 Gateway 使用，且 Gateway 显式引用 2.3.0）；
+         原引用只会造成版本漂移（NuGet 统一到 2.3.0 后掩盖真实依赖关系）。 -->
   </ItemGroup>
 
   <ItemGroup>

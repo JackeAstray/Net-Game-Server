@@ -1,5 +1,6 @@
 DLL/
 Gateway/
+App/
 DB/
 Game/
 Game2/
@@ -11,3 +12,5 @@ Battle/
 Center/
 # 部署密钥（禁止上传）
 .cluster_secret
+# 调试符号（运行期无用，约 40MB，禁止入库；Redis 二进制仅保留运行所需 exe/配置）
+Redis/*.pdb

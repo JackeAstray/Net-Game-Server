@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
@@ -58,6 +58,8 @@ namespace Gateway
         private static BufferedBackendSender? loginSender;
         private static BufferedBackendSender? gameSender;
         private static BufferedBackendSender? centerSender;
+        /// <summary>应用节点（AppServer）发送器：缓冲队列，转发 80000-89999 段客户端消息。</summary>
+        private static BufferedBackendSender? appSender;
         /// <summary>Battle 节点连接：nodeId("Battle-{host}:{port}") -> 客户端。</summary>
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, TcpClientWrapper> battleNodes = new(StringComparer.Ordinal);
 
@@ -66,6 +68,73 @@ namespace Gateway
 
         /// <summary>玩家 -> Battle 节点绑定：clientSessionId -> nodeId（从匹配结果学习）。</summary>
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, string> clientBattleNodeBindings = new();
+
+        /// <summary>Battle 节点底层连接会话 -> nodeId（出站回包归属校验：确认回包来自目标玩家绑定的节点）。</summary>
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, string> battleNodeSessionMap = new();
+
+        // ---- UDP/KCP 会话身份令牌（防伪造源端点注入） ----
+        /// <summary>SessionId -> 8 字节随机会话令牌（UDP/KCP 会话建立时签发；TCP/WS 面向连接无需）。</summary>
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, byte[]> sessionAuthTokens = new();
+
+        /// <summary>会话令牌长度（8 字节随机，128-bit 熵量级上的可暴力空间不可行）。</summary>
+        private const int SessionTokenLength = 8;
+
+        /// <summary>
+        /// 为 UDP/KCP 会话签发并下发会话令牌：生成 8 字节随机数存入 <see cref="sessionAuthTokens"/>，
+        /// 并立即以 <c>GatewaySessionAuthPush</c> 消息推送客户端（载荷 = 8 字节小端令牌）。
+        /// 客户端此后每条消息必须携带 [MsgId(4)][Token(8)][Payload]，网关逐包校验。
+        /// </summary>
+        private static void IssueSessionAuthToken(Network.ISession session)
+        {
+            byte[] token = System.Security.Cryptography.RandomNumberGenerator.GetBytes(SessionTokenLength);
+            sessionAuthTokens[session.SessionId] = token;
+            byte[] packet = Network.Routing.PacketBuilder.BuildPacket(Shared.Messages.MessageIds.GatewaySessionAuthPush, token, out int totalLength);
+            try
+            {
+                Network.PacketSender.Send(session, packet, totalLength);
+            }
+            catch (Exception ex)
+            {
+                Shared.Log.Warning($"Gateway 下发会话令牌失败 SessionId:{session.SessionId} Exception:{ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 校验 UDP/KCP 会话消息携带的会话令牌。校验失败返回 false（调用方关闭连接）。
+        /// 成功时 <paramref name="payloadStart"/> = 12（[MsgId(4)][Token(8)]），真实负载从该偏移开始；
+        /// 非 UDP/KCP 会话（TCP/WS）恒返回 true 且 payloadStart = 4（不校验）。
+        /// </summary>
+        private static bool VerifySessionAuthToken(Network.ISession session, ReadOnlyMemory<byte> data, out int payloadStart)
+        {
+            payloadStart = 4;
+            bool needsToken = session is Network.Udp.UdpSession || session is Network.Kcp.KcpSession;
+            if (!needsToken)
+            {
+                return true;
+            }
+            if (!sessionAuthTokens.TryGetValue(session.SessionId, out byte[]? expected) || expected == null)
+            {
+                // 会话无令牌（异常状态）：fail-closed 拒绝
+                Shared.Log.Warning($"Gateway 会话缺少会话令牌，拒绝 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                return false;
+            }
+            int tokenOffset = 4;
+            if (data.Length < tokenOffset + SessionTokenLength)
+            {
+                Shared.Log.Warning($"Gateway 会话令牌消息过短，拒绝 SessionId:{session.SessionId} Length:{data.Length}");
+                return false;
+            }
+            for (int i = 0; i < SessionTokenLength; i++)
+            {
+                if (data.Span[tokenOffset + i] != expected[i])
+                {
+                    Shared.Log.Warning($"Gateway 会话令牌不匹配，拒绝并关闭 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+                    return false;
+                }
+            }
+            payloadStart = tokenOffset + SessionTokenLength;
+            return true;
+        }
 
         /// <summary>默认 Battle 节点（无绑定时的回退目标）。</summary>
         private static volatile string defaultBattleNodeId = string.Empty;

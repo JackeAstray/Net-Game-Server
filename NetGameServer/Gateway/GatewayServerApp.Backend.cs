@@ -37,7 +37,8 @@ namespace Gateway
             bool inRange = (msgId >= 10000 && msgId < 30000)
                         || (msgId >= 30000 && msgId < 40000)
                         || (msgId >= 40000 && msgId < 50000)
-                        || (msgId >= 50000 && msgId < 70000);
+                        || (msgId >= 50000 && msgId < 70000)
+                        || (msgId >= 80000 && msgId < 90000); // 应用节点（AppServer）段
             if (!inRange) return false;
             if (Framework.Protocol.Generated.RouterTable.Routes.TryGetValue(msgId, out var route) && route.IsInternal)
             {
@@ -216,6 +217,14 @@ namespace Gateway
                 bool broadcast = Shared.RouteMetadata.TryExtractBroadcast(payload, out bool broadcastFlag, out var payloadAfterBroadcast) && broadcastFlag;
                 if (broadcast)
                 {
+                    // 安全加固（B2 残留闭环）：广播类型白名单——只有显式声明为可广播的消息才允许全服广播。
+                    // 此前任何客户端可见 msgid 带上 __broadcast:true 即全服广播，被攻破后端可把定向消息
+                    // （私聊/登录结果）伪造成全服广播。当前全仓库唯一合法广播是 ChatMessageNotif（世界频道）。
+                    if (!IsBroadcastAllowed(msgId))
+                    {
+                        Shared.Log.Warning($"Gateway 拒绝未列入广播白名单的 Game 广播回包 MsgId:{msgId}");
+                        return;
+                    }
                     var packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payloadAfterBroadcast, out int totalLength);
                     try
                     {
@@ -252,6 +261,86 @@ namespace Gateway
                 Network.PacketSender.Send(clientSession, clientPacket, responseLength);
             };
             _ = gameClient.ConnectAsync();
+
+            // 应用节点（AppServer）连接：80000-89999 段客户端消息（[GameMessage] Target="App"）。
+            // 与 Game 共享连接模式一致：一个 BufferedBackendSender + 回包按目标会话转发。
+            int appPort = ConfigHelper.GetConfig<int>("AppPort") == 0 ? 31308 : ConfigHelper.GetConfig<int>("AppPort");
+            string appHost = ConfigHelper.GetConfig<string>("AppHost") ?? "127.0.0.1";
+            var appClient = new TcpClientWrapper(appHost, appPort);
+            appSender = new BufferedBackendSender("App", data => appClient.Send(data), (buf, len) => appClient.SendFromPool(buf, len));
+            appClient.OnConnected += _ => appSender?.OnConnected();
+            appClient.OnDisconnected += (_, __) => appSender?.OnDisconnected();
+            appClient.OnConnected += session =>
+            {
+                Shared.Log.Info($"已连接到 App 服务器 (Host:{appHost} Port:{appPort})");
+                SendAuthHandshake(appClient);
+            };
+            appClient.OnDisconnected += (session, reason) => Shared.Log.Warning($"与 App 服务器断开连接: {reason}");
+            appClient.OnDataReceived += (session, data) =>
+            {
+                if (data.Length < 4)
+                {
+                    Shared.Log.Warning("App 回包长度不足，已丢弃。");
+                    return;
+                }
+
+                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(data.Span.Slice(0, 4));
+                int payloadLength = data.Length - 4;
+                Shared.Log.Debug("Gateway <- App 收到回包 MsgId:{MsgId} PacketLength:{PacketLength} PayloadLength:{PayloadLength} Remote:{Remote}", msgId, data.Length, payloadLength, session.RemoteEndPoint!);
+                byte[] payload = data.Slice(4).ToArray();
+
+                // P3 加固：出站客户端消息校验（仅客户端可见区间的非内部消息）+ 大小上限。
+                if (!IsClientVisibleOutboundMsgId(msgId) || data.Length > MaxGatewayOutboundFrame)
+                {
+                    Shared.Log.Warning($"Gateway 拒绝转发非客户端可见的 App 回包 MsgId:{msgId} Length:{data.Length}");
+                    return;
+                }
+
+                bool broadcast = Shared.RouteMetadata.TryExtractBroadcast(payload, out bool broadcastFlag, out var payloadAfterBroadcast) && broadcastFlag;
+                if (broadcast)
+                {
+                    // 广播白名单：仅允许显式声明的可广播消息（见 IsBroadcastAllowed）。
+                    if (!IsBroadcastAllowed(msgId))
+                    {
+                        Shared.Log.Warning($"Gateway 拒绝未列入广播白名单的 App 广播回包 MsgId:{msgId}");
+                        return;
+                    }
+                    var packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payloadAfterBroadcast, out int totalLength);
+                    try
+                    {
+                        Shared.Log.Debug("Gateway 广播 App 回包 MsgId:{MsgId} PacketLength:{PacketLength}", msgId, totalLength);
+                        Gateway.Managers.GatewaySessionManager.Instance.Broadcast(packet, totalLength);
+                    }
+                    finally
+                    {
+                        System.Buffers.ArrayPool<byte>.Shared.Return(packet);
+                    }
+                    return;
+                }
+
+                long targetSessionId;
+                byte[] cleanPayload;
+                if (!Shared.RouteMetadata.TryExtractTargetSessionId(payloadAfterBroadcast, out targetSessionId, out cleanPayload))
+                {
+                    if (!Shared.RouteMetadata.TryExtractClientSessionId(payloadAfterBroadcast, out targetSessionId, out cleanPayload))
+                    {
+                        Shared.Log.Warning($"App 回包缺少目标会话元数据 MsgId:{msgId}");
+                        return;
+                    }
+                }
+
+                var clientSession = Gateway.Managers.GatewaySessionManager.Instance.GetSession(targetSessionId);
+                if (clientSession == null)
+                {
+                    Shared.Log.Warning($"App 回包目标会话不存在，已丢弃 MsgId:{msgId} TargetSessionId:{targetSessionId}");
+                    return;
+                }
+
+                var clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, cleanPayload, out int responseLength);
+                Shared.Log.Debug("Gateway -> Client 转发 App 回包 MsgId:{MsgId} TargetSessionId:{TargetSessionId} TargetRemote:{TargetRemote} PacketLength:{PacketLength}", msgId, targetSessionId, clientSession.RemoteEndPoint!, responseLength);
+                Network.PacketSender.Send(clientSession, clientPacket, responseLength);
+            };
+            _ = appClient.ConnectAsync();
 
             int centerPort = ConfigHelper.GetConfig<int>("CenterPort") == 0 ? 31306 : ConfigHelper.GetConfig<int>("CenterPort");
             string centerHost = ConfigHelper.GetConfig<string>("CenterHost") ?? "127.0.0.1";
@@ -330,6 +419,12 @@ namespace Gateway
                 bool broadcast = Shared.RouteMetadata.TryExtractBroadcast(payload, out bool broadcastFlag, out var payloadAfterBroadcast) && broadcastFlag;
                 if (broadcast)
                 {
+                    // 广播白名单：仅允许显式声明的可广播消息（见 IsBroadcastAllowed）。
+                    if (!IsBroadcastAllowed(msgId))
+                    {
+                        Shared.Log.Warning($"Gateway 拒绝未列入广播白名单的 Center 广播回包 MsgId:{msgId}");
+                        return;
+                    }
                     var packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payloadAfterBroadcast, out int broadcastLength);
                     try
                     {
@@ -430,7 +525,11 @@ namespace Gateway
                     sender.OnConnected();
                     SendAuthHandshake(battleClient);
                 };
-                battleClient.OnDisconnected += (_, reason) => sender.OnDisconnected();
+                battleClient.OnConnected += session => battleNodeSessionMap[session.SessionId] = nodeId;
+                battleClient.OnDisconnected += (session, reason) =>
+                {
+                    if (session != null) battleNodeSessionMap.TryRemove(session.SessionId, out _);
+                };
                 battleClient.OnDataReceived += HandleBattleNodeData;
                 _ = battleClient.ConnectAsync();
             }
@@ -467,6 +566,12 @@ namespace Gateway
             bool broadcast = Shared.RouteMetadata.TryExtractBroadcast(payload, out bool broadcastFlag, out var payloadAfterBroadcast) && broadcastFlag;
             if (broadcast)
             {
+                // 广播白名单：仅允许显式声明的可广播消息（见 IsBroadcastAllowed）。
+                if (!IsBroadcastAllowed(msgId))
+                {
+                    Shared.Log.Warning($"Gateway 拒绝未列入广播白名单的 Battle 广播回包 MsgId:{msgId}");
+                    return;
+                }
                 var packet = Network.Routing.PacketBuilder.BuildPacket(msgId, payloadAfterBroadcast, out int totalLength);
                 try
                 {
@@ -495,10 +600,29 @@ namespace Gateway
                 return;
             }
 
+            // 安全加固（B2 残留闭环）：Battle 出站回包目标归属校验——目标玩家必须绑定在**发出本回包的**
+            // Battle 节点上。此前只做"会话存在"校验：被攻破/异常的 Battle 节点可把任意客户端可见消息
+            // （含对其他玩家实体的定向同步）投递给绑定在其他节点上的会话（跨节点注入）。
+            // 未绑定（匹配前/绑定丢失）时放行，由服务端绑定建立后收敛；绑定存在且不一致则拒绝。
+            if (battleNodeSessionMap.TryGetValue(session.SessionId, out string? senderNodeId)
+                && clientBattleNodeBindings.TryGetValue(targetSessionId, out string? boundNodeId)
+                && !string.IsNullOrEmpty(boundNodeId)
+                && !string.Equals(boundNodeId, senderNodeId, StringComparison.Ordinal))
+            {
+                Shared.Log.Warning($"Gateway 拒绝跨 Battle 节点投递：MsgId:{msgId} TargetSessionId:{targetSessionId} 目标绑定节点:{boundNodeId} 来源节点:{senderNodeId}");
+                return;
+            }
+
             var clientPacket = Network.Routing.PacketBuilder.BuildPacket(msgId, cleanPayload, out int responseLength);
             Shared.Log.Debug("Gateway -> Client 转发 Battle 回包 MsgId:{MsgId} TargetSessionId:{TargetSessionId} TargetRemote:{TargetRemote} PacketLength:{PacketLength}", msgId, targetSessionId, clientSession.RemoteEndPoint!, responseLength);
             Network.PacketSender.Send(clientSession, clientPacket, responseLength);
         }
+
+        /// <summary>
+        /// 可广播消息白名单：只有显式声明为可广播的消息才允许 Gateway 全服广播。
+        /// 当前全仓库唯一合法广播是 <see cref="MessageIds.ChatMessageNotif"/>（世界频道聊天通知）。
+        /// </summary>
+        private static bool IsBroadcastAllowed(int msgId) => msgId == MessageIds.ChatMessageNotif;
 
     }
 }

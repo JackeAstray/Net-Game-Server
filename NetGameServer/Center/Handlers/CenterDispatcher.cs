@@ -558,6 +558,8 @@ public static class CenterDispatcher
                 pendingEntityCallSource[msg.CallId] = new PendingRoute
                 {
                     SourceNodeId = originNodeId,
+                    // P2 修复（与 91004 迁移回执对齐）：记录目标节点，供 91002 回源时校验发送方身份。
+                    TargetNodeId = msg.TargetNodeId ?? string.Empty,
                     CreatedTicks = DateTime.UtcNow.Ticks
                 };
             }
@@ -568,7 +570,27 @@ public static class CenterDispatcher
         // 回源 91002：目标 Battle -> 源 Battle（调用方经 EntityCallHub.HandleResult 关联完成回执/超时）
         dispatcher.Register<EntityRemoteCallResult>(async (ctx, msg) =>
         {
-            if (pendingEntityCallSource.TryRemove(msg.CallId, out var pendingCall) && !string.IsNullOrEmpty(pendingCall.SourceNodeId))
+            // P2 修复（对称性）：原实现只按 CallId 查表就转发给源节点，**不校验发送方**；
+            // 对照 91004（实体迁移回执）与上方位置登记均做 sender==预期目标 校验，此处漏了。
+            // 危害：任一持共享密钥的内部节点（或被控节点）可向 Center 发 EntityRemoteCallResult，
+            // Center 不校验来源即转发给源 Battle；源侧只校验 CallId+EntityId+MethodName，
+            // 而 CallId = Increment ^ callIdMask（合法目标节点可观察连续 CallId 推断掩码）
+            // → 可伪造跨节点调用返回值，使源节点业务按伪造结果执行。
+            var senderNodeId = NodeManager.Instance.GetNodeIdBySession(((CenterSessionContext)ctx).GatewaySession) ?? string.Empty;
+            if (!pendingEntityCallSource.TryGetValue(msg.CallId, out var pendingCall))
+            {
+                Shared.Log.Warning($"实体远程调用回源失败：未记录 CallId:{msg.CallId}");
+                return;
+            }
+            if (!string.IsNullOrEmpty(pendingCall.TargetNodeId)
+                && !string.Equals(pendingCall.TargetNodeId, senderNodeId, StringComparison.Ordinal))
+            {
+                // 来源不符：**不**移除 pending（合法目标节点稍后仍可正常回源），仅告警
+                Shared.Log.Warning($"实体远程调用回源来源不匹配，拒绝 CallId:{msg.CallId} 期望目标:{pendingCall.TargetNodeId} 实际发送方:{senderNodeId}");
+                return;
+            }
+            if (pendingEntityCallSource.TryRemove(msg.CallId, out pendingCall)
+                && !string.IsNullOrEmpty(pendingCall.SourceNodeId))
             {
                 var source = NodeManager.Instance.GetNode(pendingCall.SourceNodeId);
                 if (source?.Session != null && source.Session.IsConnected)
@@ -640,13 +662,42 @@ public static class CenterDispatcher
         {
             var cctx = (CenterSessionContext)ctx;
             var nodeId = NodeManager.Instance.GetNodeIdBySession(cctx.GatewaySession) ?? string.Empty;
+            if (string.IsNullOrEmpty(nodeId))
+            {
+                Shared.Log.Warning($"挂起会话登记拒绝：发送方节点身份未知 ClientSessionId:{msg.ClientSessionId}");
+                return;
+            }
+            // P2 修复：① GraceSeconds 原本无上限（int.MaxValue ≈ 68 年），与仓库其它 TTL 均有界钳制的惯例不一致，
+            // 会长期驻留；② 同一 clientSessionId 已由**另一个** Gateway 挂起时拒绝
+            //（防内部节点为他人会话预登记伪造条目，使受害者重连时被接管到不存在/非法的旧会话）。
             int grace = msg.GraceSeconds > 0 ? msg.GraceSeconds : 30;
+            grace = Math.Clamp(grace, 5, 300);
+            if (CenterServerApp.SuspendedSessions != null
+                && CenterServerApp.SuspendedSessions.TryGet(msg.ClientSessionId, out var existing)
+                && existing != null
+                && !string.Equals(existing.GatewayNodeId, nodeId, StringComparison.Ordinal))
+            {
+                Shared.Log.Warning($"挂起会话登记拒绝：该会话已由其它 Gateway 挂起 ClientSessionId:{msg.ClientSessionId} 原持有:{existing.GatewayNodeId} 发送方:{nodeId}");
+                return;
+            }
             CenterServerApp.SuspendedSessions?.Suspend(msg.ClientSessionId, msg.UserId, nodeId, TimeSpan.FromSeconds(grace));
         }, jsonFallback: true);
 
         // 挂起注销（Gateway → Center）
         dispatcher.Register<ClientSessionUnsuspend>(async (ctx, msg) =>
         {
+            // P2 修复：原实现无任何发送方校验 → 任一内部节点可注销他人的挂起记录，
+            // 使该客户端跨实例重连接管失败（可用作 DoS）。改为仅挂起记录的持有 Gateway 可注销。
+            var cctx = (CenterSessionContext)ctx;
+            var nodeId = NodeManager.Instance.GetNodeIdBySession(cctx.GatewaySession) ?? string.Empty;
+            if (CenterServerApp.SuspendedSessions != null
+                && CenterServerApp.SuspendedSessions.TryGet(msg.ClientSessionId, out var entry)
+                && entry != null
+                && !string.Equals(entry.GatewayNodeId, nodeId, StringComparison.Ordinal))
+            {
+                Shared.Log.Warning($"挂起会话注销拒绝：发送方非该记录持有 Gateway ClientSessionId:{msg.ClientSessionId} 持有:{entry.GatewayNodeId} 发送方:{nodeId}");
+                return;
+            }
             CenterServerApp.SuspendedSessions?.Unsuspend(msg.ClientSessionId);
         }, jsonFallback: true);
 

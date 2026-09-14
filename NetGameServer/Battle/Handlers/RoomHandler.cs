@@ -241,6 +241,14 @@ namespace Battle.Handlers
         public BattleReplayRecorder ReplayRecorder => replayRecorder;
 
         /// <summary>导出某场景最近的回放帧（低频采样快照序列，观战/复盘用）。</summary>
+        /// <remarks>
+        /// P2 安全修复（越权访问 / 信息泄漏）：原实现**完全没有授权校验**——既不校验调用方会话是否绑定到场景，
+        /// 也不校验请求的 <c>SceneId</c> 是否就是其所在场景；而本方法经
+        /// <c>Battle/Handlers/MessageRouter.cs</c> 的 BattleReplayRequest 消息**对外可达**。
+        /// 后果：任何已认证客户端只要填一个 SceneId，就能拿到**任意场景**的全量 SyncToClient 属性快照
+        /// （实体 ID / 坐标 / 血量等）——等价于跨房间透视，也可用 0/1/2… 枚举有效对局。
+        /// 现要求：必须已绑定到某场景，且只能请求**自己所在场景**的回放。
+        /// </remarks>
         public Task<BattleReplayResponse> HandleReplayRequestAsync(long clientSessionId, BattleReplayRequest request)
         {
             string sceneId = request.SceneId ?? string.Empty;
@@ -248,7 +256,24 @@ namespace Battle.Handlers
             {
                 return Task.FromResult(new BattleReplayResponse { Success = false, Message = "场景ID不能为空" });
             }
-            var frames = replayRecorder.GetRecent(sceneId, request.MaxFrames > 0 ? request.MaxFrames : 60);
+
+            // 归属校验（P2）：先确认调用方已进入某场景
+            var ownScene = sceneManager.GetSceneByPlayer(clientSessionId);
+            if (ownScene == null)
+            {
+                Shared.Log.Warning($"回放请求被拒：调用方未绑定任何场景 ClientSessionId:{clientSessionId} RequestSceneId:{sceneId}");
+                return Task.FromResult(new BattleReplayResponse { Success = false, Message = "尚未进入任何场景，无法获取回放" });
+            }
+            if (!string.Equals(ownScene.SceneId, sceneId, StringComparison.Ordinal))
+            {
+                Shared.Log.Warning($"回放请求被拒：跨场景访问 ClientSessionId:{clientSessionId} OwnScene:{ownScene.SceneId} RequestSceneId:{sceneId}");
+                return Task.FromResult(new BattleReplayResponse { Success = false, Message = "只能获取自己所在场景的回放" });
+            }
+
+            // 帧数上限与录制缓冲容量对齐（BattleReplayRecorder.MaxFramesPerScene=360），
+            // 避免客户端传入超大值造成无谓的拷贝与序列化
+            int maxFrames = request.MaxFrames > 0 ? Math.Min(request.MaxFrames, 360) : 60;
+            var frames = replayRecorder.GetRecent(sceneId, maxFrames);
             return Task.FromResult(new BattleReplayResponse
             {
                 Success = true,

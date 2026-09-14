@@ -412,18 +412,27 @@ namespace Game.Handlers
                             return true;
                         }
 
-                        if (IsBlockedByTarget(dbRes.UserId, requesterUserId))
+                        // P2 修复：改用三态判定。目标用户可能只是**离线**（其黑名单缓存天然不存在，
+                        // 因为缓存只为在线玩家预热），原 fail-closed 的 IsBlockedByTarget 会把"未知"
+                        // 当作"被拉黑"从而误报"对方已将你拉黑"；未知与确认拉黑现在分别给出准确文案。
+                        if (CheckBlockedByTarget(dbRes.UserId, requesterUserId) == BlockState.Blocked)
                         {
                             inviteRes.Message = "对方已将你拉黑";
                             SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
                             return true;
                         }
 
-                        if (IsBlockedByTarget(requesterUserId, dbRes.UserId))
+                        switch (CheckBlockedByTarget(requesterUserId, dbRes.UserId))
                         {
-                            inviteRes.Message = "你已将对方拉黑，无法邀请";
-                            SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
-                            return true;
+                            case BlockState.Blocked:
+                                inviteRes.Message = "你已将对方拉黑，无法邀请";
+                                SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
+                                return true;
+                            case BlockState.Unknown:
+                                // 自己的黑名单尚未加载（登录预热失败/被延迟）：无法确认，fail-closed 拒绝并说明真实原因。
+                                inviteRes.Message = "黑名单状态校验中，请稍后重试";
+                                SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, inviteRes);
+                                return true;
                         }
 
                         var friendCheckReq = new Shared.Messages.Db.DbGetFriendsRequest

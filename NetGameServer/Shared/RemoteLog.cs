@@ -27,5 +27,19 @@ public static class RemoteLog
 
         client = new RemoteLogClient(nodeId, host, port, ConfigHelper.GetConfig<string>("LoggerAuthSecret"));
         client.Start();
+        // P3 修复：挂关闭钩子，优雅关服时冲刷残余日志。此前 RemoteLogClient 全仓没有任何收尾调用，
+        // 关服会丢掉 pending（≤500ms 一批）内的日志，且 socket 从不释放。
+        NodeLifecycle.Default.RegisterShutdownHook(ShutdownAsync);
+    }
+
+    /// <summary>
+    /// 冲刷并释放远程日志客户端（幂等，可安全重复调用；挂载于 <see cref="NodeLifecycle"/> 关闭钩子）。
+    /// </summary>
+    public static Task ShutdownAsync()
+    {
+        var c = client;
+        client = null;
+        c?.Dispose();
+        return Task.CompletedTask;
     }
 }

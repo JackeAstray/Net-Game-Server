@@ -155,11 +155,7 @@ public class WebSocketServer : INetworkServer
     private async Task HandleWebSocketAsync(WebSocket webSocket, EndPoint? remoteEndPoint, CancellationToken cancellationToken)
     {
         var session = new WebSocketSession(webSocket, remoteEndPoint);
-        activeSessions[session.SessionId] = session;
         var packetReader = new LengthPrefixedPacketReader();
-        Shared.Log.Info($"[WebSocketServer] 会话建立 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
-        OnSessionConnected?.Invoke(session);
-
         var buffer = new byte[4096];
         // 单条 WS 消息字节上限（P1 DoS 修复）：攻击者用 EndOfMessage=false 无限分片会无界累积
         // packetReader 缓冲；此处按消息累计字节设上限，超限断开。
@@ -168,6 +164,17 @@ public class WebSocketServer : INetworkServer
 
         try
         {
+            // P2 修复：会话登记与 OnSessionConnected 必须在 try 内。
+            // 原实现二者位于 try 之外：任一 OnSessionConnected 订阅者抛异常 → 异常在进入 try 前
+            // 逃出状态机 → 下方 finally 永不执行 → activeConnections **永久 +1**
+            // （累积到 MaxConnections 后所有新 WS 握手恒返回 503，只能重启进程）
+            // 且 activeSessions 永久残留该会话；调用方是 `_ = HandleWebSocketAsync(...)`
+            // （fire-and-forget），异常还无人观察。TcpServer 的同类结构是正确的（事件回调在 try 内），
+            // 此处与之对齐。
+            activeSessions[session.SessionId] = session;
+            Shared.Log.Info($"[WebSocketServer] 会话建立 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint}");
+            OnSessionConnected?.Invoke(session);
+
             while (webSocket.State == WebSocketState.Open)
             {
                 WebSocketReceiveResult receiveResult =
@@ -193,7 +200,9 @@ public class WebSocketServer : INetworkServer
                     }
                     // 空闲超时检测用：收到任何字节即刷新活动时间（此前仅连接/发送时更新，静默连接无法被空闲踢线）。
                     session.LastActivityTime = DateTime.UtcNow;
-                    Shared.Log.Debug($"[WebSocketServer] 接收分片 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Count:{receiveResult.Count} EndOfMessage:{receiveResult.EndOfMessage}");
+                    // P2 性能修复：字符串插值是调用点实参，先于 Log.Debug 内部的级别判断求值，
+                    // 即使 Debug 被禁用也会白构造字符串（含装箱与格式化）。热路径必须显式守卫。
+                    if (Shared.Log.IsDebugEnabled) Shared.Log.Debug($"[WebSocketServer] 接收分片 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} Count:{receiveResult.Count} EndOfMessage:{receiveResult.EndOfMessage}");
                     packetReader.Append(buffer.AsSpan(0, receiveResult.Count));
                 }
 
@@ -201,7 +210,7 @@ public class WebSocketServer : INetworkServer
                 // 不再等整条消息收齐后再解析——避免缓冲随分片无界增长，也让包边界与 WS 消息边界解耦。
                 while (packetReader.TryReadPacket(out var packet))
                 {
-                    Shared.Log.Debug($"[WebSocketServer] 完整分包 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} PacketLength:{packet.Length}");
+                    if (Shared.Log.IsDebugEnabled) Shared.Log.Debug($"[WebSocketServer] 完整分包 SessionId:{session.SessionId} Remote:{session.RemoteEndPoint} PacketLength:{packet.Length}");
                     OnDataReceived?.Invoke(session, packet);
                 }
 

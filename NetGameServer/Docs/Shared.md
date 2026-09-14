@@ -10,7 +10,7 @@
 - ✅ 公共 JSON 序列化辅助（`Shared.Json.SerializeToUtf8Bytes` / `DeserializeFromUtf8Bytes`）
 - ✅ 统一日志接口（`Shared.Log` 包装 Serilog；`RemoteLog` 远程日志）
 - ✅ 路由元数据辅助（`RouteMetadata`：Gateway↔后端）
-- ✅ UID / UUID 生成器（`UIDGenerator` 玩家全局递增 UID、`UUIDHelper`）
+- ✅ UID 生成器（`UIDGenerator` 玩家全局递增 UID）
 - ✅ Redis 客户端辅助（`RedisHelper`）
 - ✅ 节点启动参数（`NodeLaunchArgs`：--port / --host / --center-host / --center-port / --config / --node-id / --instance-id / --machine-id / --supervised-by）
 - ✅ 业务消息 DTO（Login / Game / Chat / Friend / Center / Battle / Db / Social）
@@ -32,7 +32,6 @@ Shared 是 **class library**，不直接启动；被 `Battle` / `Game` / `Center
 | `Shared/RemoteLog.cs` | 远程日志上报 |
 | `Shared/RouteMetadata.cs` | 路由元数据（`__clientSessionId` / `__userId` / `__uid` / `__nickname` / `__broadcast` / `__targetSessionId` / `__requestId`） |
 | `Shared/UIDGenerator.cs` | 玩家 UID 全局递增（按段发号 + Volatile 快照） |
-| `Shared/UUIDHelper.cs` | UUID 生成 |
 | `Shared/RedisHelper.cs` | Redis 客户端辅助（缓存 / 分布式限流计数器，连接失败自动重建重连） |
 | `Shared/NodeLaunchArgs.cs` | 节点启动 args 通用解析（被 Machine / Supervisor / 各节点 Program.cs 共用） |
 | `Shared/Messages/MessageIds.cs` | 旧手写 MsgId 常量（`Shared.Messages` 命名空间，DB/旧 JSON 路由使用；新协议常量由源生成器产出到 `Framework.Protocol.Generated.MessageIds`，两套并存） |

@@ -14,6 +14,24 @@
 dotnet run --project NetGameServer/Tools/ClientGen/ClientGen.csproj -c Release -- NetGameServer/Protocol/defs NetGameServer/Tools/ClientGen/Output
 ```
 
+> **产物新鲜度（重要）**：`Output/` 是入库交付物。改了协议（新增/删除 `[GameMessage]`）后**必须重新运行**
+> 上面的命令，否则客户端 SDK 会静默落后于服务端。`Tests/ClientGenVerify` 已加门禁：产物缺消息或有多余类型都会红灯（已实测捕获过一批缺失消息）。
+
+## 验证
+
+```bash
+# 1) 双向逐字节互验 + 产物新鲜度 + UE 产物编码（BOM）门禁
+dotnet test NetGameServer/Tests/ClientGenVerify/ClientGenVerify.csproj
+
+# 2) UE C++ 产物真实编译检查（MSVC `cl /Zs`；自动定位 vcvars，无工具链时提示跳过）
+powershell -File NetGameServer/Tools/ClientGen/verify-ue-syntax.ps1
+```
+
+> **编码要求（踩过的坑）**：UE 的 `.h/.cpp` 含中文注释，**必须带 UTF-8 BOM**。
+> MSVC 在中文 Windows（936 代码页）下会把**无 BOM** 的 UTF-8 源按 ANSI 解码，多字节错位后会吞掉
+> 后续代码行 —— 症状是一大片 `error C2039`（例如 `ReadCount 不是 mp::Reader 的成员`，而声明就在类内），
+> 产物**完全编译不过**，而当时所有 C# 测试仍然全绿。Unity 的 `.cs` 无需 BOM（Roslyn 默认 UTF-8）。
+
 ## 输出
 
 ```

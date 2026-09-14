@@ -9,6 +9,13 @@ namespace Login.Handlers
     /// <summary>
     /// 消息路由器，负责将来自 Gateway 的消息分发到对应的处理函数。
     /// 包含构建消息处理器字典的逻辑，以及将处理结果回写给 Gateway 的辅助方法。
+    ///
+    /// <para><b>维护提示（重复实现，逐步废弃）</b>：本类同时提供两套分发实现——
+    /// <see cref="BuildDispatcher"/>（新：强类型 + MemoryPack/JSON 双格式，收包路径**优先命中**）与
+    /// <see cref="BuildHandlers"/>（旧：手写字典 + JSON）。凡是两边都注册的 MsgId，旧字典实现
+    /// <b>不可达</b>；两份实现并存已出现过行为漂移（如改昵称：旧字典曾返回假成功）。
+    /// <see cref="LoginServerApp"/> 启动时会打印重叠 MsgId 清单，新增消息请只改
+    /// <see cref="BuildDispatcher"/>，并优先删除旧字典中的对应项。</para>
     /// </summary>
     public static partial class MessageRouter
     {
@@ -16,6 +23,10 @@ namespace Login.Handlers
         /// 构建消息处理器映射（MsgId -> 处理函数）。
         /// 处理函数签名为: Func{payload, gatewaySession, clientSessionId, Task}。
         /// </summary>
+        /// <remarks>
+        /// <b>旧（回退）实现</b>：仅当 <see cref="BuildDispatcher"/> 未注册该 MsgId 时才会被调用。
+        /// 新消息请加到 <see cref="BuildDispatcher"/>；此处条目应逐步删除。
+        /// </remarks>
         /// <param name="loginHandler">用于执行业务逻辑的 LoginHandler 实例（依赖注入或外部创建并传入）。</param>
         /// <returns>返回一个以消息 Id 为键、处理委托为值的字典。</returns>
         public static Dictionary<int, Func<ReadOnlyMemory<byte>, Network.ISession, long, Task>> BuildHandlers(LoginHandler loginHandler)
@@ -105,7 +116,9 @@ namespace Login.Handlers
                 SendToGateway(session, clientSessionId, MessageIds.ResetPasswordRes, res);
             };
 
-            // 处理更新昵称请求（示例中未调用具体业务方法，直接返回成功）
+            // 处理更新昵称请求（改昵称落库）。
+            // 注：新分发器（LoginDispatcher）已注册 10009，故本分支实际**不可达**（收包路径新分发器优先）；
+            // 保留同语义实现以防新分发器未注册时回退，行为必须与 LoginDispatcher 保持一致（勿再写成假成功）。
             handlers[MessageIds.UpdateNicknameReq] = async (payload, session, clientSessionId) =>
             {
                 var req = Shared.Json.DeserializeFromUtf8Bytes<ChangeNicknameRequest>(payload.Span);
@@ -119,11 +132,8 @@ namespace Login.Handlers
                     return;
                 }
 
-                // 若需调用具体业务逻辑，可通过 loginHandler 调用相应方法
-                // loginHandler.HandleChangeNicknameRequest((Network.Tcp.TcpSession)session, req);
-                var res = new ChangeNicknameResponse { Success = true, Message = "更改昵称成功" };
+                var res = await loginHandler.HandleUpdateNicknameRequestAsync(req, clientSessionId);
                 SendToGateway(session, clientSessionId, MessageIds.UpdateNicknameRes, res);
-                await Task.CompletedTask;
             };
 
             // 处理找回密码（发送验证码）请求

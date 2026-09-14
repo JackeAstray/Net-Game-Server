@@ -61,20 +61,21 @@ namespace Login.Controllers
 
         /// <summary>
         /// 更改昵称接口。
-        /// P2 修复：原实现是无操作的假成功（无论请求如何都返回"更改成功"，但服务端并未持久化昵称）。
-        /// 与 find-password 的约定一致，显式返回未实现，避免客户端误以为昵称已修改。
+        /// 归属校验：Token 必须有效，且只能修改 Token 持有人自己的昵称
+        /// （请求体 UserId 若给出必须与 Token 一致，否则拒绝）→ 经 Login→DB 真实落库。
         /// </summary>
         /// <param name="request"></param>
         /// <returns></returns>
         [HttpPost("change-nickname")]
-        public IActionResult ChangeNickname([FromBody] ChangeNicknameRequest request)
+        public async Task<IActionResult> ChangeNickname([FromBody] ChangeNicknameRequest request)
         {
-            var result = new ChangeNicknameResponse
+            string? token = Request.Headers["X-Auth-Token"].FirstOrDefault();
+            var (allowed, reason, response) = await loginHandler.HandleUpdateNicknameWithTokenAsync(request, token);
+            if (!allowed || response == null)
             {
-                Success = false,
-                Message = "昵称修改功能尚未实现，请勿依赖此接口"
-            };
-            return Ok(result);
+                return Unauthorized(new ChangeNicknameResponse { Success = false, Message = reason ?? "未授权" });
+            }
+            return Ok(response);
         }
 
         /// <summary>

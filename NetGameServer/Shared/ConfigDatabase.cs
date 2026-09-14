@@ -14,14 +14,23 @@ namespace Shared
     /// </summary>
     public static class ConfigDatabase
     {
+        // 缓存键必须包含**元素类型与索引形状**（P3 修复）：
+        // 原实现仅以 path 为键，同一路径按不同类型加载（或 List 与索引混用）会互相覆盖 → 缓存抖动/失效。
         private static readonly ConcurrentDictionary<string, object?> Cache = new(StringComparer.OrdinalIgnoreCase);
 
-        /// <summary>加载配置表为对象列表（缓存按路径复用；配置属运行时只读数据）。</summary>
+        private static string ListCacheKey<T>(string path) => path + "\u0001L\u0001" + typeof(T).FullName;
+
+        /// <summary>
+        /// 加载配置表为对象列表。
+        /// 注意（契约）：useCache=true 时返回的是**缓存内的同一实例**，属运行时只读数据，
+        /// 调用方**不得**排序/增删（会污染全局缓存）；确需修改请用 <see cref="LoadListCopy{T}"/>。
+        /// </summary>
         /// <param name="path">ExcelToJson 产出的 .json 文件路径。</param>
         /// <param name="useCache">是否使用路径缓存（配置热更后可 ClearCache 强制重读）。</param>
-        public static List<T>? LoadList<T>(string path, bool useCache = true)
+        public static IReadOnlyList<T>? LoadList<T>(string path, bool useCache = true)
         {
-            if (useCache && Cache.TryGetValue(path, out var cached) && cached is List<T> typed)
+            string key = ListCacheKey<T>(path);
+            if (useCache && Cache.TryGetValue(key, out var cached) && cached is List<T> typed)
             {
                 return typed;
             }
@@ -29,9 +38,19 @@ namespace Shared
             var list = LoadCore<T>(path);
             if (useCache && list != null)
             {
-                Cache[path] = list;
+                Cache[key] = list;
             }
             return list;
+        }
+
+        /// <summary>
+        /// 加载配置表并返回**独立副本**（可安全排序/增删的调用方使用）。
+        /// 不写缓存（缓存只存放主副本，避免两份数据长期驻留）。
+        /// </summary>
+        public static List<T>? LoadListCopy<T>(string path)
+        {
+            var cached = LoadList<T>(path, useCache: true);
+            return cached == null ? null : new List<T>(cached);
         }
 
         /// <summary>加载配置表并按主键建立索引（如按 Id/Number 查），O(1) 访问。</summary>
@@ -42,13 +61,28 @@ namespace Shared
         public static Dictionary<TKey, T>? LoadIndexed<TKey, T>(string path, Func<T, TKey> keySelector, bool useCache = true)
             where TKey : notnull
         {
+            // P3 修复：索引此前不缓存，每次调用都 O(N) 重建字典（按主键查表若落在每帧/每请求路径上代价可观）。
+            // 缓存仅在**无闭包捕获的静态选择器**下启用：此时选择器语义完全由 (声明类型, 方法名) 决定，
+            // 可作为稳定缓存键；带捕获的委托（Target != null）行为依赖外部状态，一律不缓存以免读出错行。
+            string? indexKey = null;
+            if (useCache && keySelector.Target == null &&
+                keySelector.Method.DeclaringType != null)
+            {
+                indexKey = path + "\u0001I\u0001" + typeof(T).FullName + "\u0001" + typeof(TKey).FullName
+                          + "\u0001" + keySelector.Method.DeclaringType.FullName + "." + keySelector.Method.Name;
+                if (Cache.TryGetValue(indexKey, out var cachedIndex) && cachedIndex is Dictionary<TKey, T> hit)
+                {
+                    return hit;
+                }
+            }
+
             var list = LoadList<T>(path, useCache);
             if (list == null)
             {
                 return null;
             }
 
-            var dict = new Dictionary<TKey, T>();
+            var dict = new Dictionary<TKey, T>(list.Count);
             foreach (var item in list)
             {
                 if (item == null)
@@ -61,6 +95,11 @@ namespace Shared
                     Log.Warning($"ConfigDatabase {path} 存在重复主键 {key}，后者已覆盖先者。");
                     dict[key] = item;
                 }
+            }
+
+            if (indexKey != null)
+            {
+                Cache[indexKey] = dict;
             }
             return dict;
         }

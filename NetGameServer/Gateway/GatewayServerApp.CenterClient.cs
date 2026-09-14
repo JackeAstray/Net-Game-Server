@@ -54,20 +54,23 @@ namespace Gateway
 
                 _ = Task.Run(async () =>
                 {
-                    try
+                    // P2 修复：try/catch 移入 while 内部，单次瞬时异常不再永久终止心跳上报
+                    // （原实现 catch 在 while 之外，一次异常后本网关心跳静默停止 → Center 超时摘除）。
+                    while (!cancellationToken.IsCancellationRequested)
                     {
-                        while (!cancellationToken.IsCancellationRequested)
+                        try
                         {
                             await Task.Delay(TimeSpan.FromSeconds(Shared.NodeHeartbeatDefaults.HeartbeatIntervalSeconds), cancellationToken);
                             SendNodeStatus(centerClient, nodeId, Gateway.Managers.GatewaySessionManager.Instance.GetOnlineCount());
                         }
-                    }
-                    catch (OperationCanceledException)
-                    {
-                    }
-                    catch (Exception ex)
-                    {
-                        Shared.Log.Error($"Gateway 心跳循环异常（下轮继续重试）: {ex}");
+                        catch (OperationCanceledException)
+                        {
+                            break;
+                        }
+                        catch (Exception ex)
+                        {
+                            Shared.Log.Error($"Gateway 心跳循环异常（本轮跳过，下轮继续重试）: {ex}");
+                        }
                     }
                 }, cancellationToken);
             };

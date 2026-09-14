@@ -9,7 +9,7 @@
 
 | 能力 | 一句话描述 | 详见 |
 |---|---|---|
-| 分布式微服务 | Gateway / Login / Center / Game / Battle / DB 6 节点，TCP+HMAC 互联 | [架构](#架构) |
+| 分布式微服务 | Gateway / Login / Center / Game / Battle / DB / App 7 节点，TCP+HMAC 互联 | [架构](#架构) |
 | KBE machine 看护 | `Tools/Machine` 读 `machine.json`，按 `dependsOn` 拉起 + replicas + 崩溃指数退避 | [KBE-Gap-Review.md](NetGameServer/Docs/KBE-Gap-Review.md) |
 | 声明式协议 | C# `[GameMessage]`（Roslyn 源生成器）声明；编译期产出强类型 + 路由表 + `ProtocolManifest.json`，`Tools/ClientGen` 据此生成客户端 codec | [Protocol.md](NetGameServer/Docs/Protocol.md) |
 | 强类型分发 | `MessageDispatcher` 配置化注册 + MemoryPack/JSON 双格式 | [Code-Style.md](NetGameServer/Docs/Code-Style.md) |
@@ -23,7 +23,7 @@
 | 优雅关闭/健康检查 | 全节点 SIGINT/SIGTERM 排空 + 关服 flush，`/healthz` `/readyz` 健康端口（端口+10000），监听地址可配 `HealthListenAddress`（默认回环；Docker/K8s 探针设 `0.0.0.0`） | [Shared.md](NetGameServer/Docs/Shared.md) |
 | Prometheus 监控 | 全节点 `/metrics`：进程/GC/线程 + 节点业务 gauge（在线数、入站队列、直达会话、注册节点数） | [Shared.md](NetGameServer/Docs/Shared.md) |
 | AOI 九宫格 | 视野半径可配（3x3/5x5/7x7）+ 2000 实体一致性压测（网格索引 vs 暴力枚举） | [Battle.md](NetGameServer/Docs/Battle.md) |
-| Docker 一键集群 | MySQL/Redis(+Postgres 可选) + 六节点 compose 编排，含实体持久化 SQL 后端实时验证 | [deploy/README-docker.md](deploy/README-docker.md) |
+| Docker 一键集群 | MySQL/Redis(+Postgres 可选) + 七节点 compose 编排，含实体持久化 SQL 后端实时验证 | [deploy/README-docker.md](deploy/README-docker.md) |
 | 单线程 tick | 固定频率主循环串行处理入站消息，状态只在 tick 线程读写 | [Code-Style.md](NetGameServer/Docs/Code-Style.md) |
 | 脚本宿主 | 玩法写在 `GameLogic/scripts/*.csx`，保存即热更新 | [GameLogic/scripts/README.md](NetGameServer/GameLogic/scripts/README.md) |
 | 平滑加权 LB | `GetBestBattleNode` Nginx-SWRR（权重=100-load） | [Center.md](NetGameServer/Docs/Center.md) |
@@ -37,8 +37,9 @@
   TCP/UDP/KCP/WS│   Gateway    │  31300
    客户端流量 ─▶│  (统一接入)  │─┬─▶ Login   31302
                 └──────────────┘ ├─▶ Game    31304
-                                ├─▶ Center  31306
-                                └─▶ Battle  31307~n
+                                 ├─▶ Center  31306
+                                 ├─▶ Battle  31307~n
+                                 └─▶ App     31308（+HTTP 31309）
                 ┌──────────────┐
                 │    Center    │  31306  (控制平面)
                 │ 注册/匹配/迁移 │
@@ -63,6 +64,7 @@
 - [Center.md](NetGameServer/Docs/Center.md) — 注册 / 心跳 / SWRR / 迁移协调 / EntityCall 中继
 - [Game.md](NetGameServer/Docs/Game.md) — 背包 / 公会 / 社交 / 任务
 - [Battle.md](NetGameServer/Docs/Battle.md) — 场景 / AOI / 帧同步 / 玩法实体 / 迁移
+- [App.md](NetGameServer/Docs/App.md) — 应用节点（游戏消息通道 80000-89999 + HTTP REST 应用面）
 - [DB.md](NetGameServer/Docs/DB.md) — 强类型持久化 / EntityPersistenceService
 - [Network.md](NetGameServer/Docs/Network.md) — TCP/UDP/KCP/WS + 零拷贝发送
 - [Shared.md](NetGameServer/Docs/Shared.md) — 公共层 / ConfigHelper / Json / 日志
@@ -114,6 +116,7 @@ dotnet build NetGameServer.slnx
 | 2 | Center | 31306 | 控制平面 |
 | 3 | Login | 31302 | 账号 / Token 签发 |
 | 4 | Game / Battle | 31304 / 31307~n | 业务层，Battle 可多实例 |
+| 4b | App | 31308（HTTP 31309） | 应用节点（可选，游戏消息 + HTTP 应用面） |
 | 5 | Gateway | 31300 | 接受外部流量，最后启动 |
 
 可直接到各节点目录执行 `dotnet run`（先按第 2 步配置共享密钥），或通过 `Tools/Supervisor` / `Tools/Machine` 统一拉起与看护。
@@ -136,7 +139,7 @@ dotnet run --project Tests/ClientGenVerify  -c Release   # 客户端 codec 与�
 ### 5. Docker 一键集群（可选）
 
 ```bash
-docker compose -f deploy/docker-compose.yml up -d --build   # MySQL/Redis + 六节点
+docker compose -f deploy/docker-compose.yml up -d --build   # MySQL/Redis + 七节点
 curl http://127.0.0.1:41306/healthz                          # 存活检查
 ```
 详见 [deploy/README-docker.md](deploy/README-docker.md)。

@@ -10,6 +10,17 @@
     </Content>
   </ItemGroup>
 
+  <!-- 凭据治理（P1）：appsettings.Local.json 放本地真实凭据，已被 .gitignore 忽略。
+       存在才拷贝（缺失时 Update 为空操作）；优先级高于 appsettings.json、低于环境变量（见 ConfigHelper）。 -->
+  <ItemGroup>
+    <None Update="appsettings.Local.json" Condition="Exists('appsettings.Local.json')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <Content Update="appsettings.Local.json" Condition="Exists('appsettings.Local.json')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Network\Network.csproj" />
     <ProjectReference Include="..\Shared\Shared.csproj" />

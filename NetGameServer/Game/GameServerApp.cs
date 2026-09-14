@@ -21,6 +21,11 @@ namespace Game
         public static TcpClientWrapper DbClient { get; private set; } = null!;
         private static System.Threading.CancellationTokenSource? centerHeartbeatCts;
 
+        // P3 修复：监听服务器提升为静态字段。此前是 StartNetworkAsync 的**局部变量**，
+        // 关闭钩子无法引用 → Game 节点关闭时既不关监听也不取消 Center 心跳，
+        // 排空期（/readyz 已返回 503）仍会接受新连接、继续上报心跳，且依赖进程退出才释放套接字。
+        private static TcpServer? tcpServer;
+
         // P2 修复（对齐 Center/Login）：业务消息按键（客户端会话）串行执行——
         // 多网关连接并行、同一会话 async 段交错会破坏共享状态（好友缓存/绑定/邀请）的复合读判写原子性。
         private static readonly Framework.Core.OrderedTaskQueue sessionSerialQueue = new("Game-SessionSerial");
@@ -94,7 +99,7 @@ namespace Game
         /// 异步启动网络监听。
         /// 关键步骤：
         /// 1. 从配置读取 GamePort（默认 31304）。
-        /// 2. 创建 NetworkManager 和 TcpServer，注册消息路由和处理器。
+        /// 2. 创建 TcpServer，注册消息路由和处理器（P3 清理：已移除无用的 NetworkManager 依赖）。
         /// 3. 处理客户端的连接、断开以及接收数据事件，并将数据解析后交由路由器分发。
         /// </summary>
         public static async Task StartNetworkAsync()
@@ -114,17 +119,17 @@ namespace Game
             // 网关连接断开时必须级联清理这些客户端在 Game 侧的全部状态（会话绑定/聊天限频/好友在线），防泄漏。
             var gatewayClients = new System.Collections.Concurrent.ConcurrentDictionary<long, System.Collections.Concurrent.ConcurrentDictionary<long, byte>>();
 
-            // 创建网络管理器，用于管理多个服务器实例
-            var networkManager = new NetworkManager();
-            // 创建 TCP 服务器实例以接收客户端连接
-            var tcpServer = new TcpServer();
+            // 创建 TCP 服务器实例以接收客户端连接（P3：同时写入静态字段，供关闭钩子停止监听）
+            var server = new TcpServer();
+            tcpServer = server;
 
             // 创建消息路由器，将收到的消息分发到对应的处理器
             // 注：PlayerDisconnectNotif 不在此注册（下方 OnDataReceived 内联按 originalSessionId 处理；
             // 此前的重复注册会误用网关会话 ID 解绑错误目标，并造成该消息被处理两次）。
             var router = new global::Network.Routing.MessageRouter();
             // 注册聊天处理器（示例），处理聊天相关消息并将其挂载到路由器
-            var chatHandler = new Handlers.ChatHandler(networkManager);
+            // P3 清理：ChatHandler 不再需要 NetworkManager（其字段从未被读取，见 ChatHandler 注释）
+            var chatHandler = new Handlers.ChatHandler();
             chatHandler.Register(router);
 
             // 新协议分发器：强类型消息 + MemoryPack（JSON 兼容回退），消灭手写 switch
@@ -136,14 +141,14 @@ namespace Game
             Handlers.GuildHandler.Register(router);
 
             // 当客户端建立连接时记录信息（可在此处加入鉴权或会话初始化逻辑）
-            tcpServer.OnSessionConnected += session =>
+            server.OnSessionConnected += session =>
             {
                 Log.Info($"客户端已连接: {session.RemoteEndPoint}");
                 // 跨网关广播：登记活跃网关连接（世界频道广播需发给每个网关）
                 RegisterGatewaySession(session);
                 gatewayAuthFilters[session.SessionId] = new Framework.Core.Security.InternalAuthFilter(authSecret, $"Game-{ConfigHelper.GetConfig<string>("GameHost") ?? "127.0.0.1"}:{port}");
             };
-            tcpServer.OnSessionDisconnected += (session, reason) =>
+            server.OnSessionDisconnected += (session, reason) =>
             {
                 gatewayAuthFilters.TryRemove(session.SessionId, out _);
                 // 跨网关广播：移除活跃网关连接
@@ -166,6 +171,8 @@ namespace Game
                         if (offlineUserId > 0 && Game.Managers.PlayerSessionManager.Instance.GetSessionIdByUserId(offlineUserId) <= 0)
                         {
                             Game.Handlers.FriendHandler.ClearUserCaches(offlineUserId);
+                            // P2 修复：公会成员缓存同类泄漏（登录预热必写，原实现任何离线路径都不清理）。
+                            Game.Handlers.GuildHandler.ClearUserCaches(offlineUserId);
                         }
                     }
                     Log.Warning($"网关断开，级联清理客户端会话 {clients.Count} 个");
@@ -174,7 +181,7 @@ namespace Game
 
             // 数据接收事件：统一协议 [MsgId][Payload]，路由元数据在 payload 内
             // 安全修复：使用 AsyncEventGuard 包装 async lambda，避免 async void 异常冒泡
-            tcpServer.OnDataReceived += global::Network.AsyncEventGuard.Wrap(async (session, data) =>
+            server.OnDataReceived += global::Network.AsyncEventGuard.Wrap(async (session, data) =>
             {
                 try
                 {
@@ -268,6 +275,8 @@ namespace Game
                         if (disconnectedUserId > 0 && Game.Managers.PlayerSessionManager.Instance.GetSessionIdByUserId(disconnectedUserId) <= 0)
                         {
                             Game.Handlers.FriendHandler.ClearUserCaches(disconnectedUserId);
+                            // P2 修复：公会成员缓存同类泄漏（登录预热必写，原实现任何离线路径都不清理）。
+                            Game.Handlers.GuildHandler.ClearUserCaches(disconnectedUserId);
                         }
                         if (gatewayClients.TryGetValue(session.SessionId, out var clientsForGateway))
                         {
@@ -375,11 +384,79 @@ namespace Game
             });
 
             // 客户端断开连接事件（记录原因）。这里可以添加清理会话状态或通知其他子系统的逻辑。
-            tcpServer.OnSessionDisconnected += (session, reason) => Log.Info($"客户端断开连接，原因: {reason}");
-            await tcpServer.StartAsync(port);
+            server.OnSessionDisconnected += (session, reason) => Log.Info($"客户端断开连接，原因: {reason}");
+            await server.StartAsync(port);
             Log.Info($"游戏服务器已启动，监听端口: {port}");
 
             ConnectToCenter(port);
+        }
+
+        /// <summary>
+        /// 优雅关闭（NodeLifecycle 关闭钩子）：
+        /// 取消 Center 心跳 → 停止按键串行队列 → 断开全部网关连接（触发下游按网关级联清理）
+        /// → 停止 TCP 监听 → 释放 DB 后端连接。
+        ///
+        /// P3 修复：此前 Game 的关闭钩子**只打一行日志**——监听套接字、Center 心跳、后端连接全部
+        /// 依赖进程退出被动释放。结果是排空期（/readyz 已 503）仍继续接受新客户端连接并向 Center
+        /// 上报心跳，Center 认该节点仍然新鲜，可能把流量继续导向正在关闭的节点。
+        /// </summary>
+        public static async Task ShutdownAsync()
+        {
+            Log.Info("Game 优雅关闭开始：停止心跳与串行队列，断开网关连接并关闭监听...");
+
+            centerHeartbeatCts?.Cancel();
+            centerHeartbeatCts?.Dispose();
+            centerHeartbeatCts = null;
+
+            // 停止按键串行队列（等待在途业务段排空，避免关闭期间仍有异步段改写共享状态）
+            try
+            {
+                sessionSerialQueue.Stop(waitForDrain: true, timeout: TimeSpan.FromSeconds(5));
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"Game 停止按键串行队列异常: {ex.Message}");
+            }
+
+            int closed = 0;
+            foreach (var gateway in activeGatewaySessions.Values)
+            {
+                try
+                {
+                    gateway.Close();
+                    closed++;
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning($"Game 关闭网关连接失败 SessionId:{gateway.SessionId} Exception:{ex.Message}");
+                }
+            }
+            activeGatewaySessions.Clear();
+
+            var listener = tcpServer;
+            tcpServer = null;
+            if (listener != null)
+            {
+                try
+                {
+                    await listener.StopAsync();
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "Game 停止 TCP 监听异常");
+                }
+            }
+
+            try
+            {
+                DbClient?.Stop();
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"Game 关闭 DB 后端连接异常: {ex.Message}");
+            }
+
+            Log.Info($"Game 优雅关闭完成（已断开 {closed} 个网关连接）。");
         }
 
         /// <summary>
@@ -467,20 +544,23 @@ namespace Game
 
                 _ = Task.Run(async () =>
                 {
-                    try
+                    // P2 修复：try/catch 移入 while 内部，单次瞬时异常不再永久终止心跳上报
+                    // （原实现 catch 在 while 之外，一次异常后本节点心跳静默停止 → Center 超时摘除）。
+                    while (!cancellationToken.IsCancellationRequested)
                     {
-                        while (!cancellationToken.IsCancellationRequested)
+                        try
                         {
                             await Task.Delay(TimeSpan.FromSeconds(Shared.NodeHeartbeatDefaults.HeartbeatIntervalSeconds), cancellationToken);
                             SendNodeStatus(centerClient, nodeId, GetCurrentLoad());
                         }
-                    }
-                    catch (OperationCanceledException)
-                    {
-                    }
-                    catch (Exception ex)
-                    {
-                        Log.Error($"Game 心跳循环异常（下轮继续重试）: {ex}");
+                        catch (OperationCanceledException)
+                        {
+                            break;
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Error($"Game 心跳循环异常（本轮跳过，下轮继续重试）: {ex}");
+                        }
                     }
                 }, cancellationToken);
             };

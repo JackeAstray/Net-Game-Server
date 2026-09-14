@@ -117,14 +117,17 @@ public static partial class MessageRouter
             ctx.Send(Shared.Messages.MessageIds.ResetPasswordRes, Shared.Json.SerializeToUtf8Bytes(res));
         }, jsonFallback: true);
 
-        // 更新昵称（与旧 UpdateNicknameReq 一致：直接返回成功）
-        dispatcher.RegisterSync<UpdateNickname>((ctx, msg) =>
+        // 更新昵称（改昵称落库）：此前是无操作的假成功（返回"更改昵称成功"但不落库）。
+        // 现在按**会话绑定的 UserId** 落库（请求体 UserId 仅作一致性校验，防越权改他人昵称）。
+        dispatcher.Register<UpdateNickname>(async (ctx, msg) =>
         {
-            ctx.Send(Shared.Messages.MessageIds.UpdateNicknameRes, Shared.Json.SerializeToUtf8Bytes(new ChangeNicknameResponse
+            var req = new ChangeNicknameRequest
             {
-                Success = true,
-                Message = "更改昵称成功"
-            }));
+                UserId = msg.UserId,
+                NewNickname = msg.NewNickname
+            };
+            var res = await loginHandler.HandleUpdateNicknameRequestAsync(req, ctx.ClientSessionId);
+            ctx.Send(Shared.Messages.MessageIds.UpdateNicknameRes, Shared.Json.SerializeToUtf8Bytes(res));
         }, jsonFallback: true);
 
         // 找回密码（发送验证码；对标旧 FindPasswordWithCodeReq）

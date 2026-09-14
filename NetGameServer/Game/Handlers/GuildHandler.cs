@@ -45,6 +45,10 @@ namespace Game.Handlers
         private sealed class GuildMemberCacheEntry
         {
             public int[] MemberIds = Array.Empty<int>();
+            /// <summary>所属公会 ID（0 = 未加入任何公会）。
+            /// P3 修复：仅凭 MemberIds 无法区分"未加入公会（空数组）"与"公会只有我一个人"，
+            /// 导致未入会玩家发公会频道消息时预检通过、投递给 0 人却回 Success=true（假成功）。</summary>
+            public int GuildId;
             public DateTime LoadedAtUtc;
         }
 
@@ -62,8 +66,39 @@ namespace Game.Handlers
             return null;
         }
 
+        /// <summary>
+        /// 读取缓存的"所属公会 ID"（TTL 内）。
+        /// 返回 -1 表示缓存未加载/已过期（未知），0 表示确认未加入任何公会，&gt;0 为公会 ID。
+        /// </summary>
+        public static int GetCachedGuildId(int userId)
+        {
+            if (userId > 0 && guildMemberCache.TryGetValue(userId, out var entry))
+            {
+                if (DateTime.UtcNow - entry.LoadedAtUtc <= GuildMemberCacheTtl)
+                {
+                    return entry.GuildId;
+                }
+                guildMemberCache.TryRemove(userId, out _);
+            }
+            return -1;
+        }
+
         /// <summary>使某用户的公会成员缓存失效（加入/退出/解散/踢/转让后调用）。</summary>
         public static void InvalidateGuildCache(int userId)
+        {
+            if (userId > 0)
+            {
+                guildMemberCache.TryRemove(userId, out _);
+            }
+        }
+
+        /// <summary>
+        /// 玩家离线/注销时清理其公会成员缓存（P2 修复：与 <see cref="FriendHandler.ClearUserCaches"/> 对齐）。
+        /// 登录预热（<see cref="WarmupGuildCache"/>）对每个正常登录的玩家都会写入一条缓存，
+        /// 而原实现只在"该用户自己再发公会消息且 TTL 已过"时才惰性移除 → 字典随累计登录人数无界增长
+        /// （每条含 int[]），属好友缓存泄漏修复的遗漏点。上线会重新预热，故可安全清除。
+        /// </summary>
+        public static void ClearUserCaches(int userId)
         {
             if (userId > 0)
             {

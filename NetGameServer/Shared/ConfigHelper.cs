@@ -34,10 +34,21 @@ namespace Shared
             var builder = new ConfigurationBuilder()
                 .SetBasePath(Directory.GetCurrentDirectory())
                 .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+                // 凭据治理（P1 落地）：受版本控制的 appsettings.json 不再存放真实库口令 / SMTP 授权码，
+                // 统一改为占位符；本地开发把真值放进 **被 .gitignore 忽略** 的 appsettings.Local.json（同目录），
+                // 部署环境用环境变量注入。优先级（后加入者覆盖前者）：
+                //   appsettings.json < appsettings.Local.json < 环境变量(无前缀) < 环境变量(NG_) < 运行时覆盖。
+                .AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: true)
                 // 环境变量注入（P1 凭据治理）：SMTP__Password / ConnectionStrings__MySqlConnection /
                 // CenterNodeSharedSecret 等凭据与配置可由环境变量覆盖，部署无需把明文密钥写入 appsettings.json。
-                // 置于 JSON 之后、内存覆盖之前：环境变量优先于配置文件，但仍低于 Machine/NodeLaunchArgs 的运行时覆盖。
+                //
+                // 前缀语义统一（P3 修复）：此前本类只认**无前缀**环境变量，而 Framework.Core.Config 只认
+                // NG_ 前缀 → 同一个 NG_LoginPort 在两处一边生效一边失效，文档化的 NG_ 约定形同虚设
+                // （实际部署 docker-compose / systemd 走的是无前缀命名）。现在两种写法都生效。
+                // 顺序即优先级：ConfigurationBuilder 中**后添加的 provider 覆盖先添加的**，
+                // 故无前缀在前、NG_ 在后 → NG_ 前缀（更具体）优先，与 Framework.Core.Config 一致。
                 .AddEnvironmentVariables()
+                .AddEnvironmentVariables("NG_")
                 // 内存源放最后，优先级最高，Machine / NodeLaunchArgs 写入的覆盖生效。
                 // 修复（P1）：原 AddInMemoryCollection 在 Build() 时把字典快照，之后 SetRuntimeOverride 写入
                 // + Reload() 均不生效（已实测复现）——改用自定义 LiveMemoryConfigurationSource，Load() 时

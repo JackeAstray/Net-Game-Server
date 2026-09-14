@@ -52,7 +52,16 @@ public class NpcScript : EntityScriptBase
         Log.Info("Npc", "Npc {EntityId} 出生，Hp=50 Pos=({X:F0}, 0, {Z:F0})",
             entity.EntityId, pos.X, pos.Z);
 
-        patrolTimers[entity.EntityId] = AddTimer(entity, PatrolIntervalMs, () => TickPatrol(entity, 0), repeat: true);
+        // 可空性修复：AddTimer 未挂载 TickEngine 时返回 null（直接存非可空字典会在 Cancel() 处 NRE）
+        var patrolTimer = AddTimer(entity, PatrolIntervalMs, () => TickPatrol(entity, 0), repeat: true);
+        if (patrolTimer != null)
+        {
+            patrolTimers[entity.EntityId] = patrolTimer;
+        }
+        else
+        {
+            Log.Warn("Npc", "Npc {EntityId} 无法注册巡逻定时器（TickEngine 未挂载？），巡逻将不生效", entity.EntityId);
+        }
     }
 
     private void TickPatrol(Entity entity, long frame)
@@ -86,7 +95,15 @@ public class NpcScript : EntityScriptBase
 
                 // 重生：死亡后定时复活，防止单玩家把共享世界 NPC 永久清空
                 CancelRespawnTimer(entity.EntityId);
-                respawnTimers[entity.EntityId] = AddTimer(entity, RespawnDelayMs, () => Respawn(entity), repeat: false);
+                var respawnTimer = AddTimer(entity, RespawnDelayMs, () => Respawn(entity), repeat: false);
+                if (respawnTimer != null)
+                {
+                    respawnTimers[entity.EntityId] = respawnTimer;
+                }
+                else
+                {
+                    Log.Warn("Npc", "Npc {EntityId} 无法注册重生定时器（TickEngine 未挂载？），将不会自动复活", entity.EntityId);
+                }
             }
         }
     }
@@ -132,7 +149,11 @@ public class NpcScript : EntityScriptBase
         }
         if (!entity.Get<bool>("IsDead"))
         {
-            patrolTimers[entity.EntityId] = AddTimer(entity, PatrolIntervalMs, () => TickPatrol(entity, 0), repeat: true);
+            var reloadedPatrolTimer = AddTimer(entity, PatrolIntervalMs, () => TickPatrol(entity, 0), repeat: true);
+            if (reloadedPatrolTimer != null)
+            {
+                patrolTimers[entity.EntityId] = reloadedPatrolTimer;
+            }
         }
         Log.Info("Npc", "Npc {EntityId} 脚本热更新完成，isDead={Dead}", entity.EntityId, entity.Get<bool>("IsDead"));
     }

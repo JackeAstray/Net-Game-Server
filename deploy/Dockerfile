@@ -2,7 +2,7 @@
 
 # =====================================================================
 # Net-Game-Server 一键集群镜像（迭代 21：Docker 部署）
-# 构建全部 6 个服务器节点（Gateway/Login/Game/DB/Center/Battle），
+# 构建全部 7 个服务器节点（Gateway/Login/Game/DB/Center/Battle/App），
 # 产物按 /app/<Node>/ 目录隔离，运行时通过 working_dir + command 指定。
 # 构建上下文 = 仓库根目录（docker compose 中 context: ..）。
 # =====================================================================
@@ -21,6 +21,7 @@ RUN dotnet restore NetGameServer/NetGameServer.slnx \
  && dotnet publish NetGameServer/DB/DB.csproj           -c Release -o /out/DB --no-restore \
  && dotnet publish NetGameServer/Center/Center.csproj   -c Release -o /out/Center --no-restore \
  && dotnet publish NetGameServer/Battle/Battle.csproj   -c Release -o /out/Battle --no-restore \
+ && dotnet publish NetGameServer/App/App.csproj         -c Release -o /out/App --no-restore \
  && mkdir -p /out/Battle/scripts \
  && cp NetGameServer/GameLogic/scripts/*.csx /out/Battle/scripts/
 
@@ -30,6 +31,7 @@ WORKDIR /app
 COPY --from=build /out/ ./
 
 # 对外端口（节点 + 健康检查 = 端口+10000）：
-# 31300 Gateway / 31302 Login / 31304 Game / 31305 DB / 31306 Center / 31307 Battle / 31316 CenterHttp
-EXPOSE 31300 31302 31304 31305 31306 31307 31316 \
-       41300 41302 41304 41305 41306 41307
+# 31300 Gateway / 31302 Login / 31304 Game / 31305 DB / 31306 Center / 31307 Battle
+# 31308 App / 31309 AppHttp / 31316 CenterHttp
+EXPOSE 31300 31302 31304 31305 31306 31307 31308 31309 31316 \
+       41300 41302 41304 41305 41306 41307 41308

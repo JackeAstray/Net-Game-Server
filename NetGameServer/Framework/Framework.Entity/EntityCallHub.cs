@@ -72,6 +72,17 @@ public sealed class EntityCallHub
     }
 
     /// <summary>
+    /// 撤销一个尚未发出的待回执项（参数序列化/发送失败时由调用方调用）。
+    /// </summary>
+    /// <remarks>
+    /// P2 修复配套：原实现先 <c>Register</c> 再发送（内部才做参数序列化），
+    /// 序列化抛异常时（不支持的类型 / 参数过多）会在表里留下"幻影"待回执项——
+    /// 超时后回调会以 Success=false 触发一次**从未发出**的调用回调。
+    /// 提供显式撤销入口，让调用方能清理。
+    /// </remarks>
+    public bool Unregister(long callId) => pending.TryRemove(callId, out _);
+
+    /// <summary>
     /// 处理远程调用回执：按 CallId 匹配待回执项并完成回调。
     /// 返回 true 表示匹配并消费了该回执；无匹配（重复/过期/未知）返回 false。
     /// </summary>
@@ -172,22 +183,43 @@ public sealed class EntityCallHub
 
 /// <summary>
 /// EntityCallHub 全局注册表（向后兼容层）。
-/// 各节点启动时应通过 <see cref="RegisterDefault"/> 注册自己的实例，
-/// 之后 EntityCall/EntityMailbox 的静态 API 会自动委派到该实例。
-/// 未注册时退回进程内默认实例（仅用于单元测试）。
+/// 各节点启动时可调用 <see cref="RegisterDefault"/> 显式注册自己的实例；
+/// 未注册时回退回进程内默认实例。
 /// </summary>
+/// <remarks>
+/// P2 修复（线程安全）：原实现 <c>_default ??= new EntityCallHub("Default")</c> 非线程安全——
+/// 首次并发调用（网络线程处理 91002 回执 + tick 线程 SweepExpired）可能各建一个 hub，
+/// 致使 pending 表与 CallId 空间分裂 → 回执“查不到待回执项”被静默丢弃（回调永不触发，只能等超时）。
+/// 现改为 Interlocked 保证全局唯一实例。
+/// 另：本仓 <c>RegisterDefault</c> 无调用方，且**默认实例是进程级单例**；
+/// 由于每个节点是独立进程，这已等价于“按节点隔离”，故不作为缺陷。
+/// 但若将来在同一进程内跑多个节点，则必须显式 RegisterDefault，否则 CallId 空间会跨节点共享。
+/// </remarks>
 public static class EntityCallHubRegistry
 {
     private static EntityCallHub? _default;
 
-    /// <summary>当前节点注册的默认 hub。设置后所有静态 API 都走它。</summary>
-    public static EntityCallHub Default => _default ??= new EntityCallHub("Default");
+    /// <summary>当前进程使用的 hub。显式注册过则用注册值，否则惰性创建默认实例。</summary>
+    public static EntityCallHub Default
+    {
+        get
+        {
+            var hub = Volatile.Read(ref _default);
+            if (hub != null)
+            {
+                return hub;
+            }
+            var created = new EntityCallHub("Default");
+            // 竞态时以先写入者为准（后写入者被丢弃、返回既有实例），保证全局唯一
+            return Interlocked.CompareExchange(ref _default, created, null) ?? created;
+        }
+    }
 
     /// <summary>注册当前节点的 hub（启动时调用一次）。</summary>
     public static void RegisterDefault(EntityCallHub hub)
     {
         if (hub == null) throw new ArgumentNullException(nameof(hub));
-        _default = hub;
+        Volatile.Write(ref _default, hub);
     }
 }
 

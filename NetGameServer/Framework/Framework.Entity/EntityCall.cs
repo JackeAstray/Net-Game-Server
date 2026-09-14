@@ -82,7 +82,19 @@ public sealed class EntityCall
             Callback = onComplete ?? NoopCallback
         });
 
-        SendCall(methodName, args, callId);
+        // P2 修复：SendCall 内部才做参数序列化（ArgCodec.Serialize），对不支持的类型/超过 32 个参数会抛异常。
+        // 原实现让异常直接逃出本方法，而 pending 项已登记 → 表里留下"幻影"待回执项，
+        // 超时后回调会以 Success=false 触发一次**从未发出**的调用回调。这里撤销 pending 并返回 0。
+        try
+        {
+            SendCall(methodName, args, callId);
+        }
+        catch (Exception ex)
+        {
+            EntityCallHubRegistry.Default.Unregister(callId);
+            Log.Error(ex, $"EntityCall 调用发送失败，已撤销待回执项 EntityId:{EntityId} Method:{methodName}");
+            return 0;
+        }
         return callId;
     }
 

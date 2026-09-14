@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Net;
 using System.Net.Sockets;
 using System.Collections.Concurrent;
@@ -57,6 +57,8 @@ public class UdpServer : INetworkServer
         var sessions = new Dictionary<IPEndPoint, UdpSession>();
         TimeSpan sessionTimeout = TimeSpan.FromMinutes(5);
         DateTime nextCleanupAt = DateTime.UtcNow.AddSeconds(30);
+        // P2 性能修复：单例 reader，每数据报 Reset 后复用（替代每报 new 一个 8KB 缓冲）
+        var datagramReader = new LengthPrefixedPacketReader();
 
         while (udpClient != null)
         {
@@ -86,28 +88,37 @@ public class UdpServer : INetworkServer
                     OnSessionConnected?.Invoke(session);
                 }
 
-                Shared.Log.Debug($"[UdpServer] 接收数据报 SessionId:{session.SessionId} Remote:{result.RemoteEndPoint} DatagramLength:{result.Buffer.Length}");
+                if (Shared.Log.IsDebugEnabled) Shared.Log.Debug($"[UdpServer] 接收数据报 SessionId:{session.SessionId} Remote:{result.RemoteEndPoint} DatagramLength:{result.Buffer.Length}");
 
                 try
                 {
-                    // V14 修复：每数据报独立成帧解析（可含多个完整帧），尾部不完整帧丢弃。
-                    var datagramReader = new LengthPrefixedPacketReader();
+                    // V14：每数据报独立成帧解析（可含多个完整帧），尾部不完整帧丢弃。
+                    // P2 性能修复：复用同一 reader（Reset 清空残留）而非每数据报 new——
+                    // 原实现每报分配一个初始 8KB 的缓冲数组，UDP 高频/洪泛时 GC 压力显著；
+                    // 接收循环为单线程串行，复用安全；**必须**每个数据报前 Reset，否则
+                    // 上一报的残缺帧会跨包拼接（这正是 V14 要求“每数据报独立”的原因）。
+                    datagramReader.Reset();
                     datagramReader.Append(result.Buffer);
                     int packetCount = 0;
                     while (datagramReader.TryReadPacket(out var packet))
                     {
                         packetCount++;
-                        Shared.Log.Debug($"[UdpServer] 完整分包 SessionId:{session.SessionId} Remote:{result.RemoteEndPoint} PacketLength:{packet.Length}");
+                        if (Shared.Log.IsDebugEnabled) Shared.Log.Debug($"[UdpServer] 完整分包 SessionId:{session.SessionId} Remote:{result.RemoteEndPoint} PacketLength:{packet.Length}");
                         OnDataReceived?.Invoke(session, packet);
                     }
 
                     if (packetCount == 0)
                     {
-                        Shared.Log.Debug($"[UdpServer] 当前数据报未形成完整包 SessionId:{session.SessionId} Remote:{result.RemoteEndPoint}");
+                        if (Shared.Log.IsDebugEnabled) Shared.Log.Debug($"[UdpServer] 当前数据报未形成完整包 SessionId:{session.SessionId} Remote:{result.RemoteEndPoint}");
                     }
-
-                    // 仅当该数据报被正常消费后才刷新活动时间，避免恶意数据报无限续活会话
-                    session.LastActivityTime = DateTime.UtcNow;
+                    else
+                    {
+                        // 仅当数据报产出了 ≥1 个完整包才刷新活动时间。
+                        // 此前无条件刷新：攻击者每 <5min 发一个"合法前缀+残缺载荷"（如 4 字节声明 1000 字节）
+                        // 的数据报即可无限续活会话，绕过 5 分钟超时回收（虽有 10000/64 配额兜底，属有界占用，
+                        // 但浪费配额且使"踢线"语义失效）。InvalidDataException 路径本就跳过刷新（见下方 catch）。
+                        session.LastActivityTime = DateTime.UtcNow;
+                    }
                 }
                 catch (InvalidDataException ex)
                 {

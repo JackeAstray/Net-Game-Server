@@ -185,7 +185,7 @@ namespace Login.Handlers
         /// <returns>AccountQueryResponse，包含账户存在性与各种状态标志及提示信息。</returns>
         public async Task<AccountQueryResponse> HandleAccountQueryRequestAsync(AccountQueryRequest request)
         {
-            Log.Info($"收到查询账户请求: {request.Account}");
+            Log.Info($"收到查询账户请求: {RedactAccount(request.Account)}");
 
             var verifyReq = new Shared.Messages.Db.AccountQueryRequest
             {
@@ -571,12 +571,17 @@ namespace Login.Handlers
                 string senderName = ConfigHelper.GetConfig<string>("SMTP:SenderName") ?? "游戏通知";
 
                 // 凭据缺失防护（P1）：不携带空/占位符凭据发信，避免静默认证失败并把占位符当明文密钥发出。
-                // 支持 appsettings.json 或环境变量 SMTP__Account / SMTP__Password 注入（ConfigHelper 已接入环境变量）。
-                if (string.IsNullOrWhiteSpace(smtpUser) || string.IsNullOrWhiteSpace(smtpPass)
-                    || smtpUser.IndexOf("your-email", StringComparison.OrdinalIgnoreCase) >= 0
-                    || smtpPass == "your-password")
+                // 支持 appsettings.Local.json（已被 .gitignore 忽略）或环境变量 SMTP__Account / SMTP__Password 注入
+                // （ConfigHelper 已接入环境变量与本地覆盖文件，优先级：appsettings.json < Local < 环境变量）。
+                // P1 追加：受版本控制的 appsettings.json 已改为 CHANGE_ME 占位符，故占位符检测必须一并覆盖它。
+                bool smtpPlaceholder =
+                    smtpUser.IndexOf("your-email", StringComparison.OrdinalIgnoreCase) >= 0
+                    || smtpUser.IndexOf("CHANGE_ME", StringComparison.OrdinalIgnoreCase) >= 0
+                    || smtpPass.IndexOf("your-password", StringComparison.OrdinalIgnoreCase) >= 0
+                    || smtpPass.IndexOf("CHANGE_ME", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (string.IsNullOrWhiteSpace(smtpUser) || string.IsNullOrWhiteSpace(smtpPass) || smtpPlaceholder)
                 {
-                    Log.Error("SMTP 未配置有效凭据（SMTP:Account/SMTP:Password），已跳过发信。请通过 appsettings.json 或环境变量 SMTP__Account/SMTP__Password 注入真实凭据。");
+                    Log.Error("SMTP 未配置有效凭据（SMTP:Account/SMTP:Password 为空或仍为占位符），已跳过发信。请在 appsettings.Local.json（不入库）或环境变量 SMTP__Account/SMTP__Password 中注入真实凭据。");
                     return false;
                 }
 

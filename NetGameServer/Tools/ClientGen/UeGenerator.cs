@@ -373,9 +373,9 @@ public static class UeGenerator
 // 格式要点（经真实 MemoryPack 输出实证）：
 //   - 每个类对象（根对象 / 直接结构体字段 / 集合元素 / map 值）：1 字节对象头 = 成员数
 //   - 数值：定长小端（bool=1 / int32=4 / int64=8 / float=4 / double=8）
-//   - 字符串：int32(~utf8len) + int32(utf16len) + UTF-8 字节；空串 = int32(0)
-//   - byte[]：int32(len) + 字节
-//   - List/Map：int32(count) + 元素（结构体元素带对象头）
+//   - 字符串：null = int32(-1) / 空串 = int32(0) / 非空 = int32(~utf8len) + int32(utf16len) + UTF-8 字节
+//   - byte[]：null = int32(-1) / 非空 = int32(len) + 字节（len=0 与 null 在字节上不同）
+//   - List/Map：int32(count) + 元素（结构体元素带对象头）；null 集合 = int32(-1)
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -505,7 +505,9 @@ public:
 
     std::string ReadString() {
         int32_t v = ReadI32();
-        if (v == 0) return std::string();
+        // 0 = 空串；-1 = null；非空 = ~utf8len（负数）。只有前两者是“无 utf16 长度字段”的短形态。
+        // 把 v <= 0 全当归一（曾经如此）会错把所有非空串当成空串——它们本身就是负数。
+        if (v == 0 || v == -1) return std::string();
         int32_t utf8Len = ~v;
         ReadI32(); // UTF-16 长度（客户端只需 UTF-8 字节）
         if (Remaining() < (size_t)utf8Len) { pos_ = size_; return std::string(); }
@@ -523,7 +525,9 @@ public:
         return b;
     }
 
-    int32_t ReadCount() { return ReadI32(); }
+    // 集合长度：null 集合（-1）归一化为 0 —— 否则生成代码里的 reserve((size_t)_n) 会按 (size_t)-1
+    // 中请几乎无限的内存，直接抛 std::length_error / std::bad_alloc 并终止进程。
+    int32_t ReadCount() { int32_t n = ReadI32(); return n > 0 ? n : 0; }
 
 private:
     uint8_t ReadByte() {
@@ -779,6 +783,17 @@ int main() {
 3. 也可改用 UE 原生 `FSocket`：帧格式极简（`[TotalLength(4)][MsgId(4)][Payload]`），
    `MemoryPack.h` 的编解码与引擎无关，直接复用。
 
+## 编码要求（重要，否则直接编译不过）
+本目录的 `.h/.cpp` 含中文注释，且**已带 UTF-8 BOM** —— 这是必须的：
+MSVC 在非 UTF-8 系统代码页（如中文 Windows 的 936/GBK）下会把**无 BOM** 的 UTF-8 源文件按 ANSI 解码，
+多字节序列错位后可能吞掉后续代码行，症状是一大片莫名其妙的错误，例如
+`error C2039: "ReadCount": 不是 "mp::Reader" 的成员`（而该声明明明就在类内）。
+- MSVC：保持文件 BOM 不被剥离即可（**不要**另存为“ANSI/无 BOM”）；或加编译选项 `/utf-8`。
+- clang/gcc：通常直接可用（也接受 BOM）；若报错请加 `-finput-charset=UTF-8`。
+- 若你的工具链/流水线会剥离 BOM，请显式加 `/utf-8`（MSVC）或 `-finput-charset=UTF-8`。
+- 自检脚本：`powershell -File NetGameServer/Tools/ClientGen/verify-ue-syntax.ps1`
+  （自动定位 MSVC 并做 `cl /Zs` 语法检查，无工具链时会明确提示跳过）。
+
 ## 帧格式（与服务器 Gateway 一致）
 ```
 [TotalLength(int32 LE) = 4 + Payload.Length][MsgId(int32 LE)][Payload]
@@ -788,6 +803,7 @@ Payload = 消息体（MemoryPack 兼容二进制）。也可直接发送 JSON �
 
 ## 字段类型
 bool / int32 / int64 / float / string / bytes / list:T / map<string,string> / 结构体。
-与服务器 `Framework.Protocol.Generated`（MemoryPack）逐字节兼容，由 ClientGen 从 `.def` 生成。
+与服务器 `Framework.Protocol.Generated`（MemoryPack）逐字节兼容，由 ClientGen 从 `ProtocolManifest`
+（`[GameMessage]`/`[GameStruct]` 编译期产出）生成；旧的 `.def` 解析管线已删除。
 """;
 }

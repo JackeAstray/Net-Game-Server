@@ -30,7 +30,7 @@
 | `Login/LoginServerApp.cs` | 节点主类（partial）+ TCP 收包 + HTTP WebApi（`StartWebApiAsync`） |
 | `Login/Handlers/LoginHandler.cs` / `LoginHandler.Account.cs` / `LoginHandler.Security.cs` | 登录业务 partial 拆分：登录/注册/找回密码（Account）、Token 签发/验证/限流/DB 封装（Security） |
 | `Login/Handlers/MessageRouter.cs` | 强类型分发器（新协议优先）+ 旧路由回退 |
-| `Login/Controllers/AccountController.cs` | HTTP API（login/register/find-password/query-account/online-stats） |
+| `Login/Controllers/AccountController.cs` | HTTP API（login/register/change-password/**change-nickname**/find-password/query-account/online-stats） |
 | `Login/ApiKeyAuthMiddleware.cs` | HTTP API Key 鉴权（`X-Api-Key` 头 + 恒定时间比较） |
 | `Login/Managers/` | SessionManager 等 |
 

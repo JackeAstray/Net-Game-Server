@@ -62,6 +62,33 @@ namespace Center
             // 新协议分发器：强类型消息 + MemoryPack（JSON 兼容回退），消灭手写 switch
             var centerDispatcher = Center.Handlers.CenterDispatcher.BuildDispatcher(matchHandler, partyManager);
 
+            // P3 可观测性（与 Login 对齐，防双份实现静默分叉）：收包路径上**新分发器优先**，
+            // 因此凡是"两边都注册"的 MsgId，旧字典里的实现恒为**不可达路径**。
+            // 两份实现并存会悄悄漂移（Login 侧就曾在改昵称上出现假成功），这里在启动期列出重叠与旧字典独有项。
+            {
+                var overlapped = new List<int>();
+                var legacyOnly = new List<int>();
+                foreach (var registeredMsgId in handlers.Keys)
+                {
+                    if (centerDispatcher.IsRegistered(registeredMsgId))
+                    {
+                        overlapped.Add(registeredMsgId);
+                    }
+                    else
+                    {
+                        legacyOnly.Add(registeredMsgId);
+                    }
+                }
+                if (overlapped.Count > 0)
+                {
+                    Log.Warning($"Center 消息处理器重叠：{overlapped.Count} 个 MsgId 同时注册在旧字典与新分发器中，旧实现不可达（建议清理）MsgIds:[{string.Join(",", overlapped)}]");
+                }
+                if (legacyOnly.Count > 0)
+                {
+                    Log.Info($"Center 旧字典独有处理器（新分发器未注册，仍走回退路径）：{legacyOnly.Count} 个 MsgIds:[{string.Join(",", legacyOnly)}]");
+                }
+            }
+
             var tcpServer = new TcpServer();
 
             // 内部连接认证：所有节点连接必须先通过认证握手（InternalAuth），密钥共享。

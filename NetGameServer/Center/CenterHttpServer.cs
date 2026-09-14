@@ -70,7 +70,22 @@ internal static class CenterHttpServer
             }
             else
             {
-                bindIp = System.Net.IPAddress.Parse(bindAddress);
+                // P2 修复：原实现用 IPAddress.Parse(bindAddress)——配置为 localhost（或任意主机名）时
+                // 直接抛 FormatException。该 lambda 在 builder.Build()（本方法同步段）执行，而本方法是 async，
+                // 异常会被捕获进返回的 Task；调用方 Center/Program.cs 只在**关服时**才 await 该 Task，
+                // 因此实际后果是：**管理台 HTTP 静默完全不监听**、异常长期无人观察，
+                // 直到关服才在 await 处抛出（非零退出、报错极晚且难定位）。
+                // 而紧随其后的告警分支却把 localhost/::1 当作合法回环值，语义自相矛盾。
+                // 这里显式接受 localhost，其余解析失败回退回环并告警。
+                string effective = string.Equals(bindAddress, "localhost", StringComparison.OrdinalIgnoreCase)
+                    ? "127.0.0.1"
+                    : bindAddress;
+                if (!System.Net.IPAddress.TryParse(effective, out var parsedIp))
+                {
+                    Shared.Log.Warning($"Center 管理面监听地址无法解析为 IP: {bindAddress}，已回退 127.0.0.1（如需全网卡请显式设 0.0.0.0）");
+                    parsedIp = System.Net.IPAddress.Loopback;
+                }
+                bindIp = parsedIp;
                 options.Listen(bindIp, httpPort);
             }
 

@@ -20,12 +20,16 @@ public sealed class NodeLifecycle
     private readonly List<Func<Task>> hooks = new();
     private readonly TaskCompletionSource<bool> shutdownSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int shutdownStarted;
+    private int signalHandlersInstalled;
 
     /// <summary>是否已进入排空/关闭流程（只读；健康检查据此返回 503）。</summary>
     public volatile bool IsDraining;
 
     /// <summary>排空超时（单钩子默认 10s）。</summary>
     public TimeSpan HookTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>超时钩子的额外宽限期（默认 5s）：循环结束后统一等待，提高落盘/断连收尾完成率。</summary>
+    public TimeSpan HookGracePeriod { get; set; } = TimeSpan.FromSeconds(5);
 
     private NodeLifecycle()
     {
@@ -46,6 +50,13 @@ public sealed class NodeLifecycle
     /// </summary>
     public void InstallSignalHandlers()
     {
+        // P3 修复：幂等。原实现每次调用都追加一组订阅（Console.CancelKeyPress += ... 与
+        // PosixSignalRegistration.Create 且从不释放），重复调用会叠加处理器并泄漏注册对象。
+        if (Interlocked.Exchange(ref signalHandlersInstalled, 1) != 0)
+        {
+            return;
+        }
+
         Console.CancelKeyPress += (_, e) =>
         {
             e.Cancel = true; // 交给关闭流程处理
@@ -114,6 +125,9 @@ public sealed class NodeLifecycle
             snapshot = new List<Func<Task>>(hooks);
         }
 
+        // 超时的钩子（P3 修复）：统一在循环结束后给有限宽限期，并观察其异常。
+        var timedOutHooks = new List<Task>();
+
         for (int i = 0; i < snapshot.Count; i++)
         {
             try
@@ -123,7 +137,23 @@ public sealed class NodeLifecycle
                 var completed = await Task.WhenAny(task, Task.Delay(HookTimeout));
                 if (completed != task)
                 {
-                    Log.Warning($"关闭钩子 [{i}] 超时（>{HookTimeout.TotalSeconds}s），继续下一个");
+                    // P3 修复：超时的钩子不再被"静默放弃"。
+                    // 原实现只打一行日志就走人，该任务的异常无人观察（未观察任务异常），
+                    // 且其残余工作（如实体落盘 / DB flush）可能在进程随后退出时被截断。
+                    // 这里：① 挂 ContinueWith 观察异常；② 记入 timedOutHooks，循环结束后统一给一段宽限时间。
+                    timedOutHooks.Add(task);
+                    _ = task.ContinueWith(t =>
+                    {
+                        if (t.IsFaulted && t.Exception != null)
+                        {
+                            Log.Error(t.Exception, $"关闭钩子 [{i}] 超时后仍以异常结束（已放弃等待）");
+                        }
+                        else
+                        {
+                            Log.Warning($"关闭钩子 [{i}] 在超时后自行完成（结果可能不完整）");
+                        }
+                    }, TaskContinuationOptions.ExecuteSynchronously);
+                    Log.Warning($"关闭钩子 [{i}] 超时（>{HookTimeout.TotalSeconds}s），继续下一个；该钩子残余清理待宽限期收尾");
                 }
                 else
                 {
@@ -135,6 +165,21 @@ public sealed class NodeLifecycle
             catch (Exception ex)
             {
                 Log.Error(ex, $"关闭钩子 [{i}] 执行异常，继续下一个");
+            }
+        }
+
+        // P3 修复：给超时钩子一段有限宽限期（不无限等待），提高落盘/断连等收尾工作的完成率；
+        // 仍然超时则明确记录"已放弃"，避免表现为"钩子凭空消失"。
+        if (timedOutHooks.Count > 0)
+        {
+            var grace = await Task.WhenAny(Task.WhenAll(timedOutHooks), Task.Delay(HookGracePeriod));
+            if (grace is Task all && all.IsCompletedSuccessfully)
+            {
+                Log.Info($"超时的关闭钩子已在宽限期内收尾完成（{timedOutHooks.Count} 个）");
+            }
+            else
+            {
+                Log.Warning($"仍有 {timedOutHooks.Count} 个关闭钩子未在宽限期（{HookGracePeriod.TotalSeconds}s）内完成，进程即将退出");
             }
         }
 

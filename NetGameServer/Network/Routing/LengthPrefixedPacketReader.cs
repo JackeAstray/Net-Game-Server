@@ -35,12 +35,38 @@ public sealed class LengthPrefixedPacketReader
     }
 
     /// <summary>
-    /// 将指定的 ReadOnlySpan<byte> 追加到内部缓冲区的末尾。
+    /// 清空已缓冲数据（保留底层数组，零分配），供“复用同一 reader 处理自包含数据报”的场景使用
+    /// （如 <c>UdpServer</c> 每个数据报前调用）。
+    /// </summary>
+    /// <remarks>复用前**必须**调用：否则上一数据报的残缺帧会与下一数据报拼接（UDP 无跨报分片语义）。</remarks>
+    public void Reset()
+    {
+        bufferedCount = 0;
+        startOffset = 0;
+    }
+
+    /// <summary>
+    /// 将指定的 ReadOnlySpan&lt;byte&gt; 追加到内部缓冲区的末尾。
     /// </summary>
     /// <remarks>必要时会扩展内部缓冲区以容纳附加的数据；随后将数据复制到缓冲区并更新缓冲计数。</remarks>
     /// <param name="data">要追加到缓冲区末尾的只读字节序列。</param>
+    /// <exception cref="InvalidDataException">当追加前缓冲内待解析字节已超出单包上限时抛出（防“只投喂不构成完整包”的缓冲无限增长）。</exception>
     public void Append(ReadOnlySpan<byte> data)
     {
+        // P3 修复（原防护分支数学上不可达）：TryReadPacket 内原本的“慢速 DoS”判断位于
+        // `available < total` 分支内，而该分支已保证 `packetLength <= maxPacketLength`，
+        // 故 `available < 4 + packetLength <= maxPacketLength + 4` 恒成立 → `available > maxPacketLength + 4` **永不成立**，
+        // 那段注释承诺的“防缓冲无限增长”实际并不存在（当前缓冲天然有界，所以不构成漏洞，但具误导性）。
+        // 真正可触发的位置是 Append 侧：调用方正确使用时每次 Append 前都应已排空全部完整包，
+        // 此时待解析字节不可能超过 `maxPacketLength + 3`（半个在途包）；
+        // 若调用方持续 Append 而不排空（误用/慢速投喂），缓冲会随 Append 无界增长——
+        // 此处在增长前校验，使防护真正生效。
+        if (bufferedCount - startOffset > maxPacketLength + 4)
+        {
+            throw new InvalidDataException(
+                $"追加前缓冲已超限（待解析 {bufferedCount - startOffset} 字节，上限 {maxPacketLength + 4}）：调用方未及时消费完整包或对端持续投喂不构成完整包的数据，疑似 DoS，已拒绝。");
+        }
+
         EnsureCapacity(bufferedCount + data.Length);
         data.CopyTo(buffer.AsSpan(bufferedCount));
         bufferedCount += data.Length;
@@ -89,15 +115,9 @@ public sealed class LengthPrefixedPacketReader
         int total = 4 + packetLength;
         if (available < total)
         {
-            // 慢速/悬空 DoS 防护：长度前缀已声明（≤ maxPacketLength）但载荷迟迟不补齐，
-            // 且已缓冲的未解析字节已超过 单包上限+4(前缀) —— 说明对端在持续投喂数据却从不构成完整包，
-            // 内部缓冲会随 Append 无限增长导致 OOM（此前无此上限）。超出即抛异常，由调用方关闭连接。
-            // 说明：合法在途的单包最多占用 maxPacketLength+4 字节，超过即判定为异常输入。
-            if (available > maxPacketLength + 4)
-            {
-                throw new InvalidDataException(
-                    $"数据包载荷未补齐且缓冲超限（已缓冲 {available} 字节，上限 {maxPacketLength + 4}），疑似慢速 DoS 攻击，已拒绝");
-            }
+            // 头已声明（packetLength ≤ maxPacketLength）但载荷未补齐：返回 false 等后续 Append。
+            // 关于“缓冲无限增长”的防护已移至 Append 侧（此处 available 数学上不可能超过 maxPacketLength+4，
+            // 原判断恒不成立；详见 Append 的说明）。
             return false;
         }
 

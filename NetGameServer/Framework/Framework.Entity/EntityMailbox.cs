@@ -88,12 +88,27 @@ public sealed class EntityMailbox
         {
             CallId = callId,
             TargetNodeId = targetNodeId,
+            // P2 修复：补 EntityId。EntityCall.CallAsync 已填，此处原先漏填 → EntityId=0 →
+            // EntityCallHub.HandleResult 的“实体+方法双匹配”校验退化为“仅方法名匹配”，
+            // 正是 SECURITY_AUDIT B3（伪造回执完成他人未决调用）要堵的场景在 mailbox 分支残留。
+            EntityId = EntityId,
             MethodName = methodName,
             DeadlineUtc = DateTime.UtcNow.AddMilliseconds(Math.Max(1, timeoutMs)),
             DeadlineTicks = Environment.TickCount64 + Math.Max(1, timeoutMs),
             Callback = onComplete ?? NoopCallback
         });
-        SendRemote(methodName, a, callId);
+        try
+        {
+            SendRemote(methodName, a, callId);
+        }
+        catch (Exception ex)
+        {
+            // P2 修复：序列化/发送失败时撤销 pending，避免留下“幻影”待回执项
+            // （否则超时后会对一次从未发出的调用触发 Success=false 回调）。
+            EntityCallHubRegistry.Default.Unregister(callId);
+            Log.Error(ex, $"Mailbox 远程调用发送失败，已撤销待回执项 EntityId:{EntityId} Method:{methodName}");
+            return 0L;
+        }
         return callId;
     }
 

@@ -28,13 +28,16 @@ public class KcpServer : INetworkServer
     // P3 修复：单 IP 会话计数表（替代每次新建会话时 O(n) 全表扫描统计 per-IP 数）。
     private readonly ConcurrentDictionary<IPAddress, int> sessionsPerIp = new();
     private readonly TimeSpan sessionTimeout = TimeSpan.FromMinutes(5);
-    private DateTime nextCleanupAt = DateTime.UtcNow.AddSeconds(30);
+    // P2 修复：清理窗口改为 Interlocked 抢占的 tick，供接收线程与驱动线程并发调用
+    private const long CleanupIntervalTicks = 30L * TimeSpan.TicksPerSecond;
+    private long nextCleanupTicks = DateTime.UtcNow.AddSeconds(30).Ticks;
     // P2 加固：接收循环告警限频（防止恶意洪泛触发日志风暴）。
     private readonly object warnGate = new();
     private DateTime lastShortWarnUtc = DateTime.MinValue;
     private DateTime lastSessionCapWarnUtc = DateTime.MinValue;
     private DateTime lastPerIpCapWarnUtc = DateTime.MinValue;
     private DateTime lastInputErrorWarnUtc = DateTime.MinValue;
+    private DateTime lastViolationWarnUtc = DateTime.MinValue;
 
     public event SessionConnectedHandler? OnSessionConnected;
     public event DataReceivedHandler? OnDataReceived;
@@ -100,7 +103,18 @@ public class KcpServer : INetworkServer
                     sessions[key] = session;
                     sessionsPerIp.AddOrUpdate(result.RemoteEndPoint.Address, 1, (_, v) => v + 1);
                     Shared.Log.Info($"[KcpServer] 新会话建立 SessionId:{session.SessionId} Remote:{key.EndPoint} conv=0x{key.Conv:X8}");
-                    OnSessionConnected?.Invoke(session);
+                    // P2 修复（重要）：回调必须隔离——本方法的 try/catch 包住整个 while，
+                    // 而这里是“裸调用”：宿主回调抛一次异常就会被外层 catch 吞掉 → **KCP 接收循环直接结束**，
+                    // 此后该端口永不再收包（仅一行 Warning），而 TCP/UDP/WebSocket 仍正常 →
+                    // 表现为“部分客户端集体掉线且无告警”，极难定位。（对照 UdpServer 的每报隔离结构）
+                    try
+                    {
+                        OnSessionConnected?.Invoke(session);
+                    }
+                    catch (Exception ex)
+                    {
+                        Shared.Log.Warning($"[KcpServer] 会话连接回调异常（已隔离，循环继续）SessionId:{session.SessionId} Exception:{ex.Message}");
+                    }
                 }
 
                 try
@@ -119,13 +133,31 @@ public class KcpServer : INetworkServer
                 // P2 加固：会话被标记为待关闭（超大消息/协议异常）时立即移除并关闭，防止死链路残留。
                 if (session.MarkedForClose)
                 {
-                    if (sessions.TryRemove(key, out _))
+                    // P2 修复：仅在**确实移除成功**时扣减 per-IP 计数。
+                    // 原实现不判返回值（并发下 StopAsync/CleanupIfNeeded 已移除）→ 重复扣减，per-IP 上限可被提前清零。
+                    bool removed = sessions.TryRemove(key, out _);
+                    try { session.Close(); } catch { /* 关闭异常忽略 */ }
+                    if (removed)
                     {
                         DecrementPerIp(key.EndPoint.Address);
                     }
-                    try { session.Close(); } catch { /* 关闭异常忽略 */ }
-                    Shared.Log.Warning($"[KcpServer] 移除异常/超大消息会话 SessionId:{session.SessionId} Remote:{key.EndPoint}");
-                    OnSessionDisconnected?.Invoke(session, "KCP protocol violation.");
+                    // P2 修复：原为无条件 Warning；攻击者用“每包一个新会话”即可驱动无上限日志行数（日志风暴），
+                    // 使真正的告警被淹没。改为限频（与其它同类告警一致）。
+                    if (ShouldLogWarning(ref lastViolationWarnUtc))
+                        Shared.Log.Warning($"[KcpServer] 移除异常/超大消息会话 SessionId:{session.SessionId} Remote:{key.EndPoint}（同类告警 5s 最多一次）");
+                    // P2 修复（重要）：回调必须隔离——本方法的 try/catch 包住整个 while，
+                    // 而这里是“裸调用”：宿主回调（Gateway 的断开处理器首行即解引用 session.SessionId）
+                    // 抛一次异常就会被外层 catch 吞掉 → **KCP 接收循环直接结束**，
+                    // 此后该端口永不再收包（仅一行 Warning），而 TCP/UDP/WebSocket 仍正常 →
+                    // 表现为“部分客户端集体掉线且无告警”，极难定位。（对照 UdpServer 的每报隔离结构）
+                    try
+                    {
+                        OnSessionDisconnected?.Invoke(session, "KCP protocol violation.");
+                    }
+                    catch (Exception ex)
+                    {
+                        Shared.Log.Warning($"[KcpServer] 会话断开回调异常（已隔离，循环继续）SessionId:{session.SessionId} Exception:{ex.Message}");
+                    }
                 }
 
                 CleanupIfNeeded();
@@ -139,7 +171,10 @@ public class KcpServer : INetworkServer
         }
         catch (Exception ex)
         {
-            Shared.Log.Warning($"[KcpServer] 接收循环异常 Exception:{ex}");
+            // P2 说明：本 catch 在 while **之外**，一旦命中则接收循环已终止（KCP 端口不再收包）。
+            // 已知可抛点（两个服务器事件回调）已就地隔离，此处保留为兵底；
+            // 若有异常到达这里，必须用 Error + 明确措辞让运维能立即定位“KCP 已停服”。
+            Shared.Log.Error(ex, "[KcpServer] 接收循环异常终止（KCP 端口将不再收包，需重启或排查）");
         }
     }
 
@@ -162,6 +197,11 @@ public class KcpServer : INetworkServer
                         Shared.Log.Warning($"[KcpServer] 会话驱动异常 SessionId:{session.SessionId} Exception:{ex.Message}");
                     }
                 }
+                // P2 修复：清理不再只由“收到数据报”驱动。原先唯一调用点在收包循环内，
+                // 若一段时间没有任何数据报（单机部署/客户端集体静默掉线），死会话永不回收、
+                // OnSessionDisconnected 不触发 → Gateway 的断线/挂起上报（重连宽限期、Center 挂起目录）不落地。
+                // 内部有 30s Interlocked 窗口，10ms 调用无实际开销。
+                CleanupIfNeeded();
             }
         }
         catch (OperationCanceledException)
@@ -171,19 +211,38 @@ public class KcpServer : INetworkServer
 
     private void CleanupIfNeeded()
     {
-        if (DateTime.UtcNow < nextCleanupAt) return;
-        nextCleanupAt = DateTime.UtcNow.AddSeconds(30);
+        // P2 修复：清理窗口改用 Interlocked 抢占（接收线程 + 驱动线程会并发调用），
+        // 避免两处同时做全表扫描。
+        long nowTicks = DateTime.UtcNow.Ticks;
+        long next = Volatile.Read(ref nextCleanupTicks);
+        if (nowTicks < next) return;
+        if (Interlocked.CompareExchange(ref nextCleanupTicks, nowTicks + CleanupIntervalTicks, next) != next) return;
 
         var now = DateTime.UtcNow;
-        foreach (var pair in sessions)
+        foreach (var pair in sessions.ToArray())
         {
             if (now - pair.Value.LastActivityTime <= sessionTimeout) continue;
 
-            sessions.TryRemove(pair.Key, out var session);
+            // P2 修复：TryRemove 的返回值必须判。并发下（如 StopAsync 已清空 sessions 而接收线程仍在跑）
+            // 移除可能失败，此时 session 为 null，原实现会：
+            //   ① 重复扣减 per-IP 计数（可被用来把洪水防护上限提前清零）
+            //   ② 把 null 会话抛给宿主 → Gateway 回调首行解引用 session.SessionId 抛 NRE
+            //      → 进而触发收包循环的“永久停摆”（两条缺陷叠加成完整故障链）。
+            if (!sessions.TryRemove(pair.Key, out var session) || session == null)
+            {
+                continue;
+            }
             DecrementPerIp(pair.Key.EndPoint.Address);
-            session?.Close();
-            Shared.Log.Warning($"[KcpServer] 会话超时断开 SessionId:{pair.Value.SessionId} Remote:{pair.Key.EndPoint} TimeoutSeconds:{sessionTimeout.TotalSeconds}");
-            OnSessionDisconnected?.Invoke(session!, "KCP session timeout.");
+            try { session.Close(); } catch { /* 关闭异常忽略 */ }
+            Shared.Log.Warning($"[KcpServer] 会话超时断开 SessionId:{session.SessionId} Remote:{pair.Key.EndPoint} TimeoutSeconds:{sessionTimeout.TotalSeconds}");
+            try
+            {
+                OnSessionDisconnected?.Invoke(session, "KCP session timeout.");
+            }
+            catch (Exception ex)
+            {
+                Shared.Log.Warning($"[KcpServer] 会话断开回调异常（已隔离）SessionId:{session.SessionId} Exception:{ex.Message}");
+            }
         }
     }
 
@@ -222,7 +281,15 @@ public class KcpServer : INetworkServer
 
         foreach (var session in sessions.Values)
         {
-            OnSessionDisconnected?.Invoke(session, "Server stopped.");
+            // P2 修复：回调隔离——宿主回调抛异常不得中断 StopAsync（否则 sessions.Clear 不会执行）
+            try
+            {
+                OnSessionDisconnected?.Invoke(session, "Server stopped.");
+            }
+            catch (Exception ex)
+            {
+                Shared.Log.Warning($"[KcpServer] 停机断开回调异常（已隔离）SessionId:{session.SessionId} Exception:{ex.Message}");
+            }
             session.Close();
         }
         sessions.Clear();

@@ -1,4 +1,4 @@
-﻿using System.Buffers;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
@@ -25,6 +25,14 @@ public class KcpClientWrapper : INetworkClient
     private readonly object kcpGate = new();
     /// <summary>客户端侧会话代理（事件回调的 ISession 参数；P1 修复：不再向事件派发 null）。</summary>
     private KcpClientSessionProxy? sessionProxy;
+
+    /// <summary>网关下发的会话令牌（UDP/KCP 会话身份绑定）：收到 GatewaySessionAuthPush 后填充，
+    /// Send 时插入到 [MsgId(4)][Token(8)][Payload]；未收到（连裸 KcpServer 等无令牌服务端）时原样发送。</summary>
+    private byte[]? sessionAuthToken;
+    private readonly TaskCompletionSource<bool> authReceivedTcs =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    /// <summary>网关会话令牌推送消息 ID（与 Shared.Messages.MessageIds.GatewaySessionAuthPush 一致；避免 Network 层依赖 Shared.Messages 大表）。</summary>
+    private const int SessionAuthPushMsgId = 70001;
 
     public event SessionConnectedHandler? OnConnected;
     public event DataReceivedHandler? OnDataReceived;
@@ -108,6 +116,19 @@ public class KcpClientWrapper : INetworkClient
                 {
                     foreach (var packet in packets)
                     {
+                        // 传输层会话令牌推送：解析存储，不下发应用层（与消息协议无关）
+                        if (packet.Length >= 12 && System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(packet.AsSpan(0, 4)) == SessionAuthPushMsgId)
+                        {
+                            byte[] authToken = new byte[8];
+                            packet.AsSpan(4, 8).CopyTo(authToken);
+                            lock (kcpGate)
+                            {
+                                sessionAuthToken = authToken;
+                            }
+                            authReceivedTcs.TrySetResult(true);
+                            Shared.Log.Info($"[KcpClientWrapper] 已接收网关会话令牌 {host}:{port}");
+                            continue;
+                        }
                         OnDataReceived?.Invoke(sessionProxy!, packet);
                     }
                 }
@@ -152,7 +173,7 @@ public class KcpClientWrapper : INetworkClient
         {
             lock (kcpGate)
             {
-                kcp.Send(data.Span, null);
+                kcp.Send(PrepareFrame(data).Span, null);
                 var now = DateTimeOffset.UtcNow;
                 kcp.Update(in now);
             }
@@ -161,6 +182,43 @@ public class KcpClientWrapper : INetworkClient
         {
             Shared.Log.Warning($"[KcpClientWrapper] 发送异常 {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 等待网关会话令牌下发完成（UDP/KCP 身份绑定握手）。连接启用令牌校验的网关（Gateway 默认启用）后，
+    /// 业务消息必须携带令牌，调用方应 await 本方法后再发业务流量；连裸 KcpServer（无令牌）时立即返回 true。
+    /// </summary>
+    /// <param name="timeoutMs">等待上限，默认 5000ms。</param>
+    /// <returns>在超时前收到令牌返回 true；超时返回 false（网关未启用令牌校验时也返回 true——无令牌即视为免校验）。</returns>
+    public async Task<bool> WaitForSessionAuthAsync(int timeoutMs = 5000)
+    {
+        lock (kcpGate)
+        {
+            if (sessionAuthToken != null)
+            {
+                return true;
+            }
+        }
+        var timeout = Task.Delay(timeoutMs);
+        var completed = await Task.WhenAny(authReceivedTcs.Task, timeout);
+        return completed == authReceivedTcs.Task;
+    }
+
+    /// <summary>
+    /// 组装发送帧：未收到令牌（无令牌服务端）原样返回；收到令牌后插入 [MsgId(4)][Token(8)][Payload]。
+    /// </summary>
+    private ReadOnlyMemory<byte> PrepareFrame(ReadOnlyMemory<byte> data)
+    {
+        byte[]? token = sessionAuthToken;
+        if (token == null)
+        {
+            return data;
+        }
+        var buf = new byte[data.Length + 8];
+        data.Span.Slice(0, 4).CopyTo(buf);
+        token.CopyTo(buf, 4);
+        data.Span.Slice(4).CopyTo(buf.AsSpan(12));
+        return buf;
     }
 
     public void Stop()

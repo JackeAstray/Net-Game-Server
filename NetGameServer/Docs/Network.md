@@ -24,18 +24,19 @@ Network 是 **class library**，不直接启动；被所有节点（Gateway / Lo
 | 文件 | 职责 |
 |---|---|
 | `Network/ISession.cs` | 会话抽象（4 协议实现这个接口） |
-| `Network/SessionExtensions.cs` | 会话扩展方法 |
-| `Network/Tcp/TcpServer.cs` / `TcpSession.cs` | TCP 服务端 / 会话 |
+| `Network/Tcp/TcpServer.cs` / `TcpSession.cs` | TCP 服务端 / 会话（**生产在用**） |
 | `Network/Tcp/TcpClientWrapper.cs` | TCP 客户端（带 OnConnected/OnDataReceived/OnDisconnected） |
-| `Network/Tcp/PipelineTcpServer.cs` | 高吞吐管线 TCP（`MaxConnections` 上限 + 连接计数） |
+| `Network/Tcp/PipelineTcpServer.cs` | ⚠ 高吞吐管线 TCP（**当前无任何调用方，仅作扩展位保留**；其连接计数在管道异常时不会递减，启用前需先修） |
 | `Network/Udp/UdpServer.cs` / `UdpSession.cs` | UDP |
 | `Network/Kcp/KcpServer.cs` / `KcpSession.cs` | KCP（低延迟 UDP） |
 | `Network/WebSockets/WebSocketServer.cs` | WebSocket（浏览器/跨平台） |
-| `Network/PacketSender.cs` | 零拷贝池化发送（`Send(ISession, byte[], int)`） |
+| `Network/PacketSender.cs` | 零拷贝池化发送（`Send(ISession, byte[], int)`）；**JSON 发送请走此通道**（旧的 `SessionExtensions.SendJsonMessage` 因多次多余拷贝已于 P3 删除） |
 | `Network/SessionIdGenerator.cs` | 转发到 `Framework.Core.Security.SessionIdGenerator`（splitmix64） |
-| `Network/Routing/PacketBuilder.cs` | 长度帧 + 路由元数据打包 |
-| `Network/Routing/LengthPrefixedPacketReader.cs` | 粘包/半包解帧 |
+| `Network/Routing/PacketBuilder.cs` | 长度帧 + 路由元数据打包（`BuildSessionWrapperPacket`/`BuildDbRequestPacket`/`TryParseDbPacket` 为历史死代码，已标 `[Obsolete]`） |
+| `Network/Routing/LengthPrefixedPacketReader.cs` | 粘包/半包解帧（`Reset()` 供 UDP 每数据报复用同一 reader，零分配） |
 | `Network/Routing/MessageRouter.cs` | 按 MsgId 分发（旧 JSON 路由，新强类型分发优先） |
+| `Network/NetworkManager.cs` | ⚠ **当前无任何调用方**（`Instance`/`Register`/`Start`/`Stop` 全零命中）；监听与生命周期由各节点自己的 `TcpServer` + `ShutdownAsync` 直接管理 |
+| `Network/Http/AspNetServer.cs` | ⚠ **当前无任何调用方**；Login/Center 各自构建 `WebApplication`。其事件订阅会显式抛 `NotSupportedException`（不再静默丢弃） |
 | `Shared/RouteMetadata.cs` | `__clientSessionId` / `__userId` / `__uid` / `__nickname` / `__broadcast` / `__targetSessionId` / `__requestId` 注入/解析 |
 
 ## 注意事项

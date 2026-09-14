@@ -6,3 +6,8 @@ bin/
 obj/
 *.user
 .cluster/
+# 本地密钥/环境变量文件：不得入库（deploy/README-docker.md 指引把密钥写入 .env）
+.env
+.env.*
+!.env.example
+appsettings.Local.json

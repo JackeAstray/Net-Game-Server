@@ -50,7 +50,8 @@ public class WebSocketSession : ISession
         }
 
         byte[] payload = EnsureLengthPrefixed(data.Span);
-        Shared.Log.Debug($"[WebSocketSession] 发送数据 SessionId:{SessionId} Remote:{RemoteEndPoint} InputLength:{data.Length} FramedLength:{payload.Length}");
+        // P2 性能修复：插值实参先于级别判断求值，热路径需显式守卫（否则 Debug 关闭也白分配）
+        if (Shared.Log.IsDebugEnabled) Shared.Log.Debug($"[WebSocketSession] 发送数据 SessionId:{SessionId} Remote:{RemoteEndPoint} InputLength:{data.Length} FramedLength:{payload.Length}");
         _ = SendAsyncInternal(payload);
     }
 

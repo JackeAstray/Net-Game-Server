@@ -114,7 +114,9 @@ public class TcpSession : ISession
         StartWriter();
         if (!sendChannel.Writer.TryWrite(new QueuedPacket(buffer, length, pooled)))
         {
-            // 背压：队列满 = 对端消费过慢，丢包 + 节流告警 + 关闭连接（慢客户端保护）
+            // 背压：队列满 = 对端消费过慢。慢客户端保护：立即关闭连接（与类注释"队列满即关闭"
+            // 语义一致）——此前关闭动作被 5s 节流告警窗口吞掉，前 5s 的丢包静默发生且连接保持，
+            // 关键协议消息（登录/迁移）可能因此无声丢失。
             if (pooled)
             {
                 System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
@@ -125,8 +127,8 @@ public class TcpSession : ISession
             if (now - last > 5000 && Interlocked.CompareExchange(ref lastDropWarnTick, now, last) == last)
             {
                 Shared.Log.Warning($"[TcpSession] 发送队列已满（上限 {MaxQueuedPackets}，累计丢弃 {dropped} 包）——对端消费过慢，关闭连接 SessionId:{SessionId} Remote:{RemoteEndPoint}");
-                Close();
             }
+            Close();
         }
     }
 

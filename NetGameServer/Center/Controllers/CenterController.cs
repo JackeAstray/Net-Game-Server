@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using Center.Handlers;
 
 namespace Center.Controllers;
@@ -36,6 +36,7 @@ public class CenterController : ControllerBase
             game = nodes.Count(n => n.NodeType.Equals("Game", StringComparison.OrdinalIgnoreCase)),
             gateway = nodes.Count(n => n.NodeType.Equals("Gateway", StringComparison.OrdinalIgnoreCase)),
             login = nodes.Count(n => n.NodeType.Equals("Login", StringComparison.OrdinalIgnoreCase)),
+            app = nodes.Count(n => n.NodeType.Equals("App", StringComparison.OrdinalIgnoreCase)),
             timestamp = DateTime.UtcNow
         });
     }
@@ -83,6 +84,7 @@ public class CenterController : ControllerBase
                 login = g.Count(n => n.NodeType.Equals("Login", StringComparison.OrdinalIgnoreCase)),
                 db = g.Count(n => n.NodeType.Equals("DB", StringComparison.OrdinalIgnoreCase)),
                 center = g.Count(n => n.NodeType.Equals("Center", StringComparison.OrdinalIgnoreCase)),
+                app = g.Count(n => n.NodeType.Equals("App", StringComparison.OrdinalIgnoreCase)),
                 online = g.Count(n => n.IsConnected),
                 nodes = g.Select(n => new
                 {
@@ -166,19 +168,28 @@ public class CenterController : ControllerBase
         {
             return BadRequest(new { success = false, message = "配置键非法（长度 ≤128，仅允许字母数字 _ . - :）" });
         }
-        // P2 修复：先读当前值再热更，保证 ConfigHistory.before 与真实生效值一致
-        var overrides = RuntimeConfigStore.Load();
-        string? before = overrides.TryGetValue(key, out var old) ? old : null;
+        // P2 修复：①读-改-写收进 RuntimeConfigStore.TryUpdate 的同一把锁（防并发管理请求互相覆盖文件）；
+        // ②落盘失败必须回失败（原实现 Save 吞异常后仍无条件回 success:true = 假成功，重启后覆盖丢失）。
+        // 且未落盘时**不**热更，避免“内存生效、重启回滚”的不一致（宁可整体失败）。
+        string? before = null;
+        bool saved = RuntimeConfigStore.TryUpdate(d =>
+        {
+            before = d.TryGetValue(key, out var old) ? old : null;
+            if (item.Value == null)
+            {
+                d.Remove(key);
+            }
+            else
+            {
+                d[key] = item.Value;
+            }
+        }, out _);
+
+        if (!saved)
+        {
+            return StatusCode(500, new { success = false, message = "运行时配置落盘失败（检查磁盘/权限），本次变更未生效" });
+        }
         Shared.ConfigHelper.SetRuntimeOverride(key, item.Value);
-        if (item.Value == null)
-        {
-            overrides.Remove(key);
-        }
-        else
-        {
-            overrides[key] = item.Value;
-        }
-        RuntimeConfigStore.Save(overrides);
         ConfigHistory.Record(key, before, item.Value, "set");
         return Ok(new { success = true, key, value = item.Value });
     }
@@ -201,11 +212,19 @@ public class CenterController : ControllerBase
         {
             return BadRequest(new { success = false, message = "配置键非法（长度 ≤128，仅允许字母数字 _ . - :）" });
         }
-        var overrides = RuntimeConfigStore.Load();
-        string? before = overrides.TryGetValue(trimmed, out var old) ? old : null;
+        // P2 修复：同 SetConfig——原子读-改-写 + 落盘失败回失败 + 未落盘不热更
+        string? before = null;
+        bool saved = RuntimeConfigStore.TryUpdate(d =>
+        {
+            before = d.TryGetValue(trimmed, out var old) ? old : null;
+            d.Remove(trimmed);
+        }, out _);
+
+        if (!saved)
+        {
+            return StatusCode(500, new { success = false, message = "运行时配置落盘失败（检查磁盘/权限），本次删除未生效" });
+        }
         Shared.ConfigHelper.SetRuntimeOverride(trimmed, null);
-        overrides.Remove(trimmed);
-        RuntimeConfigStore.Save(overrides);
         ConfigHistory.Record(trimmed, before, null, "delete");
         return Ok(new { success = true, key = trimmed });
     }
@@ -225,14 +244,30 @@ public class CenterController : ControllerBase
         {
             return BadRequest(new { success = false, message = "version 必须 ≥ 1" });
         }
+        // P2 修复：逐项回滚也改为“先原子落盘、成功后再热更”，落盘失败则该项**不**应用并计数上报，
+        // 避免“内存已回滚、磁盘没回滚”（重启后又变回来）。
+        int saveFailures = 0;
         int undone = ConfigHistory.RollbackTo(req.Version, (key, value) =>
         {
+            bool saved = RuntimeConfigStore.TryUpdate(d =>
+            {
+                if (value == null) d.Remove(key);
+                else d[key] = value;
+            }, out _);
+
+            if (!saved)
+            {
+                saveFailures++;
+                Shared.Log.Error($"配置回滚落盘失败，该项未应用 Key:{key}");
+                return;
+            }
             Shared.ConfigHelper.SetRuntimeOverride(key, value);
-            var overrides = RuntimeConfigStore.Load();
-            if (value == null) overrides.Remove(key);
-            else overrides[key] = value;
-            RuntimeConfigStore.Save(overrides);
         });
+
+        if (saveFailures > 0)
+        {
+            return StatusCode(500, new { success = false, undone, saveFailures, message = $"有 {saveFailures} 项回滚未落盘（未生效），请检查磁盘/权限后重试" });
+        }
         return Ok(new { success = true, undone });
     }
 

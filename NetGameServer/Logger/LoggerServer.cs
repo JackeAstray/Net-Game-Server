@@ -34,7 +34,7 @@ public sealed class LoggerServer : IDisposable
     private long rejectedAuth;
     private long lastDropLogTicks;
 
-    // P2 修复：单文件大小上限（默认 256MB），超限滚动，最多保留 3 个滚动文件
+    // P2 修复（性能）：单文件大小上限（默认 256MB），超限滚动，最多保留 3 个滚动文件
     private const long MaxFileSizeBytes = 256L * 1024 * 1024;
     private const int MaxRolloverFiles = 3;
 
@@ -166,6 +166,21 @@ public sealed class LoggerServer : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// 追加写入并按大小滚动。
+    /// </summary>
+    /// <remarks>
+    /// 已知性能取舍（**有意保留现状**）：现在每条日志做一次 <c>File.AppendAllText</c>（open/close）
+    /// 与一次 <c>new FileInfo(...).Length</c>（stat）；限流上限为 1000/节点/秒，洪泛时开销量可观。
+    /// 曾尝试改为持久 <c>StreamWriter</c> + 字节计数（与 Tools/Machine、Tools/Supervisor 的 AppendLog 对齐），
+    /// 但 Windows 文件共享语义下会**破坏读取方**：
+    ///   写入方持有句柄（access=Write, share=Read）时，读取方 <c>File.ReadAllText</c>（access=Read, share=Read）
+    ///   要求写入方的 Write 权限 ⊆ 自己的 share（Read）→ 不成立 → 抛 IOException
+    ///   “The process cannot access the file because it is being used by another process”。
+    /// 而 <c>HttpLogViewer</c> 与 <c>LoggerServer</c> **运行在同一进程**（且外部还可能用 Get-Content/编辑器读），
+    /// 故修复需 writer + viewer + 外部读取方三处协同改用 <c>FileShare.ReadWrite</c>，风险远大于收益。
+    /// 若要真正做到，建议直接改用成熟日志库的滚动文件 sink（自带共享语义处理）。
+    /// </remarks>
     private void AppendToFileWithRotation(string fileName, string line)
     {
         try

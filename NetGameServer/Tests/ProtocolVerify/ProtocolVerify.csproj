@@ -19,6 +19,7 @@
     <ProjectReference Include="..\..\Center\Center.csproj" />
     <ProjectReference Include="..\..\DB\DB.csproj" />
     <ProjectReference Include="..\..\Battle\Battle.csproj" />
+    <ProjectReference Include="..\..\App\App.csproj" />
   </ItemGroup>
 
   <ItemGroup>

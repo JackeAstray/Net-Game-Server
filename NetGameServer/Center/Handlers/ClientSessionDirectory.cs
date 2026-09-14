@@ -61,6 +61,20 @@ namespace Center.Handlers
             }
         }
 
+        /// <summary>
+        /// 按 clientSessionId 读取挂起条目（含持有 GatewayNodeId），供 Center 做发送方绑定校验。
+        /// 不过滤过期（调用方需要看到“已过期但尚未清扫”的条目以判断归属）；无记录返回 false。
+        /// </summary>
+        public bool TryGet(long clientSessionId, out SuspendedEntry? entry)
+        {
+            entry = null;
+            if (clientSessionId <= 0)
+            {
+                return false;
+            }
+            return bySessionId.TryGetValue(clientSessionId, out entry);
+        }
+
         /// <summary>按 UserId 查询挂起的 clientSessionId（未过期才返回）。</summary>
         public bool TryLocate(int userId, out SuspendedEntry? entry)
         {
