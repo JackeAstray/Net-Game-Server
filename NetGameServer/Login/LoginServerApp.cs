@@ -728,7 +728,12 @@ namespace Login
             builder.Services.AddSingleton<TcpClientWrapper>(dbClient);
             builder.Services.AddSingleton<Login.Handlers.LoginHandler>(loginHandler);
 
-            string redisConnStr = ConfigHelper.GetConfig<string>("RedisConnectionString") ?? "127.0.0.1:6379";
+            // Redis 可选（限流/验证码集中存储）：abortConnect=false 让连接失败立即返回（不阻塞登录首请求），
+            // connectTimeout 限制重试；不可用时调用方回退本地（见 LoginHandler.Security）。
+            // 修复（慢登录）：原默认串无 abortConnect=false，Redis 未启动时首次 Connect 同步等待约 5s，
+            // 把第一个登录/注册请求拖慢数秒（慢消息告警 + 客户端等待超时）。
+            string redisConnStr = ConfigHelper.GetConfig<string>("RedisConnectionString")
+                ?? "127.0.0.1:6379,abortConnect=false,connectTimeout=1000";
             Shared.RedisHelper.Initialize(redisConnStr);
             Shared.Log.Info("Redis 初始化成功。");
 

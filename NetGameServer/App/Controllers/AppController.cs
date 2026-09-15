@@ -29,7 +29,15 @@ public sealed class AppInfoController : ControllerBase
     [HttpGet("ping")]
     public IActionResult Ping() => Ok(new { success = true, pong = true, utc = DateTime.UtcNow.ToString("O") });
 
-    /// <summary>回显（受 Key 保护；演示应用面可调用方鉴权）。</summary>
+    /// <summary>回显（受 Key 保护；演示应用面可调用方鉴权）。text 限长防滥用（Kestrel 默认 query 上限之外的显式校验）。</summary>
     [HttpGet("echo")]
-    public IActionResult Echo([FromQuery] string? text) => Ok(new { success = true, echo = string.IsNullOrEmpty(text) ? "(empty)" : text });
+    public IActionResult Echo([FromQuery] string? text)
+    {
+        const int MaxEchoLength = 1024;
+        if (text != null && text.Length > MaxEchoLength)
+        {
+            return BadRequest(new { success = false, error = $"text 超过长度上限 {MaxEchoLength}" });
+        }
+        return Ok(new { success = true, echo = string.IsNullOrEmpty(text) ? "(empty)" : text });
+    }
 }

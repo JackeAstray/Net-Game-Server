@@ -415,6 +415,11 @@ namespace Battle
             {
                 // 重连后客户端可能重置帧号，清理旧帧状态避免新输入被当重放误拒
                 frameSyncManager?.RemoveClient(clientSessionId);
+                var gatewaySession = GetGatewaySessionByClient(clientSessionId);
+                if (gatewaySession != null)
+                {
+                    entitySyncHandler?.RefreshPlayerView(clientSessionId, gatewaySession, notifyOthers: false);
+                }
                 Log.Info($"玩家 {clientSessionId} 重连成功，实体恢复在线");
             }
         }
@@ -425,6 +430,7 @@ namespace Battle
         /// </summary>
         public static void LeaveScene(Battle.Handlers.BattleScene scene, long clientSessionId, Network.ISession? gatewaySession)
         {
+            pendingMigratedViewRefresh.TryRemove(clientSessionId, out _);
             var entity = scene.EntityManager.GetEntity(clientSessionId);
             if (entity != null)
             {
@@ -446,6 +452,7 @@ namespace Battle
             else
             {
                 // 无可用网关会话（连接已断）：直接移除实体与 AOI、解绑
+                entitySyncHandler?.RemoveMovementTrack(clientSessionId);
                 scene.EntityManager.RemoveEntity(clientSessionId);
                 scene.AoiManager?.RemoveEntity(clientSessionId);
                 sceneManager?.UnbindPlayer(clientSessionId);
@@ -515,6 +522,7 @@ namespace Battle
 
         /// <summary>客户端会话 -> 网关会话 映射（帧同步广播用；收包时登记，断开时清除）</summary>
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, Network.ISession> clientGatewaySessions = new();
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, long> pendingMigratedViewRefresh = new();
 
         // ===== 单线程消息队列（对标 KBE mailbox）=====
         // 收包线程只入队，TickEngine 主循环串行消费 —— 实体/场景状态只在 tick 线程被读写，
@@ -597,6 +605,13 @@ namespace Battle
 
             try
             {
+                if (originalSessionId > 0
+                    && pendingMigratedViewRefresh.TryRemove(originalSessionId, out long refreshDeadline)
+                    && refreshDeadline >= DateTime.UtcNow.Ticks)
+                {
+                    entitySyncHandler?.RefreshPlayerView(originalSessionId, session, notifyOthers: true);
+                }
+
                 // 冻结实体迁移：迁移中的会话消息暂缓（丢弃），等迁移完成/回滚后恢复
                 if (originalSessionId > 0 && migratingSessions.ContainsKey(originalSessionId))
                 {
@@ -719,6 +734,13 @@ namespace Battle
                     {
                         Log.Warning($"实体迁移冻结超时清理 SessionId:{kv.Key}");
                     }
+                }
+            }
+            foreach (var kv in pendingMigratedViewRefresh)
+            {
+                if (kv.Value < now)
+                {
+                    pendingMigratedViewRefresh.TryRemove(new System.Collections.Generic.KeyValuePair<long, long>(kv.Key, kv.Value));
                 }
             }
         }
@@ -848,6 +870,11 @@ namespace Battle
                     }
                 }
 
+                if (entity != null)
+                {
+                    pendingMigratedViewRefresh[req.ClientSessionId] = DateTime.UtcNow.Ticks + MigrationFreezeTimeoutTicks;
+                }
+
                 SendMigrateResult(entity != null, req.ClientSessionId, req.EntityId, CurrentNodeId,
                     entity != null ? $"迁移成功（属主实体随迁 {ownedOk}/{ownedTotal}）" : "迁移恢复失败");
             }
@@ -876,6 +903,7 @@ namespace Battle
         private static void CompleteMigrateOut(long clientSessionId)
         {
             UnfreezeClientSession(clientSessionId);
+            pendingMigratedViewRefresh.TryRemove(clientSessionId, out _);
             var scene = sceneManager?.GetSceneByPlayer(clientSessionId);
             if (scene == null)
             {
@@ -900,6 +928,7 @@ namespace Battle
             }
             else
             {
+                entitySyncHandler?.RemoveMovementTrack(clientSessionId);
                 scene.EntityManager.RemoveEntity(clientSessionId);
                 scene.AoiManager?.RemoveEntity(clientSessionId);
                 sceneManager!.UnbindPlayer(clientSessionId);

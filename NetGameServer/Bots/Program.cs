@@ -28,9 +28,7 @@ namespace Bots
     ///       [--protocol tcp|kcp|ws] [--rampup 50] [--scene default]
     /// 协议：
     ///   - tcp：原生 TCP + LengthPrefixedPacketReader（与 KBE TCP 一致）
-    ///   - kcp：**当前未接入**——启动时会显式告警并回退到 tcp。
-///          注：客户端封装 `Network.Kcp.KcpClientWrapper` **已经存在**（Gateway 的 KCP 传输与
-///          NetworkVerify 的 KCP 回归用例都在用它），因此这是 Bots 自身的待办，而非 SDK 缺失。
+    ///   - kcp：KCP 可靠 UDP（Network.Kcp.KcpClientWrapper，自动携带网关会话令牌；KCP 端口 = --port + 1）
     ///   - ws：WebSocket + binary frames（需要 Gateway 开启 WS 端口）
     /// </summary>
     internal class Program
@@ -99,8 +97,8 @@ namespace Bots
                     switch (opts.Protocol)
                     {
                         case BotProtocol.Ws: await RunWebSocketAsync(token).ConfigureAwait(false); break;
+                        case BotProtocol.Kcp: await RunKcpAsync(token).ConfigureAwait(false); break;
                         case BotProtocol.Tcp:
-                        case BotProtocol.Kcp:
                         default:
                             await RunTcpAsync(token).ConfigureAwait(false); break;
                     }
@@ -112,12 +110,21 @@ namespace Bots
                 }
             }
 
+            /// <summary>传输发送回调：发送一条**完整线路帧**。
+            /// TCP 实现 = 长度前缀帧 [Length(4)][MsgId(4)][Payload]（ProtocolCodec.Encode 产物，原样写出）；
+            /// KCP 实现 = 消息边界帧 [MsgId(4)][Payload]（去掉长度前缀，KcpClientWrapper 内部再插入会话令牌）。
+            /// 由 RunTcpAsync / RunKcpAsync 在连接建立后赋值；发送方法统一经此回调，与传输解耦。</summary>
+            private Func<byte[], Task>? sendFrame;
+
             // ---- TCP 实现 ----
             private async Task RunTcpAsync(CancellationToken token)
             {
                 using var tcp = new TcpClient();
                 await tcp.ConnectAsync(opts.Host, opts.Port, token).ConfigureAwait(false);
                 using var stream = tcp.GetStream();
+
+                // 发送回调：TCP 直接写出完整长度前缀帧（ProtocolCodec.Encode 产物）
+                sendFrame = async bytes => await stream.WriteAsync(bytes, 0, bytes.Length, token).ConfigureAwait(false);
 
                 // 修复（P-H3）：接收循环必须在登录等待之前启动——LoginCompletedAtMs 只有接收循环
                 // 解析登录回包（msgId 40002）才会置位；原实现先等登录再启动接收循环，导致登录必然
@@ -127,11 +134,56 @@ namespace Bots
                 long initialLastServerSendMs = 0;
                 var recvTask = Task.Run(() => ReceiveLoopAsync(stream, reader, buffer, token, initialLastServerSendMs), token);
 
-                if (!await LoginAndAwaitAsync(stream, token).ConfigureAwait(false))
+                if (!await LoginAndAwaitAsync(token).ConfigureAwait(false))
                 {
                     return;
                 }
 
+                await RunLoadLoopAsync(token).ConfigureAwait(false);
+                token.ThrowIfCancellationRequested();
+            }
+
+            // ---- KCP 实现（消息边界帧 + 网关会话令牌） ----
+            private async Task RunKcpAsync(CancellationToken token)
+            {
+                // KCP 监听端口 = GatewayPort + 1（见 GatewayServerApp.Network.cs：TCP=port, KCP=port+1, UDP=port+2）
+                var client = new Network.Kcp.KcpClientWrapper(opts.Host, opts.Port + 1);
+                client.OnDataReceived += (_, data) =>
+                {
+                    Interlocked.Increment(ref stats.Received);
+                    HandleFrame(data);
+                };
+                client.OnDisconnected += (_, reason) =>
+                    Framework.Core.Log.Debug($"[bot:{botId}] KCP 断开: {reason}");
+
+                try
+                {
+                    await client.ConnectAsync().ConfigureAwait(false);
+                    // 发送回调：KCP 消息边界帧 = 去掉 TCP 长度前缀（KcpClientWrapper 内部自动插入会话令牌）
+                    sendFrame = bytes => { client.Send(bytes.AsMemory(4)); return Task.CompletedTask; };
+
+                    // 网关 UDP/KCP 会话身份绑定：KCP 无连接，服务端须收到客户端首包才建会话并回推令牌（鸡生蛋）——
+                    // 先发一个空触发包 [MsgId=0][空]，网关对首包（无令牌）走握手容忍窗口：丢弃不关会话，随后下发令牌。
+                    client.Send(new byte[4]);
+                    await client.WaitForSessionAuthAsync(5000).ConfigureAwait(false);
+
+                    if (!await LoginAndAwaitAsync(token).ConfigureAwait(false))
+                    {
+                        return;
+                    }
+
+                    await RunLoadLoopAsync(token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    client.Stop();
+                }
+                token.ThrowIfCancellationRequested();
+            }
+
+            /// <summary>压测主循环（协议无关）：按场景周期发送 EntitySync（10Hz）/ ClientTimeSync（1Hz）。</summary>
+            private async Task RunLoadLoopAsync(CancellationToken token)
+            {
                 var stopwatch = Stopwatch.StartNew();
                 long nextSyncAtMs = 0;
                 long nextTimeSyncAtMs = 0;
@@ -143,7 +195,7 @@ namespace Bots
                     {
                         if (now >= nextSyncAtMs)
                         {
-                            await SendEntitySyncAsync(stream).ConfigureAwait(false);
+                            await SendEntitySyncAsync().ConfigureAwait(false);
                             nextSyncAtMs = now + 100; // 10 Hz
                         }
                     }
@@ -151,25 +203,26 @@ namespace Bots
                     {
                         if (now >= nextTimeSyncAtMs)
                         {
-                            await SendTimeSyncAsync(stream, now, Volatile.Read(ref lastServerSendMs)).ConfigureAwait(false);
+                            await SendTimeSyncAsync(now, Volatile.Read(ref lastServerSendMs)).ConfigureAwait(false);
                             nextTimeSyncAtMs = now + 1000; // 1 Hz
                         }
                     }
                     await Task.Delay(5, token).ConfigureAwait(false);
                 }
-
-                token.ThrowIfCancellationRequested();
             }
 
-            private async Task<bool> LoginAndAwaitAsync(NetworkStream stream, CancellationToken token)
+            private async Task<bool> LoginAndAwaitAsync(CancellationToken token)
             {
                 var loginReq = new Login { Account = "bot" + botId, Password = "botpass" };
                 byte[] packet = ProtocolCodec.Encode(loginReq);
-                await stream.WriteAsync(packet, 0, packet.Length, token).ConfigureAwait(false);
+                var send = sendFrame;
+                if (send != null) await send(packet).ConfigureAwait(false);
                 Interlocked.Increment(ref stats.Sent);
 
-                // 简化：实际应按 msgId 解析登录回包；这里假设 1s 内完成登录。
-                var deadline = Environment.TickCount64 + 1000;
+                // 简化：实际应按 msgId 解析登录回包；这里轮询等待登录完成。
+                // 等待窗口需覆盖真实登录耗时（DB 查询 + Redis 限流回退等可达秒级；Redis 未启动时
+                // 首请求可能被连接超时拖慢），1s 会误杀慢环境下的合法登录。
+                var deadline = Environment.TickCount64 + 8000;
                 while (Environment.TickCount64 < deadline)
                 {
                     await Task.Delay(20, token).ConfigureAwait(false);
@@ -179,7 +232,7 @@ namespace Bots
                 return false;
             }
 
-            private async Task SendEntitySyncAsync(NetworkStream stream)
+            private async Task SendEntitySyncAsync()
             {
                 var msg = new EntitySync
                 {
@@ -187,11 +240,12 @@ namespace Bots
                     Rotation = new Vector3 { X = 0, Y = 0, Z = 0 }
                 };
                 byte[] packet = ProtocolCodec.Encode(msg);
-                await stream.WriteAsync(packet, 0, packet.Length).ConfigureAwait(false);
+                var send = sendFrame;
+                if (send != null) await send(packet).ConfigureAwait(false);
                 Interlocked.Increment(ref stats.Sent);
             }
 
-            private async Task SendTimeSyncAsync(NetworkStream stream, long clientSendMs, long lastServerSendMs)
+            private async Task SendTimeSyncAsync(long clientSendMs, long lastServerSendMs)
             {
                 var msg = new ClientTimeSync
                 {
@@ -199,7 +253,8 @@ namespace Bots
                     LastServerSendMs = lastServerSendMs
                 };
                 byte[] packet = ProtocolCodec.Encode(msg);
-                await stream.WriteAsync(packet, 0, packet.Length).ConfigureAwait(false);
+                var send = sendFrame;
+                if (send != null) await send(packet).ConfigureAwait(false);
                 Interlocked.Increment(ref stats.Sent);
             }
 
@@ -217,44 +272,7 @@ namespace Bots
                         while (reader.TryReadPacket(out var packet))
                         {
                             Interlocked.Increment(ref stats.Received);
-                            // 简化解码：按字节头 4 字节判 msgId
-                            if (packet.Length >= 4)
-                            {
-                                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(packet.Span.Slice(0, 4));
-                                if (msgId == 40011) // ServerTimeSync
-                                {
-                                    long now = Environment.TickCount64;
-                                    var sync = ParseServerTimeSync(packet.Span.Slice(4));
-                                    if (sync.HasValue)
-                                    {
-                                        var (rtt, offset) = Battle.Handlers.TimeSyncManager.Estimate(
-                                            sync.Value.clientSendMs, now, Volatile.Read(ref lastServerSendMs),
-                                            sync.Value.serverRecvMs, sync.Value.serverSendMs);
-                                        lock (stats)
-                                        {
-                                            // 样本有界：防止长时间压测下内存线性膨胀
-                                            if (stats.RttSamples.Count < MaxSamplesPerBot) stats.RttSamples.Add(rtt);
-                                            if (stats.OffsetSamples.Count < MaxSamplesPerBot) stats.OffsetSamples.Add(offset);
-                                        }
-                                        Interlocked.Exchange(ref lastServerSendMs, sync.Value.serverSendMs);
-                                    }
-                                }
-                                else if (msgId == Shared.Messages.MessageIds.LoginRes) // 10002 LoginResult
-                                {
-                                    // P1 修复：机器人连真实 Gateway，登录回包是 10002（LoginResult，JSON 体）。
-                                    // 原实现只认 40002（BattleJoinResult）且机器人从不发 BattleJoin(40001)，
-                                    // 导致登录判定永不成立、压测数据全空。
-                                    var loginRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Login.LoginResponse>(packet.Span.Slice(4));
-                                    if (loginRes?.Success == true)
-                                    {
-                                        Interlocked.Exchange(ref stats.LoginCompletedAtMs, Environment.TickCount64);
-                                    }
-                                    else
-                                    {
-                                        Interlocked.Increment(ref stats.Errors);
-                                    }
-                                }
-                            }
+                            HandleFrame(packet);
                         }
                     }
                 }
@@ -263,14 +281,56 @@ namespace Bots
                 catch (ObjectDisposedException) { } // 方法退出/登录失败时 using 释放流引发的正常终止
             }
 
+            /// <summary>协议无关的帧处理（TCP 长度前缀帧解析后与 KCP 消息边界帧内容一致）：按 MsgId 分发。</summary>
+            private void HandleFrame(ReadOnlyMemory<byte> packet)
+            {
+                // 简化解码：按字节头 4 字节判 msgId
+                if (packet.Length < 4) return;
+                int msgId = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(packet.Span.Slice(0, 4));
+                if (msgId == 40011) // ServerTimeSync
+                {
+                    long now = Environment.TickCount64;
+                    var sync = ParseServerTimeSync(packet.Span.Slice(4));
+                    if (sync.HasValue)
+                    {
+                        var (rtt, offset) = Battle.Handlers.TimeSyncManager.Estimate(
+                            sync.Value.clientSendMs, now, Volatile.Read(ref lastServerSendMs),
+                            sync.Value.serverRecvMs, sync.Value.serverSendMs);
+                        lock (stats)
+                        {
+                            // 样本有界：防止长时间压测下内存线性膨胀
+                            if (stats.RttSamples.Count < MaxSamplesPerBot) stats.RttSamples.Add(rtt);
+                            if (stats.OffsetSamples.Count < MaxSamplesPerBot) stats.OffsetSamples.Add(offset);
+                        }
+                        Interlocked.Exchange(ref lastServerSendMs, sync.Value.serverSendMs);
+                    }
+                }
+                else if (msgId == Shared.Messages.MessageIds.LoginRes) // 10002 LoginResult
+                {
+                    // P1 修复：机器人连真实 Gateway，登录回包是 10002（LoginResult，JSON 体）。
+                    // 原实现只认 40002（BattleJoinResult）且机器人从不发 BattleJoin(40001)，
+                    // 导致登录判定永不成立、压测数据全空。
+                    var loginRes = Shared.Json.DeserializeFromUtf8Bytes<Shared.Messages.Login.LoginResponse>(packet.Span.Slice(4));
+                    if (loginRes?.Success == true)
+                    {
+                        Interlocked.Exchange(ref stats.LoginCompletedAtMs, Environment.TickCount64);
+                    }
+                    else
+                    {
+                        Interlocked.Increment(ref stats.Errors);
+                    }
+                }
+            }
+
             // ---- WebSocket 实现（占位：默认未开启；启用时取消注释） ----
             private async Task RunWebSocketAsync(CancellationToken token)
             {
-                // KBE-Gap-Review D8：WS 协议由 Gateway 单独监听（默认 31301），如未开启回退到 TCP
+                // KBE-Gap-Review D8：WS 协议由 Gateway 单独监听（默认 GatewayPort+10=31310），如未开启回退到 TCP
                 using var tcp = new TcpClient();
                 await tcp.ConnectAsync(opts.Host, opts.Port, token).ConfigureAwait(false);
                 using var stream = tcp.GetStream();
-                await LoginAndAwaitAsync(stream, token).ConfigureAwait(false);
+                sendFrame = async bytes => await stream.WriteAsync(bytes, 0, bytes.Length, token).ConfigureAwait(false);
+                await LoginAndAwaitAsync(token).ConfigureAwait(false);
                 // 简化：WS 模式按 TCP 同等处理
             }
 
@@ -307,16 +367,6 @@ namespace Bots
                 "ws" => BotProtocol.Ws,
                 _ => BotProtocol.Tcp
             };
-
-            // P3 修复（静默降级）：原实现中 --protocol kcp 会落进 switch 的同一分支静默走 TCP，
-            // 压测方以为在压 KCP、实际压的是 TCP（且无任何提示）——与「承诺了却没接线」同类问题。
-            // 这里在启动期明确告警并显式回退，使“未接入”可见。
-            if (opts.Protocol == BotProtocol.Kcp)
-            {
-                Console.WriteLine("[Bots] ⚠ --protocol kcp 尚未接入（Bots 侧未完成），本次将回退使用 TCP。");
-                Console.WriteLine("[Bots]   如需真正压 KCP，请先为本工具接入 Network.Kcp.KcpClientWrapper。");
-                opts.Protocol = BotProtocol.Tcp;
-            }
 
             Console.WriteLine($"Bots 压测启动: {opts.Count} 个机器人 -> {opts.Host}:{opts.Port} 协议={opts.Protocol} 场景={opts.Scene} 时长={opts.DurationSeconds}s");
             Console.WriteLine("（需服务器已启动：DB → Center → Login → Game/Battle → Gateway）");

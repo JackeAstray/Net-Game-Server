@@ -76,6 +76,13 @@ namespace Gateway
         /// <summary>SessionId -> 8 字节随机会话令牌（UDP/KCP 会话建立时签发；TCP/WS 面向连接无需）。</summary>
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, byte[]> sessionAuthTokens = new();
 
+        /// <summary>首包握手容忍窗口（UDP/KCP）：会话建立时加入；收到首个携带合法令牌的包后移除。
+        /// KCP/UDP 无连接，服务端须收到客户端首个数据报才会建立会话并回推令牌（鸡生蛋）——
+        /// 故首个无令牌包仅丢弃不关会话；窗口之外的无令牌/错令牌包仍 fail-closed 关闭。</summary>
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, long> pendingUdpHandshakes = new();
+
+        private const long UdpHandshakeTimeoutMs = 10_000;
+
         /// <summary>会话令牌长度（8 字节随机，128-bit 熵量级上的可暴力空间不可行）。</summary>
         private const int SessionTokenLength = 8;
 

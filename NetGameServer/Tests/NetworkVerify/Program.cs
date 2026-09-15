@@ -272,6 +272,23 @@ internal static class Program
             bool selfSync = await WaitUntil(() => deltas.Any(d => d.EntityId == clientSessionId), TimeSpan.FromSeconds(3));
             Check(selfSync, "EntitySync 自身增量回发（owner 可见）");
 
+            // 5.1 仅同步旋转、位置缺失（Position=null）→ 增量只携带 Rotation，位置不得被拉回原点
+            var rotOnly = new EntitySync { Position = null!, Rotation = new Vector3 { X = 0, Y = 90, Z = 0 } };
+            Send(GenIds.EntitySync, rotOnly.Serialize(), clientSessionId);
+            bool rotOnlyOk = await WaitUntil(() =>
+            {
+                foreach (var d in deltas)
+                {
+                    if (d.EntityId != clientSessionId) continue;
+                    var skel = Battle.Entities.PlayerEntityDef.Create(d.EntityId);
+                    var applied = Framework.Entity.PropertyCodec.DeserializeInto(skel, d.Props, applyDirty: false);
+                    // 修复前：路由把 null 折叠为 (0,0,0) → 增量会带 Position；修复后仅带 Rotation
+                    if (applied.Contains("Rotation")) return !applied.Contains("Position");
+                }
+                return false;
+            }, TimeSpan.FromSeconds(3));
+            Check(rotOnlyOk, "EntitySync 仅旋转：增量不含 Position（null 不被折叠为原点）");
+
             // 6. ScriptAction 伤害自身：TakeDamage 10 → Hp 100→90（解析增量属性）
             var damage = new ScriptAction { EntityId = clientSessionId, Method = "TakeDamage", Args = new List<int> { 10 } };
             Send(GenIds.ScriptAction, damage.Serialize(), clientSessionId);

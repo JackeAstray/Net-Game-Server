@@ -112,7 +112,9 @@ namespace Battle.Handlers
                 {
                     var req = new EntitySyncRequest
                     {
-                        Position = new Vector3 { X = msg.Position?.X ?? 0, Y = msg.Position?.Y ?? 0, Z = msg.Position?.Z ?? 0 },
+                        Position = msg.Position == null
+                            ? null
+                            : new Vector3 { X = msg.Position.X, Y = msg.Position.Y, Z = msg.Position.Z },
                         Rotation = new Vector3 { X = msg.Rotation?.X ?? 0, Y = msg.Rotation?.Y ?? 0, Z = msg.Rotation?.Z ?? 0 }
                     };
                     var gatewaySession = ((BattleSessionContext)ctx).GatewaySession;

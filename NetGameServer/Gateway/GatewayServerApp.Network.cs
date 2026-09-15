@@ -55,6 +55,8 @@ namespace Gateway
                 Gateway.Managers.GatewaySessionManager.Instance.AddSession(session);
                 // UDP/KCP 会话身份绑定：下发随机令牌（客户端后续消息须携带，防伪造源端点注入）
                 IssueSessionAuthToken(session);
+                // 首包握手容忍窗口：KCP 客户端须先发包服务端才会建会话并收到令牌 → 首个无令牌包仅丢弃不关闭
+                pendingUdpHandshakes[session.SessionId] = Environment.TickCount64;
             };
             udpServer.OnSessionConnected += session =>
             {
@@ -62,6 +64,8 @@ namespace Gateway
                 Gateway.Managers.GatewaySessionManager.Instance.AddSession(session);
                 // UDP/KCP 会话身份绑定：下发随机令牌（客户端后续消息须携带，防伪造源端点注入）
                 IssueSessionAuthToken(session);
+                // 首包握手容忍窗口（同上）
+                pendingUdpHandshakes[session.SessionId] = Environment.TickCount64;
             };
             webSocketServer.OnSessionConnected += session =>
             {
@@ -136,8 +140,28 @@ namespace Gateway
                     // 校验失败即关闭连接（fail-closed）；成功时 payloadStart=12，真实负载从该偏移起。
                     if (!VerifySessionAuthToken(session, data, out int payloadStart))
                     {
-                        try { session.Close(); } catch { /* 关闭异常吞掉 */ }
+                        // 首包握手容忍：KCP/UDP 无连接，服务端须收到客户端首个数据报才会建立会话并回推令牌
+                        // （鸡生蛋）→ 会话刚建立时客户端首个无令牌包仅丢弃、不关会话，等待令牌随后续业务包到达。
+                        // 窗口只在 pendingUdpHandshakes 内有效（收到首个合法令牌包即关闭）；窗口外仍 fail-closed。
+                        bool inHandshakeWindow = (session is Network.Kcp.KcpSession || session is Network.Udp.UdpSession)
+                            && pendingUdpHandshakes.TryGetValue(session.SessionId, out long handshakeStartedMs)
+                            && Environment.TickCount64 - handshakeStartedMs <= UdpHandshakeTimeoutMs;
+                        if (!inHandshakeWindow)
+                        {
+                            pendingUdpHandshakes.TryRemove(session.SessionId, out _);
+                            sessionAuthTokens.TryRemove(session.SessionId, out _);
+                            try { session.Close(); } catch { /* 关闭异常吞掉 */ }
+                        }
+                        else
+                        {
+                            Shared.Log.Debug("Gateway 首包握手容忍（丢弃无令牌包，等待令牌）SessionId:{SessionId} Remote:{Remote}", session.SessionId, session.RemoteEndPoint!);
+                        }
                         return;
+                    }
+                    // 校验通过：关闭首包握手容忍窗口（此后严格 fail-closed）
+                    if (session is Network.Kcp.KcpSession || session is Network.Udp.UdpSession)
+                    {
+                        pendingUdpHandshakes.TryRemove(session.SessionId, out _);
                     }
 
                     // P6 加固：每会话入站消息速率上限（防客户端洪泛打满共享后端队列/多节点）。
@@ -324,6 +348,7 @@ namespace Gateway
                 }
                 Gateway.Managers.GatewaySessionManager.Instance.RemoveSession(session.SessionId);
                 sessionAuthTokens.TryRemove(session.SessionId, out _); // UDP/KCP 会话令牌随连接销毁
+                pendingUdpHandshakes.TryRemove(session.SessionId, out _); // 首包握手容忍窗口随连接销毁
                 clientBattleNodeBindings.TryRemove(canonicalId, out _); // 清除 Battle 节点绑定（按规范 ID）
                 NotifyPlayerDisconnected(canonicalId);
             };
@@ -378,6 +403,20 @@ namespace Gateway
                             if (pendingLocates.TryGetValue(key, out var pl) && now - pl.CreatedAtUtc > PendingLocateTimeout)
                             {
                                 pendingLocates.TryRemove(key, out _);
+                            }
+                        }
+
+                        // UDP/KCP 首包握手硬超时：无效包不能靠刷新会话活跃时间无限延长容忍窗口。
+                        long nowMs = Environment.TickCount64;
+                        foreach (var key in pendingUdpHandshakes.Keys.ToArray())
+                        {
+                            if (pendingUdpHandshakes.TryGetValue(key, out long startedMs)
+                                && nowMs - startedMs > UdpHandshakeTimeoutMs
+                                && pendingUdpHandshakes.TryRemove(key, out _))
+                            {
+                                sessionAuthTokens.TryRemove(key, out _);
+                                var staleSession = Gateway.Managers.GatewaySessionManager.Instance.GetSession(key);
+                                try { staleSession?.Close(); } catch { /* 关闭异常吞掉 */ }
                             }
                         }
 

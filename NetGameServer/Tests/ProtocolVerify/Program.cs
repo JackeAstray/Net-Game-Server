@@ -829,6 +829,34 @@ Directory.Delete(persistDir, recursive: true);
     Console.WriteLine($"AOI diff 单实体: enter=[{string.Join(",", enter1)}] leave=[{string.Join(",", leave1)}] (期望 enter=[1,4] leave=[3])");
     if (!diffOk) return 1;
 
+    // 空桶回收与并发入桶必须对同一网格串行，否则入桶实体可能随旧空桶一起被移出 grids。
+    var raceAoi = new Battle.Handlers.GridAoiManager(gridSize: 50.0f, viewRadius: 1);
+    var raceDef = new Framework.Entity.EntityDef { Name = "AoiRace" }.Add("Position", Framework.Entity.EntityPropertyType.Float3);
+    Framework.Entity.Entity RaceEntity(long id, float x)
+    {
+        var entity = raceDef.CreateEntity(id);
+        entity.Set("Position", new Framework.Entity.Float3(x, 0, 0));
+        return entity;
+    }
+    raceAoi.AddOrUpdateEntity(1, RaceEntity(1, 0), out _, out _);
+    raceAoi.AddOrUpdateEntity(2, RaceEntity(2, 100), out _, out _);
+    bool raceConsistent = true;
+    for (int iteration = 0; iteration < 5000; iteration++)
+    {
+        Parallel.Invoke(
+            () => raceAoi.AddOrUpdateEntity(1, RaceEntity(1, -100), out _, out _),
+            () => raceAoi.AddOrUpdateEntity(2, RaceEntity(2, 0), out _, out _));
+        if (!raceAoi.GetSurroundingEntities(0, 0).Contains(2))
+        {
+            raceConsistent = false;
+            break;
+        }
+        raceAoi.AddOrUpdateEntity(2, RaceEntity(2, 100), out _, out _);
+        raceAoi.AddOrUpdateEntity(1, RaceEntity(1, 0), out _, out _);
+    }
+    Console.WriteLine($"AOI 空网格并发回收: {(raceConsistent ? "一致" : "实体丢失")} (期望 一致)");
+    if (!raceConsistent) return 1;
+
     // 批量压测：2000 实体随机布点，视野半径 2（5x5），移动 + 查询 + 一致性校验
     var aoi = new Battle.Handlers.GridAoiManager(gridSize: 50.0f, viewRadius: 2);
     var def = new Framework.Entity.EntityDef { Name = "AoiBot" }.Add("Position", Framework.Entity.EntityPropertyType.Float3);
@@ -988,6 +1016,34 @@ if (appDispatched && appSent.Count == 1)
 }
 Console.WriteLine($"App 分发回环: ok={appDispatched} reply={appReplyOk} echo={appEcho} session={appReplySession} node={appNode} (期望 True/True/hello-app/100/App-Test-1)");
 if (!appDispatched || !appReplyOk || appEcho != "hello-app" || appReplySession != 100 || appNode != "App-Test-1") return 1;
+
+// App HTTP 鉴权：匿名路径仅精确放行；有效 Key 每分钟最多 120 次
+int appHttpPassed = 0;
+var appAuth = new App.Auth.AppApiKeyMiddleware(
+    _ => { appHttpPassed++; return Task.CompletedTask; },
+    new App.Auth.AppApiKeyOptions
+    {
+        Keys = new[] { "app-test-key" },
+        AllowAnonymousPaths = new[] { "/api/app/info" }
+    });
+var anonymousCtx = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+anonymousCtx.Request.Path = "/api/app/info";
+await appAuth.InvokeAsync(anonymousCtx);
+var anonymousChildCtx = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+anonymousChildCtx.Request.Path = "/api/app/info/private";
+await appAuth.InvokeAsync(anonymousChildCtx);
+for (int i = 0; i < 121; i++)
+{
+    var keyedCtx = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+    keyedCtx.Response.Body = new MemoryStream();
+    keyedCtx.Request.Path = "/api/app/echo";
+    keyedCtx.Request.Headers["X-Api-Key"] = "app-test-key";
+    await appAuth.InvokeAsync(keyedCtx);
+    if (i == 120 && keyedCtx.Response.StatusCode != Microsoft.AspNetCore.Http.StatusCodes.Status429TooManyRequests) return 1;
+}
+bool appHttpAuthOk = appHttpPassed == 121 && anonymousChildCtx.Response.StatusCode == Microsoft.AspNetCore.Http.StatusCodes.Status401Unauthorized;
+Console.WriteLine($"App HTTP 鉴权限流: ok={appHttpAuthOk} passed={appHttpPassed} child={anonymousChildCtx.Response.StatusCode} (期望 True/121/401)");
+if (!appHttpAuthOk) return 1;
 
 // ===== 16b. 队伍（A2）逻辑验证（创建/加入/就位/我的/队长转让/解散） =====
 var partyMgr = new Center.Handlers.PartyManager();

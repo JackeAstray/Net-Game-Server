@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Buffers;
 
 namespace Network;
@@ -30,7 +30,19 @@ public static class PacketSender
 
         try
         {
-            session.Send(packet.AsSpan(0, totalLength).ToArray());
+            if (session is Kcp.KcpSession kcp)
+            {
+                // KCP 消息边界帧（KCP 自带可靠消息边界）：客户端侧帧 = [MsgId(4)][Payload]，**无长度前缀**
+                // （KcpClientWrapper.Send 发送时去掉 TCP 长度前缀，与这里对称）。
+                // 修复（Bots KCP 冒烟）：原样发送 BuildPacket 产物（[Length][MsgId][Payload]）会导致
+                // 客户端按 [MsgId] 解析失败——网关会话令牌（70001）与登录回包（10002）均无法识别。
+                // 注意：UdpSession 仍走长度前缀帧（UDP 无消息边界，客户端用 LengthPrefixedPacketReader 解析），不在此列。
+                kcp.Send(packet.AsSpan(4, totalLength - 4).ToArray());
+            }
+            else
+            {
+                session.Send(packet.AsSpan(0, totalLength).ToArray());
+            }
         }
         finally
         {

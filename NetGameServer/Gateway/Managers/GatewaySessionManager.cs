@@ -244,10 +244,9 @@ namespace Gateway.Managers
                             packet.AsSpan(0, totalLength).CopyTo(copy);
                             session.Send(copy.AsMemory(0, totalLength));
                         }
-                        catch
+                        finally
                         {
                             System.Buffers.ArrayPool<byte>.Shared.Return(copy);
-                            throw;
                         }
                     }
                 }

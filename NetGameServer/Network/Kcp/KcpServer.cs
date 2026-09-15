@@ -68,7 +68,22 @@ public class KcpServer : INetworkServer
         {
             while (!token.IsCancellationRequested && udpClient != null)
             {
-                var result = await udpClient.ReceiveAsync(token);
+                UdpReceiveResult result;
+                try
+                {
+                    result = await udpClient.ReceiveAsync(token);
+                }
+                catch (SocketException ex) when (ex.SocketErrorCode is SocketError.ConnectionReset
+                    or SocketError.ConnectionAborted or SocketError.NetworkReset)
+                {
+                    // UDP 无连接语义：对端关闭/不存在时收到的 ICMP 错误（ECONNRESET 10054 / ECONNABORTED 10053 /
+                    // ENETRESET 10052）会令下一次 ReceiveAsync 抛 SocketException——**属正常事件**，
+                    // 必须忽略并继续接收。修复前此异常落到 while 外的 catch(Exception) → 整个 KCP 端口停服
+                    // （表现为客户端集体掉线且无告警，UDP 端口对等实现 UdpServer 已按每报隔离处理）。
+                    if (ShouldLogWarning(ref lastShortWarnUtc))
+                        Shared.Log.Warning($"[KcpServer] UDP 对端重置（ECONNRESET，忽略继续）:{ex.Message}");
+                    continue;
+                }
 
                 // KCP 每个分段的包头首 4 字节即 conv，据此区分连接
                 if (result.Buffer.Length < 4)

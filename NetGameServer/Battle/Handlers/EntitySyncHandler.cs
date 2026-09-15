@@ -164,21 +164,21 @@ namespace Battle.Handlers
             // - 每客户端移动同步速率配额（防洪泛用极多小步长消息突破位移钳制）；
             // - 按速度预算 maxSpeed×Δt×容差 钳制位移（时间窗感知），并受单次硬上限约束；
             // - 显式 null Position 不再被改写为 (0,0,0)（仅跳过位移，旋转仍更新）。
-            var track = moveTracks.GetOrAdd(sessionId, _ => new MovementTrack { LastSyncMs = Environment.TickCount64, WindowStartMs = Environment.TickCount64 });
-            long nowMs = Environment.TickCount64;
-            if (nowMs - track.WindowStartMs >= 1000)
-            {
-                track.WindowStartMs = nowMs;
-                track.SyncCount = 0;
-            }
-            if (++track.SyncCount > MaxMoveSyncPerSecond)
-            {
-                // 超速洪泛：丢弃本次同步（不更新位置），已超过每客户端配额
-                return Task.CompletedTask;
-            }
-
             if (request.Position != null)
             {
+                var track = moveTracks.GetOrAdd(sessionId, _ => new MovementTrack { LastSyncMs = Environment.TickCount64, WindowStartMs = Environment.TickCount64 });
+                long nowMs = Environment.TickCount64;
+                if (nowMs - track.WindowStartMs >= 1000)
+                {
+                    track.WindowStartMs = nowMs;
+                    track.SyncCount = 0;
+                }
+                if (++track.SyncCount > MaxMoveSyncPerSecond)
+                {
+                    // 超速洪泛：丢弃本次同步（不更新位置），已超过每客户端配额
+                    return Task.CompletedTask;
+                }
+
                 long elapsedMs = Math.Max(0, nowMs - track.LastSyncMs);
                 track.LastSyncMs = nowMs;
 
@@ -225,13 +225,13 @@ namespace Battle.Handlers
                 {
                     if (!entity.IsDirty) continue;
 
-                    BroadcastDirty(entity, scene);
-
                     // 脚本移动的实体（NPC 巡逻）需要同步 AOI 网格，保证视野正确
                     if (scene.UseAoi && scene.AoiManager != null)
                     {
                         UpdateAoiGrid(scene, entity);
                     }
+
+                    BroadcastDirty(entity, scene);
                 }
             }
         }
@@ -280,10 +280,10 @@ namespace Battle.Handlers
         /// 属主（Entity.OwnerClientId，含实体自身）始终可见自身状态——受击掉血、冷却、背包等
         /// 变更必须回发属主客户端（对标 KBE：owner 永远在自身 witness 内）。
         /// </summary>
-        private List<long> GetBroadcastTargets(BattleScene scene, Framework.Entity.Entity entity)
+        private HashSet<long> GetBroadcastTargets(BattleScene scene, Framework.Entity.Entity entity)
         {
             var players = GetPlayerSet(scene);
-            var result = new List<long>();
+            var result = new HashSet<long>();
             if (entity.OwnerClientId > 0 && players.Contains(entity.OwnerClientId))
             {
                 result.Add(entity.OwnerClientId);
@@ -295,20 +295,20 @@ namespace Battle.Handlers
                 var (gx, gz) = scene.AoiManager.GetGridCoordinate(pos);
                 foreach (var id in scene.AoiManager.GetSurroundingEntities(gx, gz))
                 {
-                    if (id != entity.EntityId && players.Contains(id) && !result.Contains(id)) result.Add(id);
+                    if (id != entity.EntityId && players.Contains(id)) result.Add(id);
                 }
                 return result;
             }
 
             foreach (var id in players)
             {
-                if (id != entity.EntityId && !result.Contains(id)) result.Add(id);
+                if (id != entity.EntityId) result.Add(id);
             }
             return result;
         }
 
         /// <summary>向目标客户端发送增量（每个目标经其网关会话定向投递，网关会话未知则跳过）。</summary>
-        private void BroadcastToTargets(Framework.Entity.Entity entity, byte[] props, List<long> targetIds)
+        private void BroadcastToTargets(Framework.Entity.Entity entity, byte[] props, IReadOnlyCollection<long> targetIds)
         {
             if (targetIds.Count == 0) return;
             var delta = new EntityDeltaSync { EntityId = entity.EntityId, Props = props };
@@ -324,6 +324,8 @@ namespace Battle.Handlers
         /// <summary>场景内玩家会话集合（广播目标只允许玩家；NPC/玩法实体不参与收包）。</summary>
         private HashSet<long> GetPlayerSet(BattleScene scene) => new(sceneManager.GetPlayerSessionIds(scene.SceneId));
 
+        internal void RemoveMovementTrack(long sessionId) => moveTracks.TryRemove(sessionId, out _);
+
         /// <summary>实体 AOI 网格更新：跨格子时向受影响玩家补发进入快照/离开通知（目标仅限玩家）。</summary>
         private void UpdateAoiGrid(BattleScene scene, Framework.Entity.Entity entity)
         {
@@ -338,8 +340,8 @@ namespace Battle.Handlers
 
             if (leaveEntities.Count > 0)
             {
-                var leaveNotif = new EntityLeaveViewNotification { EntityIds = new List<long> { entity.EntityId } };
-                byte[] leavePayload = Shared.Json.SerializeToUtf8Bytes(leaveNotif);
+                var leaveNotif = new Framework.Protocol.Generated.EntityLeaveViewNotify { EntityIds = new List<long> { entity.EntityId } };
+                byte[] leavePayload = leaveNotif.Serialize();
                 foreach (var targetId in leaveEntities)
                 {
                     if (targetId == entity.EntityId || !players.Contains(targetId)) continue;
@@ -363,6 +365,36 @@ namespace Battle.Handlers
                     {
                         SendSnapshot(gatewaySession, targetId, entity.EntityId, snapshot);
                     }
+                }
+            }
+
+            // 对称修复：跨格移动此前只让"他人"感知移动者，移动者自身却收不到"新进入/离开其视野"的通知
+            // （进入方收到移动者快照、移动者没收到对方快照 → 单向可见；离开的实体在移动者客户端残留幽灵）。
+            // 只对有客户端会话的实体（玩家主实体，OwnerClientId==EntityId）补发；NPC 无属主仅被他人感知。
+            long ownerSession = entity.OwnerClientId > 0 ? entity.OwnerClientId : entity.EntityId;
+            var ownerGateway = BattleServerApp.GetGatewaySessionByClient(ownerSession);
+            if (ownerGateway == null) return;
+
+            if (leaveEntities.Count > 0)
+            {
+                var ids = leaveEntities.Where(id => id != entity.EntityId).ToList();
+                if (ids.Count > 0)
+                {
+                    var leaveNotif = new Framework.Protocol.Generated.EntityLeaveViewNotify { EntityIds = ids };
+                    byte[] leavePayload = leaveNotif.Serialize();
+                    SendPacket(ownerGateway, ownerSession, GenIds.EntityLeaveViewNotify, leavePayload);
+                }
+            }
+
+            if (enterEntities.Count > 0)
+            {
+                foreach (var targetId in enterEntities)
+                {
+                    if (targetId == entity.EntityId) continue;
+                    var other = scene.EntityManager.GetEntity(targetId);
+                    if (other == null) continue;
+                    // 新进入视野的他人快照同样剔除 OWN_CLIENT 私有属性
+                    SendSnapshot(ownerGateway, ownerSession, targetId, PropertyCodec.SerializeAll(other, includeOwnClient: false));
                 }
             }
         }
@@ -435,11 +467,49 @@ namespace Battle.Handlers
             }
         }
 
+        public void RefreshPlayerView(long sessionId, Network.ISession gatewaySession, bool notifyOthers)
+        {
+            var scene = sceneManager.GetSceneByPlayer(sessionId);
+            var entity = scene?.EntityManager.GetEntity(sessionId);
+            if (scene == null || entity == null) return;
+
+            IEnumerable<long> visibleIds;
+            if (scene.UseAoi && scene.AoiManager != null)
+            {
+                var grid = scene.AoiManager.GetGridCoordinate(entity.Get<Float3>("Position"));
+                visibleIds = scene.AoiManager.GetSurroundingEntities(grid.Item1, grid.Item2);
+            }
+            else
+            {
+                visibleIds = scene.EntityManager.GetAllSessionIds();
+            }
+
+            byte[]? ownSnapshot = notifyOthers ? PropertyCodec.SerializeAll(entity, includeOwnClient: false) : null;
+            var players = notifyOthers ? GetPlayerSet(scene) : null;
+            foreach (var targetId in visibleIds)
+            {
+                if (targetId == sessionId) continue;
+                var other = scene.EntityManager.GetEntity(targetId);
+                if (other != null)
+                {
+                    SendSnapshot(gatewaySession, sessionId, targetId, PropertyCodec.SerializeAll(other, includeOwnClient: false));
+                }
+                if (notifyOthers && players!.Contains(targetId))
+                {
+                    var targetGateway = BattleServerApp.GetGatewaySessionByClient(targetId);
+                    if (targetGateway != null)
+                    {
+                        SendSnapshot(targetGateway, targetId, sessionId, ownSnapshot!);
+                    }
+                }
+            }
+        }
+
         /// <summary>玩家离开场景：移除实体与 AOI，通知周边玩家。</summary>
         public void OnPlayerLeave(long sessionId, Network.ISession gatewaySession)
         {
             // P3 加固：清理该玩家的移动跟踪（速度预算/洪泛配额），防只增不减。
-            moveTracks.TryRemove(sessionId, out _);
+            RemoveMovementTrack(sessionId);
 
             var scene = sceneManager.GetSceneByPlayer(sessionId);
             if (scene == null) return;
@@ -473,8 +543,8 @@ namespace Battle.Handlers
 
             if (targetIds.Count > 0)
             {
-                var leaveNotif = new EntityLeaveViewNotification { EntityIds = new List<long> { sessionId } };
-                byte[] leavePayload = Shared.Json.SerializeToUtf8Bytes(leaveNotif);
+                var leaveNotif = new Framework.Protocol.Generated.EntityLeaveViewNotify { EntityIds = new List<long> { sessionId } };
+                byte[] leavePayload = leaveNotif.Serialize();
                 foreach (var targetId in targetIds)
                 {
                     // 跨网关修复：离开通知投递到目标玩家自身所在网关（同 BroadcastToTargets/UpdateAoiGrid）

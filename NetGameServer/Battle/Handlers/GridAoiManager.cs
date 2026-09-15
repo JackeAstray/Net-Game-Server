@@ -25,6 +25,8 @@ namespace Battle.Handlers
         // 网格索引: (GridX, GridY) -> 该网格内所有实体的 SessionId 集合
         private readonly ConcurrentDictionary<(int, int), ConcurrentDictionary<long, byte>> grids = new();
 
+        private readonly object[] gridLocks = Enumerable.Range(0, 64).Select(_ => new object()).ToArray();
+
         // 实体最后一次所在网格（修复：调用方可能先改写实体 Position 再调用 AddOrUpdateEntity，
         // 直接从实体读"旧位置"会得到新位置，导致跨格变化永远检测不到 → 网格索引/AOI 视图过期）
         private readonly ConcurrentDictionary<long, (int, int)> lastGrids = new();
@@ -79,13 +81,12 @@ namespace Battle.Handlers
                 if (oldGrid != newGrid)
                 {
                     isGridChanged = true;
-                    // 从旧网格移除
-                    if (grids.TryGetValue(oldGrid, out var oldGridSet))
+                    lock (GetGridLock(oldGrid))
                     {
-                        oldGridSet.TryRemove(sessionId, out _);
-                        if (oldGridSet.Count == 0)
+                        if (grids.TryGetValue(oldGrid, out var oldGridSet))
                         {
-                            grids.TryRemove(oldGrid, out _); // 空网格回收，防止网格索引无界增长
+                            oldGridSet.TryRemove(sessionId, out _);
+                            RemoveGridIfEmpty(oldGrid, oldGridSet);
                         }
                     }
                 }
@@ -105,8 +106,11 @@ namespace Battle.Handlers
             // 添加到新网格
             if (isGridChanged)
             {
-                var gridSet = grids.GetOrAdd(newGrid, _ => new ConcurrentDictionary<long, byte>());
-                gridSet.TryAdd(sessionId, 0);
+                lock (GetGridLock(newGrid))
+                {
+                    var gridSet = grids.GetOrAdd(newGrid, _ => new ConcurrentDictionary<long, byte>());
+                    gridSet.TryAdd(sessionId, 0);
+                }
             }
 
             return isGridChanged;
@@ -120,15 +124,32 @@ namespace Battle.Handlers
             entities.TryRemove(sessionId, out _);
             if (lastGrids.TryRemove(sessionId, out var gridCoord))
             {
-                if (grids.TryGetValue(gridCoord, out var gridSet))
+                lock (GetGridLock(gridCoord))
                 {
-                    gridSet.TryRemove(sessionId, out _);
-                    if (gridSet.Count == 0)
+                    if (grids.TryGetValue(gridCoord, out var gridSet))
                     {
-                        grids.TryRemove(gridCoord, out _); // 空网格回收
+                        gridSet.TryRemove(sessionId, out _);
+                        RemoveGridIfEmpty(gridCoord, gridSet);
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// 回收空网格。调用方必须持有该坐标对应的条带锁。
+        /// </summary>
+        private void RemoveGridIfEmpty((int, int) gridCoord, ConcurrentDictionary<long, byte> gridSet)
+        {
+            if (gridSet.IsEmpty)
+            {
+                grids.TryRemove(new KeyValuePair<(int, int), ConcurrentDictionary<long, byte>>(gridCoord, gridSet));
+            }
+        }
+
+        private object GetGridLock((int, int) gridCoord)
+        {
+            int index = (gridCoord.GetHashCode() & int.MaxValue) % gridLocks.Length;
+            return gridLocks[index];
         }
 
         /// <summary>

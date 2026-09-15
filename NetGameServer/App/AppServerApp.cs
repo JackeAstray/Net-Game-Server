@@ -174,16 +174,24 @@ namespace App
             var builder = WebApplication.CreateBuilder(args);
             builder.WebHost.ConfigureKestrel(options =>
             {
+                // 对齐 CenterHttpServer 修复：localhost 显式映射到回环；其余无法解析的地址回退回环并告警，
+                // 避免 IPAddress.Parse 抛 FormatException 使 Kestrel 配置期失败 → App 节点启动即崩溃。
+                System.Net.IPAddress listenAddress;
                 if (string.Equals(bindAddress, "0.0.0.0", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(bindAddress, "*", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(bindAddress, "::", StringComparison.OrdinalIgnoreCase))
                 {
                     options.ListenAnyIP(httpPort);
+                    return;
                 }
-                else
+                if (string.Equals(bindAddress, "localhost", StringComparison.OrdinalIgnoreCase)
+                    || !System.Net.IPAddress.TryParse(bindAddress, out listenAddress!))
                 {
-                    options.Listen(System.Net.IPAddress.Parse(bindAddress), httpPort);
+                    Log.Warning($"AppHttpListenAddress 无法解析为 IP（值：{bindAddress}），回退到 127.0.0.1");
+                    options.Listen(System.Net.IPAddress.Loopback, httpPort);
+                    return;
                 }
+                options.Listen(listenAddress, httpPort);
             });
 
             builder.Host.UseSerilog();
@@ -201,6 +209,13 @@ namespace App
 
             var app = builder.Build();
             webApiApp = app;
+
+            app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
+            {
+                context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+                context.Response.ContentType = "application/json; charset=utf-8";
+                await context.Response.WriteAsync("{\"success\":false,\"error\":\"服务器内部错误\"}");
+            }));
 
             app.UseMiddleware<App.Auth.AppApiKeyMiddleware>(new App.Auth.AppApiKeyOptions
             {
@@ -369,8 +384,8 @@ namespace App
             return Convert.ToBase64String(hmac.ComputeHash(data));
         }
 
-        /// <summary>当前负载（最小骨架：固定返回 1；后续可接队列深度/在线会话数）。</summary>
-        private static int GetCurrentLoad() => 1;
+        /// <summary>当前负载（对齐 Game/Battle 上报真实值：取会话串行队列在途任务数，供 Center 负载均衡/监控）。</summary>
+        private static int GetCurrentLoad() => sessionSerialQueue.Count;
 
         /// <summary>
         /// 优雅关闭（NodeLifecycle 关闭钩子）：
@@ -383,6 +398,16 @@ namespace App
             centerHeartbeatCts?.Cancel();
             centerHeartbeatCts?.Dispose();
             centerHeartbeatCts = null;
+
+            // 对齐 Game/Login：停止按键串行队列（等待在途业务段排空，避免关闭期间异步段继续改写共享状态）
+            try
+            {
+                sessionSerialQueue.Stop(waitForDrain: true, timeout: TimeSpan.FromSeconds(5));
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"App 停止会话串行队列异常: {ex.Message}");
+            }
 
             try
             {

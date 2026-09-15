@@ -71,9 +71,9 @@ public static class SecretConfig
         {
             throw new InvalidOperationException(
                 $"未配置 {configKey}：服务间 HMAC 共享密钥必须显式提供，禁止硬编码默认值。" +
-                "请在 appsettings.json（Security:{configKey}）或环境变量 {configKey} 中设置（≥16 字符）。" +
+                $"请在 appsettings.json/appsettings.Local.json（Security:{configKey}）或环境变量 {configKey} 中设置（≥16 字符）。" +
                 "单机快速启动：运行 Publish/StartServers.bat 会自动生成并注入（详见 README 快速启动）；" +
-                "手动启动示例：set {configKey}=<32位以上强随机串>");
+                $"手动启动示例：set {configKey}=<32位以上强随机串>");
         }
         if (value.Length < minLength)
         {
@@ -102,8 +102,8 @@ public static class SecretConfig
 
     /// <summary>
     /// 按优先级从多个文档化来源解析共享密钥：
-    /// 1) 配置树顶层键（appsettings.json 顶层 "CenterNodeSharedSecret" 或 NG_ 前缀环境变量）；
-    /// 2) appsettings.json 的 Security:{configKey} 节（README 手写配置方式）；
+    /// 1) 配置树顶层键（appsettings.json/appsettings.Local.json 顶层 "CenterNodeSharedSecret" 或环境变量）；
+    /// 2) 配置文件的 Security:{configKey} 节（README 手写配置方式）；
     /// 3) 无前缀环境变量 {configKey}（README 手动启动 / StartServers.bat / Machine 注入约定）。
     /// </summary>
     private static string? Resolve(string configKey)
