@@ -119,7 +119,7 @@ internal class Program
 - **新消息**：在 `Messages/*.cs` 写 `[GameMessage]` 类 → 构建一次 → 用生成的 `MessageIds` / 类型，并在目标节点 `Dispatcher` 注册。
 - **二进制序列化**：用 MemoryPack（`Serialize()` / `Deserialize()` 来自 `IGameMessage`），
   业务层**不要**手 `Json.SerializeToUtf8Bytes`——除非有兼容旧客户端的明确理由（`jsonFallback: true` 已在 MessageDispatcher 处理）。
-- **跨节点消息**：90001~90010 / 90999 / 91001~91010 等走 `internal="true"`，不接受客户端伪造（Gateway 拒绝）。
+- **跨节点消息**：90001-90010 / 90999 / 91001-91010 等走 `internal="true"`，不接受客户端伪造（Gateway 拒绝）。
 
 ---
 

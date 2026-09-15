@@ -44,7 +44,7 @@
   （10000~20000 → Login 等）；新增消息必须改 def 而非手改区间。
 - **会话时间窗**：所有客户端入包都过 `SessionGuard.IsSessionValid`，超 `MaxSessionLifetime`（2h）
   直接 `session.Close()` + 丢弃，不要注释掉这行。
-- **内部消息拒绝**：`route.IsInternal == true` 的消息（如 Center 内部 90001~90010 / 90999 / 91001~91010，DB 1000~1127，Login 10000/10014）直接拒绝并 Log.Warn，
+- **内部消息拒绝**：`route.IsInternal == true` 的消息（如 Center 内部 90001-90010 / 90999 / 91001-91010，DB 1000-1127，Login 10000/10014）直接拒绝并 Log.Warn，
   防止客户端伪造内部协议。
 - **入站限流/帧上限**：每会话 `GatewayMaxInboundPerSecond`（默认 600/s）超限断开；入站帧与转发帧均设长度上限，
   防恶意连接打爆内存。`StripClientFields` 在入站剥离客户端伪造的 `__*` 路由元数据（防越权指定目标会话/广播）。

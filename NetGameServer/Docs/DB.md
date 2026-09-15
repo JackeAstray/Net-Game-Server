@@ -9,7 +9,7 @@
 ## 职责边界
 
 - ✅ 账号/角色/好友/聊天/邮件/统计等业务数据的存取
-- ✅ 强类型消息分发（`DbDispatcher` 注册 **29** 条请求消息：1000~1029，响应 1100~1129；含好友/账号/公会/昵称）
+- ✅ 强类型消息分发（`DbDispatcher` 注册 **29** 条请求消息：1000-1029，响应 1100-1129；含好友/账号/公会/昵称）
 - ✅ UID 发号段原子领取（`UidCounters` 单行计数 + `DbAllocateUidRangeReq/Res`=1028/1128，防多实例碰撞）
 - ✅ 昵称落库（`DbUpdateNicknameReq/Res`=1029/1129；`User.Nickname` 列已存在，无需迁移）
 - ✅ 表结构自愈（`SchemaDoctor` 启动建表/补列/补索引）+ `SchemaMigrator` 迁移

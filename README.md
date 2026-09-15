@@ -18,7 +18,7 @@
 | EntityCall | 91001/91002 跨进程调用 + callId + 超时回执 | [Center.md](NetGameServer/Docs/Center.md) |
 | 脚本 Mailbox | csx 脚本 `entity.Mailbox.Call/CallAsync` 同进程零开销，跨节点异步回执 | [KBE-Gap-Review.md](NetGameServer/Docs/KBE-Gap-Review.md) |
 | 在线迁移 | 玩家主实体 + 属主玩法实体（Skill/Item）同包随迁 | [Battle.md](NetGameServer/Docs/Battle.md) |
-| 实体位置路由 | 91007~91010 位置登记/查询 + EntityCallRouter 缓存，迁移后修正 stale 路由、支持 Battle 直达（对标 ET Location） | [Center.md](NetGameServer/Docs/Center.md) |
+| 实体位置路由 | 91007-91010 位置登记/查询 + EntityCallRouter 缓存，迁移后修正 stale 路由、支持 Battle 直达（对标 ET Location） | [Center.md](NetGameServer/Docs/Center.md) |
 | 可插拔持久化 | `IEntityPersistenceStore` 抽象 + File/MySQL/PostgreSQL/Redis 实现 + 批量落库（对标 GeekServer 脏状态自动保存） | [DB.md](NetGameServer/Docs/DB.md) |
 | 优雅关闭/健康检查 | 全节点 SIGINT/SIGTERM 排空 + 关服 flush，`/healthz` `/readyz` 健康端口（端口+10000），监听地址可配 `HealthListenAddress`（默认回环；Docker/K8s 探针设 `0.0.0.0`） | [Shared.md](NetGameServer/Docs/Shared.md) |
 | Prometheus 监控 | 全节点 `/metrics`：进程/GC/线程 + 节点业务 gauge（在线数、入站队列、直达会话、注册节点数） | [Shared.md](NetGameServer/Docs/Shared.md) |
@@ -162,9 +162,9 @@ AOI 网格自身的正确性与性能由 `Tests/ProtocolVerify` 第 15.9 节覆�
 - **Gateway ↔ 后端**：`[ClientSessionId(8)][MsgId(4)][Payload]`
 - **后端 ↔ DB**：`[MsgId(4)][Payload(尾部附 __requestId 路由元数据)]`，请求-响应经 `__requestId` 关联
 - **内部消息**（`internal="true"`，Gateway 拒绝客户端伪造）：
-  - Center 节点间 `90001~90015`（90001~90011 注册/心跳/建销毁场景/房间同步；90012~90015 挂起会话目录 B1）+ `90999` 认证握手
-  - EntityCall/实体迁移/位置 `91001~91010`（跨进程调用 / 91003~91005 迁移 / 91007~91010 位置登记查询）
-  - DB `1000~1127`（响应 = 请求 + 100）、Login `10000`/`10014`
+  - Center 节点间 `90001-90015`（90001-90011 注册/心跳/建销毁场景/房间同步；90012-90015 挂起会话目录 B1）+ `90999` 认证握手
+  - EntityCall/实体迁移/位置 `91001-91010`（跨进程调用 / 91003-91005 迁移 / 91007-91010 位置登记查询）
+  - DB `1000-1127`（响应 = 请求 + 100）、Login `10000`/`10014`
 
 完整约束与禁止项见 [Protocol.md](NetGameServer/Docs/Protocol.md)。
 

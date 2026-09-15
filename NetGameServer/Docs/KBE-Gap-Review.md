@@ -110,6 +110,6 @@
 | 18 | 规划 | Bots 集成压测（D8）、脚本层 entityMailbox 跨节点真实集成 |
 | 19 | S1-S4 + D7'/D8/D9 落地 | 脚本层结构化日志/定时器/边界/热更新钩子 + 客户端-服务端时间同步 + Bots 增强 + ConfigHelper 模板校验 |
 | 20 | KBE machine 化 | Tools/Machine + 节点注册协议 3 字段 + 管理台机器视图 + MachineVerify 第六套件 |
-| 21 | 实体位置路由 + 收口 | 91007~91010 位置登记/查询（对标 ET Location）+ EntityCallDirectRouter 直达/回退 + Framework.Persistence 四存储 + LifecycleVerify 第七套件 + ClientGen/ClientGenVerify 第八套件 |
+| 21 | 实体位置路由 + 收口 | 91007-91010 位置登记/查询（对标 ET Location）+ EntityCallDirectRouter 直达/回退 + Framework.Persistence 四存储 + LifecycleVerify 第七套件 + ClientGen/ClientGenVerify 第八套件 |
 
 > 历史归档（含 P0~P3 阶段数据快照）见 [Refactor-Summary.md](Refactor-Summary.md)。

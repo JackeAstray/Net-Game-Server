@@ -11,7 +11,7 @@
 - **路由元数据**：Gateway 注入 `__clientSessionId` / `__userId` / `__uid` / `__broadcast`，后端用 `RouteMetadata.TryExtract*` 解析。链路格式见 [Protocol.md](../Docs/Protocol.md)。
 - **JSON 兼容**：`MessageDispatcher.RegisterAsync(..., jsonFallback: true)` 兼容旧 JSON 客户端；新业务消息统一走 MemoryPack。**不要**直接调 `System.Text.Json.JsonSerializer`，统一用 `Shared.Json.SerializeToUtf8Bytes` / `DeserializeFromUtf8Bytes`。
 - **登录链路**：客户端经 Gateway 走 `[MsgId(4)][Payload]`（10001=登录、10003=注册），由 Login 节点 `LoginHandler` 处理；HTTP 仅用于无状态管理面接口（如果有），不是客户端主路径。
-- **内部消息保护**：91001~91006、90999 等 `internal="true"` 消息由 Gateway 拒绝客户端伪造；不要在公共客户端协议里复用内部 MsgId。
+- **内部消息保护**：91001-91006、90999 等 `internal="true"` 消息由 Gateway 拒绝客户端伪造；不要在公共客户端协议里复用内部 MsgId。
 
 ## 文档语言
 

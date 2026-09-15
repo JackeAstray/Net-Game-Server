@@ -30,7 +30,7 @@
 | `Center/Program.cs` | 启动入口 |
 | `Center/CenterServerApp.cs` | 节点主类（partial） |
 | `Center/Handlers/NodeManager.cs` | 节点注册表 / 心跳 / `GetBestBattleNode`（SWRR） / `pendingEntityCallSource`（EntityCall 中继） |
-| `Center/Handlers/CenterDispatcher.cs` | 强类型消息分发（含 91001/91002 中继 + 91007~91010 位置服务）；`CenterSessionContext` 内部消息上下文定义于此文件内 |
+| `Center/Handlers/CenterDispatcher.cs` | 强类型消息分发（含 91001/91002 中继 + 91007-91010 位置服务）；`CenterSessionContext` 内部消息上下文定义于此文件内 |
 | `Center/Handlers/EntityLocationService.cs` | 实体位置注册表（91007 登记 / 91008 注销 / 91009 查询 / 91010 响应，TTL 清扫） |
 | `Center/Handlers/MatchHandler.cs` | 房间匹配（创建/加入/聊天/离开；partial 拆为 `MatchHandler.cs` / `MatchHandler.Rooms.cs` / `MatchHandler.SceneSync.cs`） |
 | `Center/Handlers/PartyManager.cs` | 队伍管理（创建/加入/离开/解散/踢人/就位；31001~31015 客户端消息） |
