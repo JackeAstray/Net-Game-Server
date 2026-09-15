@@ -45,12 +45,18 @@ namespace Game.Handlers
                 SendSimpleResponse(session, MessageIds.AddFriendRes, new AddFriendResponse { Success = false, Message = "目标UniqueId不能为空" });
                 return;
             }
+            // P3 修复：备注长度上限（超长备注透传 DB 与好友列表，放大存储与通知）。
+            if ((req.Remark?.Trim().Length ?? 0) > 50)
+            {
+                SendSimpleResponse(session, MessageIds.AddFriendRes, new AddFriendResponse { Success = false, Message = "备注过长（上限 50 字）" });
+                return;
+            }
 
             var dbReq = new Shared.Messages.Db.DbAddFriendRequest
             {
                 UserId = (int)userId,
                 FriendUniqueId = req.TargetUniqueId.Trim(),
-                Remark = req.Remark
+                Remark = req.Remark ?? string.Empty
             };
 
             if (!TrySendDbRequest(MessageIds.DbAddFriendReq, session, dbReq, session.SessionId, MessageIds.AddFriendRes))
@@ -98,7 +104,8 @@ namespace Game.Handlers
                 FriendUniqueId = req.FriendUniqueId.Trim()
             };
 
-            if (!TrySendDbRequest(MessageIds.DbRemoveFriendReq, session, dbReq, session.SessionId, MessageIds.RemoveFriendRes))
+            if (!TrySendDbRequest(MessageIds.DbRemoveFriendReq, session, dbReq, session.SessionId, MessageIds.RemoveFriendRes,
+                configurePending: p => p.RemoveFriendUniqueId = dbReq.FriendUniqueId))
             {
                 SendSimpleResponse(session, MessageIds.RemoveFriendRes, new RemoveFriendResponse { Success = false, Message = "发送DB请求失败" });
             }
@@ -138,12 +145,18 @@ namespace Game.Handlers
                 SendSimpleResponse(session, MessageIds.SetFriendRemarkRes, new SetFriendRemarkResponse { Success = false, Message = "好友UniqueId不能为空" });
                 return;
             }
+            // P3 修复：备注长度上限。
+            if ((req.Remark?.Trim().Length ?? 0) > 50)
+            {
+                SendSimpleResponse(session, MessageIds.SetFriendRemarkRes, new SetFriendRemarkResponse { Success = false, Message = "备注过长（上限 50 字）" });
+                return;
+            }
 
             var dbReq = new Shared.Messages.Db.DbSetFriendRemarkRequest
             {
                 UserId = (int)userId,
                 FriendUniqueId = req.FriendUniqueId.Trim(),
-                Remark = req.Remark
+                Remark = req.Remark ?? string.Empty
             };
 
             if (!TrySendDbRequest(MessageIds.DbSetFriendRemarkReq, session, dbReq, session.SessionId, MessageIds.SetFriendRemarkRes))

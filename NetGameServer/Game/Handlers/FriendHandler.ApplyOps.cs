@@ -40,6 +40,12 @@ namespace Game.Handlers
                 SendSimpleResponse(session, MessageIds.FriendApplyRes, new FriendApplyResponse { Success = false, Message = "目标UniqueId不能为空" });
                 return;
             }
+            // P3 修复：申请留言长度上限（超长留言透传 DB 与申请列表，放大存储与通知）。
+            if ((req.Message?.Trim().Length ?? 0) > 200)
+            {
+                SendSimpleResponse(session, MessageIds.FriendApplyRes, new FriendApplyResponse { Success = false, Message = "申请留言过长（上限 200 字）" });
+                return;
+            }
 
             var dbReq = new Shared.Messages.Db.DbCreateFriendApplyRequest
             {

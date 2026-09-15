@@ -555,6 +555,8 @@ namespace Login
                             SendNodeStatus(centerClient, nodeId, activeGatewaySessions.Count);
                             // P2 修复：周期清理防重放状态中长期不活跃用户（防字典无界增长）。
                             GetOrCreateLoginHandler().SweepTokenReplay(TimeSpan.FromHours(24));
+                            // P3 修复：周期清理会话串行队列的空闲 key（断线会话残留的 KeyState 防无界增长）。
+                            sessionSerialQueue.SweepIdle(TimeSpan.FromMinutes(10));
                         }
                         catch (OperationCanceledException)
                         {

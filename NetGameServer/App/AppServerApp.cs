@@ -275,6 +275,8 @@ namespace App
                         {
                             await Task.Delay(TimeSpan.FromSeconds(Shared.NodeHeartbeatDefaults.HeartbeatIntervalSeconds), cancellationToken);
                             SendNodeStatus(centerClient, nodeId, GetCurrentLoad());
+                            // P3 修复：周期清理会话串行队列的空闲 key（断线会话残留的 KeyState 防无界增长）。
+                            sessionSerialQueue.SweepIdle(TimeSpan.FromMinutes(10));
                         }
                         catch (OperationCanceledException)
                         {

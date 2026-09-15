@@ -46,6 +46,12 @@ namespace Battle.Handlers
                 // P3 修复：RoomId 可能为 null（校验不完整路径），null 上调用 Contains 抛 NRE。
                 // 统一用局部非空变量，避免在 `?.` 后编译器把属性标记为可空而触发下游可空告警。
                 string roomId = request.RoomId ?? string.Empty;
+                // P3 修复：RoomId 长度上限（超长 RoomId 作场景字典 key/日志插值会放大内存与日志）。
+                if (roomId.Length > 64)
+                {
+                    Shared.Log.Warning($"Battle 拒绝超长 RoomId Length:{roomId.Length}（上限 64） SessionId:{clientSessionId}");
+                    return Task.FromResult(new BattleJoinResponse { Success = false, Message = "房间ID过长" });
+                }
 
                 // P3 加固：加入幂等 + 防双房。
                 // 已在同房间：幂等返回成功，不重复创建玩家实体/玩法实体（此前重复加入会无限
@@ -102,9 +108,21 @@ namespace Battle.Handlers
 
                 // 获取或创建场景
                 var scene = sceneManager.GetOrCreateScene(sceneConfig);
-                // 人数校验只统计真实玩家（场景反索引），玩法实体（NPC/Quest/Skill/Item）
-                // 不占用玩家名额——此前 GetAllSessionIds() 会把玩法实体计入，导致 PVP(10)
-                // 房间实际只能容纳 2 名玩家（4 场景实体 + 每人 2 个私有玩法实体）。
+                // 安全修复（P1）：观战者先占位创建的场景（SceneType=="Spectate"）不接纳玩家——
+                // 该场景 MaxPlayers=0，复用后人数校验整体跳过且玩家永不落库；观战与战斗隔离，
+                // 玩家只能加入由玩家路径创建的房间场景。
+                if (string.Equals(scene.Config.SceneType, "Spectate", StringComparison.OrdinalIgnoreCase))
+                {
+                    Shared.Log.Warning($"Battle 拒绝加入观战场景 RoomId:{roomId} SessionId:{clientSessionId}");
+                    return Task.FromResult(new BattleJoinResponse
+                    {
+                        Success = false,
+                        Message = "房间当前处于观战模式，不可加入对局"
+                    });
+                }
+                // 人数校验只统计真实玩家（观战者独立索引，不占用玩家名额），玩法实体
+                // （NPC/Quest/Skill/Item）不占用玩家名额——此前 GetAllSessionIds() 会把玩法实体计入，
+                // 导致 PVP(10) 房间实际只能容纳 2 名玩家（4 场景实体 + 每人 2 个私有玩法实体）。
                 if (scene.Config.MaxPlayers > 0 && sceneManager.GetPlayerCount(scene.Config.SceneId) >= scene.Config.MaxPlayers)
                 {
                     return Task.FromResult(new BattleJoinResponse
@@ -184,6 +202,12 @@ namespace Battle.Handlers
                 {
                     return Task.FromResult(new BattleSpectateResponse { Success = false, Message = "房间ID不能为空" });
                 }
+                // P3 修复：RoomId 长度上限（与加入路径一致）。
+                if (roomId.Length > 64)
+                {
+                    Shared.Log.Warning($"Battle 拒绝超长 RoomId Length:{roomId.Length}（上限 64） SessionId:{clientSessionId}");
+                    return Task.FromResult(new BattleSpectateResponse { Success = false, Message = "房间ID过长" });
+                }
 
                 var existingScene = sceneManager.GetSceneByPlayer(clientSessionId);
                 if (existingScene != null)
@@ -212,14 +236,18 @@ namespace Battle.Handlers
                     MaxPlayers = 0 // 观战场景不设玩家上限
                 });
 
-                // P1 加固：单观战场景观战者上限（防单场景无限观战实体/AOI 广播目标）
-                if (sceneManager.GetPlayerCount(scene.Config.SceneId) >= HardMaxPlayers)
+                // P1 加固：单观战场景观战者上限（防单场景无限观战实体/AOI 广播目标）。
+                // 容量按"玩家 + 观战者"总会话数统计，避免观战者挤占/混计玩家名额。
+                int sceneOccupancy = sceneManager.GetPlayerCount(scene.Config.SceneId) + sceneManager.GetSpectatorCount(scene.Config.SceneId);
+                if (sceneOccupancy >= HardMaxPlayers)
                 {
                     return Task.FromResult(new BattleSpectateResponse { Success = false, Message = "观战人数已达上限" });
                 }
 
-                // 观战者不占玩家名额：跳过 MaxPlayers 校验，但加入广播目标集合以接收场景广播
-                sceneManager.BindPlayerToScene(clientSessionId, roomId);
+                // 观战者不占玩家名额：跳过 MaxPlayers 校验，但加入广播目标集合以接收场景广播。
+                // P1 修复：以观战者身份绑定（独立索引），不进入玩家索引——观战者不参与
+                // 帧同步输入/脚本动作/存档落库，也不被计入玩家人数。
+                sceneManager.BindSpectatorToScene(clientSessionId, roomId);
 
                 // 只读玩家实体：复用快照/AOI 广播；不 Spawn 玩法实体（Skill/Item），不参与战斗输入
                 var spectatorEntity = Battle.Entities.PlayerEntityDef.Create(clientSessionId);
@@ -317,11 +345,12 @@ namespace Battle.Handlers
             }
 
             // 离开前持久化保存玩家属性（对标 KBE 实体落库，崩溃后可恢复）
-            // P2 修复：观战实体为只读占位，不落库（否则污染玩家存档）
+            // P1 修复：观战者为只读占位，按会话身份判定不落库（无论观战哪个场景），
+            // 修复观战者加入普通房间时 IsSpectateScene 误判导致观战占位实体污染玩家存档。
             var leavingEntity = scene.EntityManager.GetEntity(clientSessionId);
             if (leavingEntity != null)
             {
-                if (!IsSpectateScene(scene))
+                if (!sceneManager.IsSpectator(clientSessionId))
                 {
                     Battle.BattleServerApp.PersistPlayer(leavingEntity);
                 }

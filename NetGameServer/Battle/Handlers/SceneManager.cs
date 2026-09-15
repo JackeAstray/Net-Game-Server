@@ -35,6 +35,15 @@ namespace Battle.Handlers
         private readonly ConcurrentDictionary<string, ConcurrentDictionary<long, byte>> sceneToPlayers = new(StringComparer.Ordinal);
 
         /// <summary>
+        /// 观战者会话 Id -> 所在场景 Id（只读身份，独立于玩家表）。
+        /// 观战者不占玩家名额、不参与帧同步输入/脚本动作/落库，但接收场景广播（AOI/回放）。
+        /// </summary>
+        private readonly ConcurrentDictionary<long, string> spectatorToSceneBinding = new();
+
+        /// <summary>场景 Id -> 绑定该场景的观战者会话集合（反索引，语义同 sceneToPlayers）。</summary>
+        private readonly ConcurrentDictionary<string, ConcurrentDictionary<long, byte>> sceneToSpectators = new(StringComparer.Ordinal);
+
+        /// <summary>
         /// 实体 Id -> 所在场景 Id 反索引（修复：FindSceneByEntityId 原为 O(场景数×每场景实体表) 逐场景扫描，
         /// 在脚本动作/EntityCall 热路径上每帧调用；改为订阅各场景 EntityManager 增删事件维护本表，
         /// 查询降为 O(1)）。
@@ -114,6 +123,12 @@ namespace Battle.Handlers
         /// <param name="sceneId">要绑定的场景 Id。</param>
         public void BindPlayerToScene(long sessionId, string sceneId)
         {
+            // 同一会话不允许同时以玩家与观战者身份存在（先清观战者绑定）
+            if (spectatorToSceneBinding.TryRemove(sessionId, out var oldSpectateId))
+            {
+                RemoveFromSceneSet(sceneToSpectators, oldSpectateId, sessionId);
+            }
+
             if (playerToSceneBinding.TryGetValue(sessionId, out var oldSceneId) && oldSceneId == sceneId)
             {
                 return; // 已是目标场景
@@ -123,9 +138,35 @@ namespace Battle.Handlers
 
             if (oldSceneId != null)
             {
-                RemoveFromSceneSet(oldSceneId, sessionId);
+                RemoveFromSceneSet(sceneToPlayers, oldSceneId, sessionId);
             }
             sceneToPlayers.GetOrAdd(sceneId, _ => new ConcurrentDictionary<long, byte>())[sessionId] = 0;
+        }
+
+        /// <summary>
+        /// 以观战者（只读）身份绑定到指定场景：接收场景广播，但不占玩家名额、不参与
+        /// 帧同步输入/脚本动作/存档落库。观战语义由会话身份表达，而非场景类型——
+        /// 修复观战者混绑玩家索引导致的人数校验绕过/落库污染/输入注入。
+        /// </summary>
+        public void BindSpectatorToScene(long sessionId, string sceneId)
+        {
+            if (playerToSceneBinding.TryRemove(sessionId, out var oldPlayerSceneId))
+            {
+                RemoveFromSceneSet(sceneToPlayers, oldPlayerSceneId, sessionId);
+            }
+
+            if (spectatorToSceneBinding.TryGetValue(sessionId, out var oldSceneId) && oldSceneId == sceneId)
+            {
+                return; // 已是目标场景
+            }
+
+            spectatorToSceneBinding[sessionId] = sceneId;
+
+            if (oldSceneId != null)
+            {
+                RemoveFromSceneSet(sceneToSpectators, oldSceneId, sessionId);
+            }
+            sceneToSpectators.GetOrAdd(sceneId, _ => new ConcurrentDictionary<long, byte>())[sessionId] = 0;
         }
 
         /// <summary>
@@ -137,19 +178,26 @@ namespace Battle.Handlers
         {
             if (playerToSceneBinding.TryRemove(sessionId, out var sceneId))
             {
-                RemoveFromSceneSet(sceneId, sessionId);
+                RemoveFromSceneSet(sceneToPlayers, sceneId, sessionId);
+            }
+            if (spectatorToSceneBinding.TryRemove(sessionId, out var spectateId))
+            {
+                RemoveFromSceneSet(sceneToSpectators, spectateId, sessionId);
             }
         }
 
-        /// <summary>从场景反索引中移除玩家（集合为空时清理该场景条目）。</summary>
-        private void RemoveFromSceneSet(string sceneId, long sessionId)
+        /// <summary>会话是否以观战者身份绑定在场景中（观战者禁止帧同步输入/脚本动作/落库）。</summary>
+        public bool IsSpectator(long sessionId) => spectatorToSceneBinding.ContainsKey(sessionId);
+
+        /// <summary>从场景反索引中移除会话（集合为空时清理该场景条目）。</summary>
+        private void RemoveFromSceneSet(ConcurrentDictionary<string, ConcurrentDictionary<long, byte>> index, string sceneId, long sessionId)
         {
-            if (sceneToPlayers.TryGetValue(sceneId, out var set))
+            if (index.TryGetValue(sceneId, out var set))
             {
                 set.TryRemove(sessionId, out _);
                 if (set.IsEmpty)
                 {
-                    sceneToPlayers.TryRemove(new KeyValuePair<string, ConcurrentDictionary<long, byte>>(sceneId, set));
+                    index.TryRemove(new KeyValuePair<string, ConcurrentDictionary<long, byte>>(sceneId, set));
                 }
             }
         }
@@ -163,6 +211,10 @@ namespace Battle.Handlers
         public BattleScene? GetSceneByPlayer(long sessionId)
         {
             if (playerToSceneBinding.TryGetValue(sessionId, out var sceneId))
+            {
+                return GetScene(sceneId);
+            }
+            if (spectatorToSceneBinding.TryGetValue(sessionId, out sceneId))
             {
                 return GetScene(sceneId);
             }
@@ -182,6 +234,7 @@ namespace Battle.Handlers
                 // 其它销毁路径会留下 playerToSceneBinding/sceneToPlayers 的孤儿索引，
                 // 使后续请求仍被路由到已不存在的场景。
                 UnbindPlayersInScene(sceneId);
+                UnbindSpectatorsInScene(sceneId);
 
                 // 清理实体反索引中指向该场景的条目（场景销毁时实体可能未逐条走 RemoveEntity）。
                 foreach (var kv in entityToSceneBinding)
@@ -198,6 +251,7 @@ namespace Battle.Handlers
 
         /// <summary>
         /// 获取指定场景中当前绑定的玩家会话数量（O(1)，反索引）。
+        /// 只统计真实玩家，观战者不计入玩家名额。
         /// </summary>
         /// <param name="sceneId">场景标识。</param>
         /// <returns>绑定到该场景的玩家数。</returns>
@@ -209,6 +263,17 @@ namespace Battle.Handlers
             }
 
             return sceneToPlayers.TryGetValue(sceneId, out var set) ? set.Count : 0;
+        }
+
+        /// <summary>指定场景当前绑定的观战者数量（O(1)，反索引）。</summary>
+        public int GetSpectatorCount(string sceneId)
+        {
+            if (string.IsNullOrWhiteSpace(sceneId))
+            {
+                return 0;
+            }
+
+            return sceneToSpectators.TryGetValue(sceneId, out var set) ? set.Count : 0;
         }
 
         /// <summary>
@@ -240,6 +305,31 @@ namespace Battle.Handlers
             return removed;
         }
 
+        /// <summary>清理指定场景上的所有观战者绑定（O(该场景观战者数)，反索引）。</summary>
+        public int UnbindSpectatorsInScene(string sceneId)
+        {
+            if (string.IsNullOrWhiteSpace(sceneId))
+            {
+                return 0;
+            }
+
+            if (!sceneToSpectators.TryRemove(sceneId, out var set))
+            {
+                return 0;
+            }
+
+            int removed = 0;
+            foreach (var sessionId in set.Keys)
+            {
+                if (spectatorToSceneBinding.TryRemove(sessionId, out _))
+                {
+                    removed++;
+                }
+            }
+
+            return removed;
+        }
+
         /// <summary>
         /// 获取指定场景当前绑定的玩家会话标识列表（O(该场景玩家数)，反索引）。
         /// </summary>
@@ -258,6 +348,38 @@ namespace Battle.Handlers
             }
 
             return System.Array.Empty<long>();
+        }
+
+        /// <summary>
+        /// 获取指定场景当前绑定的全部会话标识（玩家 + 观战者，O(该场景会话数)）。
+        /// 场景广播（AOI 快照/离开通知/场景销毁通知）的目标集合：观战者只读、仅接收广播。
+        /// </summary>
+        public long[] GetSceneSessionIds(string sceneId)
+        {
+            if (string.IsNullOrWhiteSpace(sceneId))
+            {
+                return System.Array.Empty<long>();
+            }
+
+            bool hasPlayers = sceneToPlayers.TryGetValue(sceneId, out var players) && players.Count > 0;
+            bool hasSpectators = sceneToSpectators.TryGetValue(sceneId, out var spectators) && spectators.Count > 0;
+            if (!hasPlayers && !hasSpectators)
+            {
+                return System.Array.Empty<long>();
+            }
+            if (!hasSpectators)
+            {
+                return players!.Keys.ToArray();
+            }
+            if (!hasPlayers)
+            {
+                return spectators!.Keys.ToArray();
+            }
+
+            var merged = new List<long>(players!.Count + spectators!.Count);
+            merged.AddRange(players.Keys);
+            merged.AddRange(spectators.Keys);
+            return merged.ToArray();
         }
 
         /// <summary>

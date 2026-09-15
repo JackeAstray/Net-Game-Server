@@ -29,8 +29,21 @@ namespace Battle.Handlers
                 // P3 加固：Center 创建场景同样校验 RoomId 非空 + 容量钳制到服务端硬上限，
                 // 防止经 Center 路径创建 MaxPlayers=int.MaxValue 的房间使 RoomHandler 的 200 上限失效。
                 const int HardMaxPlayers = 200;
+                const int MaxScenesPerNode = 500;
                 if (string.IsNullOrWhiteSpace(request.RoomId))
                 {
+                    return Task.FromResult(new CenterCreateSceneResponse { Success = false, RoomId = "", SceneId = "" });
+                }
+                if (request.RoomId.Length > 64)
+                {
+                    Shared.Log.Warning($"Battle 拒绝超长 RoomId Length:{request.RoomId.Length}（上限 64）");
+                    return Task.FromResult(new CenterCreateSceneResponse { Success = false, RoomId = "", SceneId = "" });
+                }
+                // P3 修复：Center 创建场景路径同样受场景数上限约束（与 RoomHandler 两条路径一致，
+                // 防经匹配流程绕过 MaxScenesPerNode 无限创建场景）。
+                if (sceneManager.GetSceneCount() >= MaxScenesPerNode)
+                {
+                    Shared.Log.Warning($"Battle 场景数已达上限({MaxScenesPerNode})，拒绝 Center 创建场景 RoomId:{request.RoomId}");
                     return Task.FromResult(new CenterCreateSceneResponse { Success = false, RoomId = "", SceneId = "" });
                 }
 
@@ -81,7 +94,22 @@ namespace Battle.Handlers
                 }
 
                 string roomId = request.RoomId.Trim();
-                long[] affectedSessionIds = sceneManager.GetPlayerSessionIds(roomId);
+                // 受影响会话含观战者（只读广播目标，同样需要收到场景销毁通知）
+                long[] affectedSessionIds = sceneManager.GetSceneSessionIds(roomId);
+                // P3 修复：销毁前落库场景内玩家（RemoveScene 只做脚本/备份注销，不落库，
+                // 此前在线玩家未保存进度随场景销毁丢失）。
+                var scene = sceneManager.GetScene(roomId);
+                if (scene != null)
+                {
+                    foreach (var sessionId in sceneManager.GetPlayerSessionIds(roomId))
+                    {
+                        var entity = scene.EntityManager.GetEntity(sessionId);
+                        if (entity != null)
+                        {
+                            Battle.BattleServerApp.PersistPlayer(entity);
+                        }
+                    }
+                }
                 int removedPlayers = sceneManager.UnbindPlayersInScene(roomId);
                 sceneManager.RemoveScene(roomId);
 

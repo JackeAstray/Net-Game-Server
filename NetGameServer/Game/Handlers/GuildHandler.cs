@@ -23,6 +23,40 @@ namespace Game.Handlers
         private static readonly ConcurrentDictionary<long, int> PendingBySession = new();
         private static long lastPendingSweepTicks;
 
+        /// <summary>
+        /// 递减会话的待处理 DB 请求计数；归零时删除条目（P3 修复：原实现只递减到 0 从不删除，
+        /// PendingBySession 随累计发起过请求的会话数无界增长）。
+        /// </summary>
+        internal static void DecrementPendingBySession(long sessionId)
+        {
+            if (sessionId <= 0)
+            {
+                return;
+            }
+            // 用 GetValue + TryUpdate 循环替代 AddOrUpdate（避免 lambda 泛型推断歧义）。
+            // 并发安全：TryUpdate 是原子的；失败则重读重试。
+            while (true)
+            {
+                if (!PendingBySession.TryGetValue(sessionId, out int current))
+                {
+                    return;
+                }
+                int next = Math.Max(0, current - 1);
+                if (next == 0)
+                {
+                    if (PendingBySession.TryRemove(sessionId, out _))
+                    {
+                        return;
+                    }
+                    continue;
+                }
+                if (PendingBySession.TryUpdate(sessionId, next, current))
+                {
+                    return;
+                }
+            }
+        }
+
         private const int MaxPendingPerSession = 16;
         private const int MaxTotalPending = 512;
         private static readonly TimeSpan PendingRequestTimeout = TimeSpan.FromSeconds(30);
@@ -185,6 +219,12 @@ namespace Game.Handlers
                 SendSimpleResponse(session, MessageIds.GuildCreateRes, new GuildCreateResponse { Success = false, Message = "公会名称不能为空" });
                 return;
             }
+            // P3 修复：字段长度上限（超长公会名/宣言透传 DB 与全公会广播，放大存储与通知）。
+            if (req.Name.Trim().Length > 32 || (req.Declaration?.Trim().Length ?? 0) > 200)
+            {
+                SendSimpleResponse(session, MessageIds.GuildCreateRes, new GuildCreateResponse { Success = false, Message = "公会名称（≤32 字）或宣言（≤200 字）过长" });
+                return;
+            }
 
             var dbReq = new DbGuildCreateRequest
             {
@@ -307,7 +347,7 @@ namespace Game.Handlers
             int pendingCount = PendingBySession.AddOrUpdate(clientSessionId, 1, (_, v) => v + 1);
             if (pendingCount > MaxPendingPerSession || PendingGuildRequests.Count >= MaxTotalPending)
             {
-                PendingBySession.AddOrUpdate(clientSessionId, 0, (_, v) => Math.Max(0, v - 1));
+                DecrementPendingBySession(clientSessionId);
                 SendSimpleResponse(session, responseMsgId, new { Success = false, Message = "请求过于频繁，请稍后重试" });
                 return;
             }
@@ -333,7 +373,7 @@ namespace Game.Handlers
             {
                 if (PendingGuildRequests.TryRemove(requestId, out var failed) && failed != null && failed.SessionId > 0)
                 {
-                    PendingBySession.AddOrUpdate(failed.SessionId, 0, (_, v) => Math.Max(0, v - 1));
+                    DecrementPendingBySession(failed.SessionId);
                 }
                 Shared.Log.Error($"公会 DB 请求发送失败 MsgId:{dbMsgId} SessionId:{clientSessionId} Exception:{ex}");
                 SendSimpleResponse(session, responseMsgId, new { Success = false, Message = "发送DB请求失败" });
@@ -365,7 +405,7 @@ namespace Game.Handlers
                     {
                         if (removed.SessionId > 0)
                         {
-                            PendingBySession.AddOrUpdate(removed.SessionId, 0, (_, v) => Math.Max(0, v - 1));
+                            DecrementPendingBySession(removed.SessionId);
                         }
                         TrySendTimeoutResponse(removed);
                     }

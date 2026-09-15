@@ -42,7 +42,7 @@ namespace Game.Handlers
 
             if (pending.SessionId > 0)
             {
-                PendingBySession.AddOrUpdate(pending.SessionId, 0, (_, v) => Math.Max(0, v - 1));
+                DecrementPendingBySession(pending.SessionId);
             }
             if (pending.GatewaySession == null || pending.SessionId <= 0)
             {

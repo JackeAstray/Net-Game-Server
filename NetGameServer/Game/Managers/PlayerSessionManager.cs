@@ -27,6 +27,34 @@ namespace Game.Managers
         private readonly object bindGate = new();
 
         /// <summary>
+        /// 被顶号踢出的会话（P3 修复：顶号乒乓）。顶号后旧会话若继续发包，会被本表拦截，
+        /// 不再重新绑定顶回新会话——否则两个活跃连接交替发包会无限互踢（"最后一包获胜"）。
+        /// 条目随会话断开（UnbindSession/PlayerDisconnectNotif）清理。
+        /// </summary>
+        private readonly ConcurrentDictionary<long, byte> displacedSessions = new();
+
+        /// <summary>标记会话已被顶号（旧会话侧）。</summary>
+        public void MarkDisplaced(long sessionId)
+        {
+            if (sessionId > 0)
+            {
+                displacedSessions[sessionId] = 0;
+            }
+        }
+
+        /// <summary>会话是否处于被顶号状态（是则拒绝其业务包/重新绑定）。</summary>
+        public bool IsDisplaced(long sessionId) => sessionId > 0 && displacedSessions.ContainsKey(sessionId);
+
+        /// <summary>会话断开时清除被顶标记（防字典无界增长）。</summary>
+        public void ClearDisplaced(long sessionId)
+        {
+            if (sessionId > 0)
+            {
+                displacedSessions.TryRemove(sessionId, out _);
+            }
+        }
+
+        /// <summary>
         /// 建立会话标识与用户标识的双向映射；在冲突时移除先前的对应关系。
         /// R4 修复：全程在互斥锁内原子更新，返回被顶替的旧会话 ID（0 表示无），供调用方顶号踢出。
         /// </summary>

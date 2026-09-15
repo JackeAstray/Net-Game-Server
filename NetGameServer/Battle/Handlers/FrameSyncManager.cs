@@ -66,6 +66,13 @@ public sealed class FrameSyncManager
     /// </summary>
     public void EnqueueInput(long clientSessionId, BattleFrameSync request)
     {
+        // P1 修复：观战者只读，禁止注入帧同步输入（观战者绑定场景但不参与对局）。
+        if (sceneManager.IsSpectator(clientSessionId))
+        {
+            Shared.Log.Warning($"帧同步输入被拒绝：观战者不可提交输入 SessionId:{clientSessionId}");
+            return;
+        }
+
         var scene = sceneManager.GetSceneByPlayer(clientSessionId);
         if (scene == null)
         {

@@ -247,6 +247,14 @@ namespace Game
                         return;
                     }
 
+                    // P3 修复（顶号乒乓）：被顶号会话的后续业务包直接丢弃（不重新绑定顶回新会话）。
+                    // 该会话在网关侧的绑定已被移除，其消息继续处理会触发"每包重绑→互踢"死循环。
+                    if (originalSessionId > 0 && Game.Managers.PlayerSessionManager.Instance.IsDisplaced(originalSessionId))
+                    {
+                        Log.Warning($"Game 拒绝被顶号会话的消息 MsgId:{msgId} SessionId:{originalSessionId}");
+                        return;
+                    }
+
                     // P2 修复：业务段按键（客户端会话）串行执行（对齐 Center/Login OrderedTaskQueue）。
                     // 内部消息（originalSessionId=0）按网关连接会话串行，跨连接并发。
                     long serialKey = originalSessionId > 0 ? originalSessionId : -session.SessionId;
@@ -267,6 +275,7 @@ namespace Game
                         int disconnectedUserId = Game.Managers.PlayerSessionManager.Instance.GetUserIdBySessionId(originalSessionId);
                         Game.Handlers.FriendHandler.NotifyFriendOnlineStatus(session, originalSessionId, disconnectedUserId, false);
                         Game.Managers.PlayerSessionManager.Instance.UnbindSession(originalSessionId);
+                        Game.Managers.PlayerSessionManager.Instance.ClearDisplaced(originalSessionId); // 断开即清除被顶标记
                         Handlers.ChatHandler.RemoveSession(originalSessionId);
                         // P2 修复：移除跨网关反向索引（该客户端会话已离线）。
                         UnregisterClientGateway(originalSessionId);
@@ -299,6 +308,8 @@ namespace Game
                                 // R4 修复：同账号异地登录——顶号，向旧会话发送踢下线通知
                                 Log.Warning($"同账号异地登录，顶号踢出旧会话 UserId:{routedUserId} OldSessionId:{displacedSessionId} NewSessionId:{originalSessionId}");
                                 SendKickedOff(session, displacedSessionId);
+                                // P3 修复（顶号乒乓）：标记被顶会话，其后续包不再重新绑定顶回。
+                                Game.Managers.PlayerSessionManager.Instance.MarkDisplaced(displacedSessionId);
                             }
                             if (firstBind)
                             {
@@ -552,6 +563,8 @@ namespace Game
                         {
                             await Task.Delay(TimeSpan.FromSeconds(Shared.NodeHeartbeatDefaults.HeartbeatIntervalSeconds), cancellationToken);
                             SendNodeStatus(centerClient, nodeId, GetCurrentLoad());
+                            // P3 修复：周期清理会话串行队列的空闲 key（断线会话残留的 KeyState 防无界增长）。
+                            sessionSerialQueue.SweepIdle(TimeSpan.FromMinutes(10));
                         }
                         catch (OperationCanceledException)
                         {

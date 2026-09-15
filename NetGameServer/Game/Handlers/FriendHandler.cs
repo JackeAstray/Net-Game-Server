@@ -50,8 +50,73 @@ namespace Game.Handlers
         /// <summary>会话 -> 当前待处理 DB 请求数（配额记账，随移除递减）。</summary>
         private static readonly ConcurrentDictionary<long, int> PendingBySession = new();
 
+        /// <summary>
+        /// 递减会话的待处理 DB 请求计数；归零时删除条目（P3 修复：原实现只递减到 0 从不删除，
+        /// PendingBySession 随累计发起过请求的会话数无界增长）。
+        /// </summary>
+        internal static void DecrementPendingBySession(long sessionId)
+        {
+            if (sessionId <= 0)
+            {
+                return;
+            }
+            // 用 GetValue + TryUpdate 循环替代 AddOrUpdate（避免 lambda 泛型推断歧义）。
+            // 并发安全：TryUpdate 是原子的；失败则重读重试。
+            while (true)
+            {
+                if (!PendingBySession.TryGetValue(sessionId, out int current))
+                {
+                    return;
+                }
+                int next = Math.Max(0, current - 1);
+                if (next == 0)
+                {
+                    if (PendingBySession.TryRemove(sessionId, out _))
+                    {
+                        return;
+                    }
+                    continue;
+                }
+                if (PendingBySession.TryUpdate(sessionId, next, current))
+                {
+                    return;
+                }
+            }
+        }
+
         /// <summary>发送者的好友列表是否已从 DB 加载（缓存 warm）。用于聊天私聊好友校验的 fail-safe：缓存未加载时不强制拦截。</summary>
         public static bool IsFriendListLoaded(int userId) => userId > 0 && FriendCache.ContainsKey(userId);
+
+        /// <summary>
+        /// 删除好友成功后双向失效好友缓存：A 删 B，A 的缓存移除 B、B（若在线且有缓存）的缓存移除 A。
+        /// 此前 FriendCache 只在登录预热/拉取列表时整体替换，删除后不失效 → 已删好友仍可互发私聊。
+        /// </summary>
+        /// <param name="requesterUserId">操作者（A）的 UserId。</param>
+        /// <param name="friendUniqueId">被删好友（B）的 UniqueId。</param>
+        internal static void InvalidateFriendCacheOnRemove(int requesterUserId, string friendUniqueId)
+        {
+            if (requesterUserId <= 0 || string.IsNullOrWhiteSpace(friendUniqueId))
+            {
+                return;
+            }
+
+            if (FriendCache.TryGetValue(requesterUserId, out var requesterFriends))
+            {
+                // 目标仅限在线会话可反查（离线玩家的缓存已由断线清理移除，无需失效）。
+                // 目标离线时保守处理：移除 A 侧该 UID 条目（能确认已删除），但保留缓存键，
+                // 避免因好友离线误清整个好友列表（IsFriendListLoaded 状态）。
+                long friendSessionId = PlayerSessionManager.Instance.GetSessionIdByUid(friendUniqueId);
+                int friendUserId = friendSessionId > 0 ? PlayerSessionManager.Instance.GetUserIdBySessionId(friendSessionId) : 0;
+                if (friendUserId > 0)
+                {
+                    requesterFriends.TryRemove(friendUserId, out _);
+                    if (FriendCache.TryGetValue(friendUserId, out var targetFriends))
+                    {
+                        targetFriends.TryRemove(requesterUserId, out _);
+                    }
+                }
+            }
+        }
 
         /// <summary>
         /// 清理长期未回执的 PendingFriendRequests（DB 无响应/掉线时防无界增长），
@@ -74,7 +139,7 @@ namespace Game.Handlers
                         // P6 加固：配额记账递减。
                         if (removedPending != null && removedPending.SessionId > 0)
                         {
-                            PendingBySession.AddOrUpdate(removedPending.SessionId, 0, (_, v) => Math.Max(0, v - 1));
+                            DecrementPendingBySession(removedPending.SessionId);
                         }
                         Shared.Log.Warning($"好友 DB 请求超时清理 RequestId:{kv.Key} SessionId:{kv.Value.SessionId} MsgId:{kv.Value.ResponseMsgId}");
                         TrySendTimeoutResponse(kv.Value);
@@ -125,6 +190,8 @@ namespace Game.Handlers
             public int InviteTargetUserId { get; set; }
             public string FriendApplyMessage { get; set; } = string.Empty;
             public bool FriendApplyAccept { get; set; }
+            /// <summary>删除好友请求的目标 UniqueId（回包成功后用于双向失效好友缓存）。</summary>
+            public string RemoveFriendUniqueId { get; set; } = string.Empty;
         }
 
         private sealed class PendingInvite
@@ -219,7 +286,7 @@ namespace Game.Handlers
             int pendingCount = PendingBySession.AddOrUpdate(clientSessionId, 1, (_, v) => v + 1);
             if (pendingCount > MaxPendingPerSession || PendingFriendRequests.Count >= MaxTotalPending)
             {
-                PendingBySession.AddOrUpdate(clientSessionId, 0, (_, v) => Math.Max(0, v - 1));
+                DecrementPendingBySession(clientSessionId);
                 Shared.Log.Warning($"好友 DB 请求超配额被拒绝 SessionId:{clientSessionId} Pending:{pendingCount} 上限:{MaxPendingPerSession}");
                 return false;
             }
@@ -247,7 +314,7 @@ namespace Game.Handlers
             {
                 if (PendingFriendRequests.TryRemove(requestId, out var failedPending) && failedPending != null && failedPending.SessionId > 0)
                 {
-                    PendingBySession.AddOrUpdate(failedPending.SessionId, 0, (_, v) => Math.Max(0, v - 1));
+                    DecrementPendingBySession(failedPending.SessionId);
                 }
                 Shared.Log.Error($"Game 发送 DB 请求失败 MsgId:{dbMsgId} SessionId:{clientSessionId} RequestId:{requestId} Exception:{ex}");
                 return false;

@@ -321,8 +321,8 @@ namespace Battle.Handlers
             }
         }
 
-        /// <summary>场景内玩家会话集合（广播目标只允许玩家；NPC/玩法实体不参与收包）。</summary>
-        private HashSet<long> GetPlayerSet(BattleScene scene) => new(sceneManager.GetPlayerSessionIds(scene.SceneId));
+        /// <summary>场景内全部会话集合（玩家 + 观战者：观战者只读、仅接收 AOI 广播；NPC/玩法实体不参与收包）。</summary>
+        private HashSet<long> GetPlayerSet(BattleScene scene) => new(sceneManager.GetSceneSessionIds(scene.SceneId));
 
         internal void RemoveMovementTrack(long sessionId) => moveTracks.TryRemove(sessionId, out _);
 

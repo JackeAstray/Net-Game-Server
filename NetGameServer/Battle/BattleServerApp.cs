@@ -327,6 +327,13 @@ namespace Battle
                     return;
                 }
 
+                // P1 修复：观战者只读，禁止任何脚本动作（含对无主世界实体取伤害/查进度）。
+                if (sceneManager?.IsSpectator(callerSessionId) ?? false)
+                {
+                    Log.Warning($"实体脚本动作被拒绝：观战者不可执行脚本动作 SessionId:{callerSessionId} EntityId:{entityId} Method:{method}");
+                    return;
+                }
+
                 // 2) 属主规则：允许操作自属实体的全部方法
                 bool isOwner = entity.OwnerClientId == callerSessionId || entity.EntityId == callerSessionId;
 
@@ -382,8 +389,8 @@ namespace Battle
             int grace = ConfigHelper.GetConfig<int>("ReconnectGraceSeconds");
             if (grace <= 0) return false; // 配置 <= 0：关闭重连，立即离场
 
-            // 断线即存档（崩溃/重连超时后仍可恢复）；观战实体只读占位不落库
-            if (!string.Equals(scene.Config.SceneType, "Spectate", StringComparison.OrdinalIgnoreCase))
+            // 断线即存档（崩溃/重连超时后仍可恢复）；观战实体只读占位不落库（按会话身份判定）
+            if (!(sceneManager?.IsSpectator(clientSessionId) ?? false))
             {
                 PersistPlayer(entity);
             }
@@ -400,6 +407,9 @@ namespace Battle
                     {
                         var gw = GetGatewaySessionByClient(clientSessionId);
                         LeaveScene(sc, clientSessionId, gw ?? gatewaySession);
+                        // 与 ResumePlayer 对称：离场即清帧状态，防重新加入同房间时旧 LastFrameId
+                        // 把新会话从 0 起的输入误判为重放而静默丢弃（P2 修复）
+                        frameSyncManager?.RemoveClient(clientSessionId);
                         Log.Info($"玩家 {clientSessionId} 重连超时，实体已离场");
                     }
                 }
@@ -434,8 +444,8 @@ namespace Battle
             var entity = scene.EntityManager.GetEntity(clientSessionId);
             if (entity != null)
             {
-                // 观战实体只读占位不落库
-                if (!string.Equals(scene.Config.SceneType, "Spectate", StringComparison.OrdinalIgnoreCase))
+                // 观战实体只读占位不落库（按会话身份判定，观战任意场景均不落库）
+                if (!(sceneManager?.IsSpectator(clientSessionId) ?? false))
                 {
                     PersistPlayer(entity);
                 }

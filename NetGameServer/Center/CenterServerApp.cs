@@ -326,6 +326,8 @@ namespace Center
                         CenterServerApp.Match?.SweepStaleMatchState(DateTime.UtcNow);
                         // 节点趋势采样（管理台趋势图数据源）
                         Center.MetricsSampler.Sample(DateTime.UtcNow);
+                        // P3 修复：周期清理会话串行队列的空闲 key（断线会话残留的 KeyState 防无界增长）。
+                        sessionSerialQueue.SweepIdle(TimeSpan.FromMinutes(10));
                     }
                     catch (OperationCanceledException)
                     {

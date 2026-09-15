@@ -53,6 +53,12 @@ namespace Game.Handlers
                 SendSimpleResponse(session, MessageIds.InviteGameRes, new InviteGameResponse { Success = false, Message = "房间ID不能为空" });
                 return;
             }
+            // P3 修复：邀请字段长度上限（超长房间名/类型随邀请通知广播给好友，放大通知）。
+            if (req.RoomId.Trim().Length > 64 || (req.RoomName?.Trim().Length ?? 0) > 64 || (req.SceneType?.Trim().Length ?? 0) > 64)
+            {
+                SendSimpleResponse(session, MessageIds.InviteGameRes, new InviteGameResponse { Success = false, Message = "邀请信息过长" });
+                return;
+            }
 
             string friendUniqueId = req.FriendUniqueId.Trim();
             string roomId = req.RoomId.Trim();

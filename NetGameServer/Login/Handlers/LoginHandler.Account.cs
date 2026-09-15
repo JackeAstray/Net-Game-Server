@@ -73,12 +73,11 @@ namespace Login.Handlers
             string body = $"您的账号 {account} 已申请密码重置。\n验证码: {verifyCode}\n有效期: 10 分钟\n请使用该验证码发起密码重置（提交验证码 + 新密码）。";
             if (!await SendEmailAsync(email, subject, body))
             {
+                // P3 修复：SMTP 故障时统一回通用提示并设置冷却（此前回 Success=false 且不设冷却：
+                // ① 响应差异构成"账号+邮箱匹配"确认 oracle；② 故障期可无限重试反复触发 SMTP 连接）。
                 Log.Error($"找回密码失败：邮件发送失败，Account:{account}, Email:{email}");
-                return new FindPasswordResponse
-                {
-                    Success = false,
-                    Message = "验证码发送失败，请稍后重试"
-                };
+                findPasswordCooldowns[cooldownKey] = DateTime.UtcNow.Add(FindPasswordCooldown);
+                return new FindPasswordResponse { Success = true, Message = genericMessage };
             }
 
             // 安全修复（P0）：不再于请求时直接修改数据库密码。改为登记一次性验证码（带过期），
@@ -119,9 +118,16 @@ namespace Login.Handlers
                 return new ResetPasswordWithCodeResponse { Success = false, Message = "账号、验证码和新密码不能为空" };
             }
 
-            if (newPassword.Length < 6)
+            if (newPassword.Length < 6 || newPassword.Length > 128)
             {
-                return new ResetPasswordWithCodeResponse { Success = false, Message = "新密码长度不能少于 6 位" };
+                return new ResetPasswordWithCodeResponse { Success = false, Message = "新密码长度须为 6-128 位" };
+            }
+
+            // P3 修复：第二阶段同样受失败节流约束（此前无任何尝试上限，可无限猜测验证码）。
+            if (TryGetThrottleRemaining("reset-password-code", account, out var remaining))
+            {
+                int waitSeconds = Math.Max(1, (int)Math.Ceiling(remaining.TotalSeconds));
+                return new ResetPasswordWithCodeResponse { Success = false, Message = $"验证码尝试过于频繁，请在 {waitSeconds} 秒后重试" };
             }
 
             SweepExpiredPendingResets();
@@ -142,12 +148,15 @@ namespace Login.Handlers
 
             if (!hasValidCode)
             {
+                // P3：无效验证码同样计失败（防绕过：错误码/过期码路径不设限则节流形同虚设）
+                RegisterFailedAttempt("reset-password-code", account);
                 return new ResetPasswordWithCodeResponse { Success = false, Message = "验证码无效或已过期，请重新获取" };
             }
 
             // 恒定时间比较验证码哈希，防时序侧信道
             if (!CryptographicOperations.FixedTimeEquals(HashResetCode(code), effectiveHash))
             {
+                RegisterFailedAttempt("reset-password-code", account);
                 return new ResetPasswordWithCodeResponse { Success = false, Message = "验证码错误" };
             }
 
@@ -174,6 +183,7 @@ namespace Login.Handlers
             // 一次性：成功后立即作废验证码（本地 + Redis 双清）
             pendingPasswordResets.TryRemove(account, out _);
             DeleteResetCodeRedis(account);
+            ClearFailedAttempts("reset-password-code", account);
 
             return new ResetPasswordWithCodeResponse { Success = true, Message = "密码重置成功，请使用新密码登录" };
         }
@@ -384,9 +394,10 @@ namespace Login.Handlers
             string account = request.Account?.Trim() ?? string.Empty;
             string oldPassword = request.OldPassword ?? string.Empty;
             string newPassword = request.NewPassword ?? string.Empty;
-            string throttleIdentity = !string.IsNullOrWhiteSpace(account)
-                ? account
-                : (userId > 0 ? $"uid:{userId}" : "unknown");
+            // P3 修复：节流身份优先用服务端绑定 userId（不可由客户端投毒）。
+            // 此前 throttleIdentity 取客户端可控的 request.Account——任意登录玩家填受害者账号，
+            // 借"账号不匹配"失败即可按受害者账号累计 5 次锁定其 change-password。
+            string throttleIdentity = userId > 0 ? $"uid:{userId}" : account;
 
             if (string.IsNullOrWhiteSpace(oldPassword))
             {
@@ -405,6 +416,17 @@ namespace Login.Handlers
                 {
                     Success = false,
                     Message = "新密码不能为空"
+                };
+            }
+
+            // P3 修复：输入长度上限（超长密码放大 PBKDF2 哈希成本）。
+            if (account.Length > 64 || oldPassword.Length > 128 || newPassword.Length > 128)
+            {
+                Log.Warning($"修改密码失败：账号/密码超长，Account 长度:{account.Length} UserId:{userId}");
+                return new ChangePasswordResponse
+                {
+                    Success = false,
+                    Message = "账号或密码格式不正确"
                 };
             }
 
@@ -430,9 +452,15 @@ namespace Login.Handlers
             var verifyResp = await CallDbAsync<Shared.Messages.Db.ChangePasswordVerifyResponse>(MessageIds.DbChangePasswordReq, verifyReq);
             if (verifyResp == null)
             {
+                // 与登录路径对齐：DB 无响应属服务端故障，不计入失败次数（防 DB 抖动批量锁号自伤放大）
                 Log.Error($"修改密码失败：DB 响应为空，Account:{account}, UserId:{userId}");
+                return new ChangePasswordResponse
+                {
+                    Success = false,
+                    Message = "更改密码失败，请稍后重试"
+                };
             }
-            bool success = verifyResp?.Success ?? false;
+            bool success = verifyResp.Success;
             if (success)
             {
                 ClearFailedAttempts("change-password", throttleIdentity);
@@ -445,7 +473,7 @@ namespace Login.Handlers
             return new ChangePasswordResponse
             {
                 Success = success,
-                Message = verifyResp?.Message ?? "更改密码失败"
+                Message = verifyResp.Message
             };
         }
 

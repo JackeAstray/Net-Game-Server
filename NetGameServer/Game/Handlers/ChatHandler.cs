@@ -200,6 +200,14 @@ namespace Game.Handlers
                     }
                 }
 
+                // P2 修复：接收者无法解析（UID/ID 不存在或为空）时显式报错，不再静默回"消息处理成功"。
+                // 此前 targetUserId==0 会跳过在线/拉黑/好友校验并最终回 Success=true 但零投递（假成功）。
+                if (targetUserId <= 0)
+                {
+                    SendChatError(session, "对方不存在或不在线，消息未能送达。");
+                    return;
+                }
+
                 // P2 修复：先判"在线"，再判"拉黑"。原实现把 fail-closed 的拉黑判定放在最前，
                 // 而离线的目标没有会话、其黑名单缓存天然不存在（缓存只为在线玩家预热）→ 判定恒为 true
                 // → 任何"给离线玩家发私聊"都会误报"对方已将你拉黑。"（且后面准确的"对方不在线"分支永远不可达）。
@@ -324,7 +332,14 @@ namespace Game.Handlers
             {
                 // 公会频道：向同公会在线成员定向投递（各成员可能在不同网关，逐会话解析网关）。
                 var memberIds = Game.Handlers.GuildHandler.GetCachedGuildMemberIds(actualSenderId);
-                if (memberIds != null)
+                if (memberIds == null)
+                {
+                    // P3 修复（授权滞后窗口）：缓存未就绪/已过期时无法确认发送者是否仍在该公会
+                    // （被踢/退会成员的缓存条目可能仍在 TTL 内），fail-closed 拒绝而非放行广播。
+                    SendChatError(session, "公会信息确认中，请稍后重试。");
+                    return;
+                }
+                if (memberIds.Length > 0)
                 {
                     foreach (var memberId in memberIds)
                     {

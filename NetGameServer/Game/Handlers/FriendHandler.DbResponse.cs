@@ -56,7 +56,7 @@ namespace Game.Handlers
             // P6 加固：配额记账递减（随待处理项移除）。
             if (pending != null && pending.SessionId > 0)
             {
-                PendingBySession.AddOrUpdate(pending.SessionId, 0, (_, v) => Math.Max(0, v - 1));
+                DecrementPendingBySession(pending.SessionId);
             }
             if (pending == null)
             {
@@ -105,6 +105,12 @@ namespace Game.Handlers
                             Success = dbRes?.Success == true,
                             Message = dbRes?.Message ?? "删除好友失败"
                         };
+                        // P2 修复：删除成功即双向失效好友缓存（此前缓存只在登录预热/拉列表时替换，
+                        // 已删好友仍可互发私聊）。失败/未知回包不失效（保持缓存与 DB 实际关系一致）。
+                        if (res.Success && requesterUserId > 0)
+                        {
+                            InvalidateFriendCacheOnRemove(requesterUserId, pending.RemoveFriendUniqueId);
+                        }
                         SendResponseBySessionId(sendSession, pending.SessionId, pending.ResponseMsgId, res);
                         return true;
                     }

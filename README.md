@@ -14,7 +14,7 @@
 | 声明式协议 | C# `[GameMessage]`（Roslyn 源生成器）声明；编译期产出强类型 + 路由表 + `ProtocolManifest.json`，`Tools/ClientGen` 据此生成客户端 codec | [Protocol.md](NetGameServer/Docs/Protocol.md) |
 | 强类型分发 | `MessageDispatcher` 配置化注册 + MemoryPack/JSON 双格式 | [Code-Style.md](NetGameServer/Docs/Code-Style.md) |
 | 统一网关 | 4 协议接入 + 配置化转发 + 路由元数据注入 | [Gateway.md](NetGameServer/Docs/Gateway.md) |
-| 实体/属性 | `EntityDef` + 脏标记 + All/AOI/OwnClient 三种同步作用域 | [Battle.md](NetGameServer/Docs/Battle.md) |
+| 实体/属性 | `EntityDef` + 脏标记 + AllClients/OwnClient/CellPublic/CellPrivate 四种同步作用域 | [Battle.md](NetGameServer/Docs/Battle.md) |
 | EntityCall | 91001/91002 跨进程调用 + callId + 超时回执 | [Center.md](NetGameServer/Docs/Center.md) |
 | 脚本 Mailbox | csx 脚本 `entity.Mailbox.Call/CallAsync` 同进程零开销，跨节点异步回执 | [KBE-Gap-Review.md](NetGameServer/Docs/KBE-Gap-Review.md) |
 | 在线迁移 | 玩家主实体 + 属主玩法实体（Skill/Item）同包随迁 | [Battle.md](NetGameServer/Docs/Battle.md) |

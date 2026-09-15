@@ -139,6 +139,19 @@ namespace Login.Handlers
                 };
             }
 
+            // P3 修复：输入长度上限（超长账号/密码会放大 PBKDF2 哈希与 Redis 键成本，匿名可达）。
+            if (account.Length > 64 || request.Password.Length > 128)
+            {
+                Log.Warning($"登录失败：账号或密码超长，账号长度:{account.Length}");
+                return new LoginResponse
+                {
+                    Success = false,
+                    Message = "账号或密码格式不正确",
+                    UserId = 0,
+                    Token = string.Empty
+                };
+            }
+
             if (TryGetThrottleRemaining("login", account, out var remaining))
             {
                 int waitSeconds = Math.Max(1, (int)Math.Ceiling(remaining.TotalSeconds));
@@ -243,6 +256,17 @@ namespace Login.Handlers
                 };
             }
 
+            // P3 修复：输入长度上限（超长账号/密码放大 PBKDF2 哈希与存储成本，匿名可达）。
+            if (account.Length > 64 || request.Password.Length > 128 || request.Nickname.Length > 32)
+            {
+                Log.Warning($"注册失败：账号/密码/昵称超长，账号长度:{account.Length} 密码长度:{request.Password.Length} 昵称长度:{request.Nickname.Length}");
+                return new RegisterResponse
+                {
+                    Success = false,
+                    Message = "账号/密码/昵称格式不正确"
+                };
+            }
+
             if (TryGetThrottleRemaining("register", account, out var remaining))
             {
                 int waitSeconds = Math.Max(1, (int)Math.Ceiling(remaining.TotalSeconds));
@@ -299,10 +323,16 @@ namespace Login.Handlers
                 var verifyResp = await CallDbAsync<Shared.Messages.Db.RegisterVerifyResponse>(MessageIds.DbRegisterVerifyReq, verifyReq);
                 if (verifyResp == null)
                 {
+                    // 与登录路径对齐：DB 无响应属服务端故障，不计入失败次数（防 DB 抖动批量锁号自伤放大）
                     Log.Error($"注册失败：DB 响应为空，账号:{account}, Attempt:{attempt + 1}");
+                    return new RegisterResponse
+                    {
+                        Success = false,
+                        Message = "注册失败，请稍后重试"
+                    };
                 }
 
-                if (verifyResp?.Success == true)
+                if (verifyResp.Success)
                 {
                     ClearFailedAttempts("register", account);
                     return new RegisterResponse
@@ -312,7 +342,7 @@ namespace Login.Handlers
                     };
                 }
 
-                string message = verifyResp?.Message ?? "注册失败";
+                string message = verifyResp.Message;
                 if (!string.Equals(message, "UID已存在", StringComparison.Ordinal))
                 {
                     Log.Warning($"注册失败：账号:{account}，原因:{message}");
